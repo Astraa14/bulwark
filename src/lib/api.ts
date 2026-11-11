@@ -1,5 +1,10 @@
 import { supabase } from "./supabase";
 
+function apiBase() {
+  const url = import.meta.env.VITE_API_URL;
+  return url ? url.replace(/\/$/, "") : "";
+}
+
 async function authToken() {
   if (!supabase) throw new Error("Supabase is not configured.");
   const { data } = await supabase.auth.getSession();
@@ -13,7 +18,8 @@ export async function apiFetch<T>(
   init: { method?: string; body?: unknown } = {},
 ): Promise<T> {
   const token = await authToken();
-  const res = await fetch(path, {
+  const base = apiBase();
+  const res = await fetch(`${base}${path}`, {
     method: init.method ?? "GET",
     headers: {
       authorization: `Bearer ${token}`,
