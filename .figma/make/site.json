@@ -1,0 +1,12 @@
+{
+  "title": "Bulwark — AI security monitoring",
+  "description": "Bulwark watches your websites 24/7 for malware, exposed secrets, and downtime, explaining every threat in plain English using your own AI key.",
+  "language": "en",
+  "robots": {
+    "index": true
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
