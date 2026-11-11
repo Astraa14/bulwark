@@ -11,7 +11,7 @@
     "scan": "node --env-file=.env.local server/run-checks.mjs",
     "api": "node --env-file=.env.local server/api.mjs",
     "worker": "node --env-file=.env.local server/worker.mjs",
-    "start": "node --env-file=.env.local server/api.mjs & node --env-file=.env.local server/worker.mjs"
+    "start": "node server/api.mjs & node server/worker.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.119.0",
