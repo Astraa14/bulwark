@@ -354,6 +354,8 @@ function Overview({
   const critical = openFindings.filter((f) => f.severity === "critical").length;
   const high = openFindings.filter((f) => f.severity === "high").length;
   const medium = openFindings.filter((f) => f.severity === "medium").length;
+  const low = openFindings.filter((f) => f.severity === "low").length;
+  const info = openFindings.filter((f) => f.severity === "info").length;
   const activeSites = sites.filter((site) => site.status === "verified").length;
   const pausedSites = sites.filter((site) => site.status === "paused").length;
   const pendingSites = sites.filter((site) => site.status === "pending").length;
@@ -393,9 +395,6 @@ function Overview({
         action={
           <div className="title-actions">
             <span className="range-label">Last 30 days</span>
-            <Button dark onClick={openModal}>
-              + Add site
-            </Button>
           </div>
         }
       />
@@ -419,7 +418,7 @@ function Overview({
             </h2>
             <p className="briefing-summary">
               {openFindings.length > 0
-                ? `${critical} critical · ${high} high · ${medium} medium findings across your monitored sites. Start with the highest severity.`
+                ? `${critical} critical · ${high} high · ${medium} medium · ${low} low${info > 0 ? ` · ${info} info` : ""} across your monitored sites. Start with the highest severity.`
                 : sites.length === 0
                   ? "Connect your first site to begin continuous security checks."
                   : activeSites === 0 && pausedSites > 0
@@ -466,7 +465,7 @@ function Overview({
         <Stat
           label="Open threats"
           value={String(openFindings.length)}
-          note={`${critical} critical · ${high} high · ${medium} medium`}
+          note={`${critical} critical · ${high} high · ${medium} medium · ${low} low${info > 0 ? ` · ${info} info` : ""}`}
         />
         <Stat label="Scans completed" value={scanCount.toLocaleString()} note="Across all your sites" />
         <Stat
@@ -648,9 +647,9 @@ function Sites({
         title="Sites"
         subtitle="Your projects, protected around the clock."
         action={
-          <Button dark onClick={openModal}>
-            + Add site
-          </Button>
+          sites.length > 0 ? (
+            <Button dark onClick={openModal}>+ Add site</Button>
+          ) : undefined
         }
       />
       {sites.length === 0 ? (
