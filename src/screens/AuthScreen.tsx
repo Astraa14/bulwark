@@ -100,7 +100,7 @@ export default function AuthScreen() {
           </button>
         </form>
 
-        <p className="auth-foot">Bring your own AI key. No token markup.</p>
+        <p className="auth-foot">Bring your own AI key · No token markup · Free to start</p>
       </div>
     </div>
   );

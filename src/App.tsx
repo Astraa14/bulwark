@@ -41,6 +41,19 @@ const PLAN_SITE_LIMIT = 10;
 
 const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low", "info"];
 
+// Icon map for sidebar nav items
+const NAV_ICONS: Record<string, string> = {
+  Overview: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6",
+  Sites: "M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9",
+  Threats: "M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z",
+  Scans: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
+  "AI Copilot": "M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z",
+  Reports: "M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z",
+  Integrations: "M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1",
+  "API Keys": "M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z",
+  Settings: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z",
+};
+
 const INTERVAL_OPTIONS = [
   { value: 15, label: "Every 15 minutes" },
   { value: 30, label: "Every 30 minutes" },
@@ -103,11 +116,13 @@ function Header({
   onMenu,
   email,
   onSignOut,
+  onGoKeys,
 }: {
   page: Page;
   onMenu: () => void;
   email?: string | null;
   onSignOut?: () => void;
+  onGoKeys?: () => void;
 }) {
   const [userMenu, setUserMenu] = useState(false);
   const label = email ?? "you@bulwark.app";
@@ -124,7 +139,12 @@ function Header({
         <strong>{page}</strong>
       </div>
       <div className="top-actions">
-        <span className="model-picker">AI: BYOK</span>
+        <button className="model-picker byok-btn" onClick={onGoKeys} title="Manage AI API keys">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="12" height="12" aria-hidden="true">
+            <path fillRule="evenodd" d="M9.75 2a.75.75 0 0 1 .75.75v.096A6.5 6.5 0 0 1 14.5 9.5a.75.75 0 0 1-1.5 0 5 5 0 0 0-3.25-4.667V5a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1-.75-.75v-.25A5 5 0 0 0 4.5 9.5a.75.75 0 0 1-1.5 0A6.5 6.5 0 0 1 7.5 2.846V2.75A.75.75 0 0 1 8.25 2h1.5ZM7 11.5a1 1 0 1 1 2 0 1 1 0 0 1-2 0Z" clipRule="evenodd" />
+          </svg>
+          AI: BYOK
+        </button>
         <div className="system-pill">
           <Dot /> Monitoring active
         </div>
@@ -161,6 +181,24 @@ function Header({
   );
 }
 
+function NavIcon({ path }: { path: string }) {
+  return (
+    <svg
+      className="nav-icon"
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      aria-hidden="true"
+    >
+      {path.split(" M").map((seg, i) => (
+        <path key={i} strokeLinecap="round" strokeLinejoin="round" d={i === 0 ? seg : "M" + seg} />
+      ))}
+    </svg>
+  );
+}
+
 function Sidebar({
   page,
   setPage,
@@ -191,7 +229,12 @@ function Sidebar({
     <>
       {open && <button className="scrim" onClick={close} aria-label="Close navigation" />}
       <aside className={`sidebar ${open ? "open" : ""}`}>
-        <div className="brand">bulwark</div>
+        <div className="brand">
+          <svg className="brand-shield" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path fillRule="evenodd" d="M12 2.25a.75.75 0 01.513.202l7.5 6.75a.75.75 0 01.237.548v7.5a3.75 3.75 0 01-3.75 3.75H7.5a3.75 3.75 0 01-3.75-3.75v-7.5a.75.75 0 01.237-.548l7.5-6.75A.75.75 0 0112 2.25zm0 1.896L5.25 10.07v7.18a2.25 2.25 0 002.25 2.25H9v-5.25a3 3 0 016 0V19.5h1.5a2.25 2.25 0 002.25-2.25v-7.18L12 4.146zM13.5 19.5v-5.25a1.5 1.5 0 00-3 0V19.5h3z" clipRule="evenodd" />
+          </svg>
+          bulwark
+        </div>
         <button className="workspace">
           Indie workspace <span>⌄</span>
         </button>
@@ -205,22 +248,28 @@ function Sidebar({
                 close();
               }}
             >
-              <span>{item}</span>
+              <span className="nav-label">
+                {NAV_ICONS[item] && <NavIcon path={NAV_ICONS[item]} />}
+                {item}
+              </span>
               {item === "Threats" && threatCount > 0 && <small>{threatCount}</small>}
             </button>
           ))}
         </nav>
         <div className="sidebar-bottom">
           <div className="plan">
-            <strong>Free plan</strong>
+            <div className="plan-header">
+              <strong>Free plan</strong>
+              <span className="plan-upgrade">Upgrade ↗</span>
+            </div>
             <span>
               {siteCount} of {PLAN_SITE_LIMIT} sites connected
             </span>
             <div className="progress">
-              <i style={{ width: `${(siteCount / PLAN_SITE_LIMIT) * 100}%` }} />
+              <i style={{ width: `${Math.max(2, (siteCount / PLAN_SITE_LIMIT) * 100)}%` }} />
             </div>
           </div>
-          <a href="#docs">Documentation ↗</a>
+          <a href="https://docs.bulwarksecure.app" target="_blank" rel="noreferrer">Documentation ↗</a>
         </div>
       </aside>
     </>
@@ -296,6 +345,18 @@ function Overview({
     else buckets[idx].d += 1;
   }
   const peak = Math.max(1, ...buckets.map((b) => b.d + b.r));
+
+  // Dynamic chart date labels
+  const now = new Date();
+  const chartDateFmt = (daysBack: number) => {
+    const d = new Date(now);
+    d.setDate(d.getDate() - daysBack);
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  };
+
+  // Dynamic y-axis ticks based on peak
+  const yTop = Math.max(4, Math.ceil(peak / 2) * 2);
+  const yMid = Math.round(yTop / 2);
 
   return (
     <>
@@ -384,8 +445,8 @@ function Overview({
             <div className="grid-line l2" />
             <div className="grid-line l3" />
             <div className="y-axis">
-              <span>4</span>
-              <span>2</span>
+              <span>{yTop}</span>
+              <span>{yMid}</span>
               <span>0</span>
             </div>
             <div className="bars">
@@ -396,9 +457,9 @@ function Overview({
                 </span>
               ))}
             </div>
-            <span>Oct 13</span>
-            <span>Oct 27</span>
-            <span>Nov 11</span>
+            <span>{chartDateFmt(27)}</span>
+            <span>{chartDateFmt(14)}</span>
+            <span>{chartDateFmt(0)}</span>
           </div>
         </div>
         <div className="card feed">
@@ -590,7 +651,11 @@ function Sites({
       </div>
       {sites.length === 0 ? (
         <div className="card empty-state">
-          <div className="empty-icon">B</div>
+          <div className="empty-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+          </div>
           <h2>No sites monitored yet</h2>
           <p>
             Add a domain, prove you own it with a DNS record, and Bulwark starts scanning it within a
@@ -1907,7 +1972,11 @@ function GenericPage({ page }: { page: Page }) {
     <>
       <PageTitle title={page} subtitle={`${page} is not part of this build.`} />
       <div className="card empty-state">
-        <div className="empty-icon">B</div>
+        <div className="empty-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+        </div>
         <h2>{page}</h2>
         <p>This section has no implementation yet. Use the sidebar to return to monitoring.</p>
       </div>
@@ -1981,7 +2050,9 @@ function Modal({
               <h2>Add an API key</h2>
               <p>Keys are encrypted server-side and never returned to the browser.</p>
             </div>
-            <button onClick={close}>×</button>
+            <button className="modal-close" onClick={close} aria-label="Close">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"/></svg>
+            </button>
           </div>
           <form onSubmit={submitKey}>
             <label>Provider</label>
@@ -2077,7 +2148,9 @@ function Modal({
                   : "Bulwark will scan it within a minute."}
             </p>
           </div>
-          <button onClick={close}>×</button>
+          <button className="modal-close" onClick={close} aria-label="Close">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"/></svg>
+          </button>
         </div>
 
         {step === "form" && (
@@ -2303,6 +2376,7 @@ function AppShell() {
           onMenu={() => setMobileNav(true)}
           email={user?.email}
           onSignOut={signOut}
+          onGoKeys={() => go("API Keys")}
         />
         <main className={activeFinding ? "detail-main" : ""}>{content}</main>
       </div>
