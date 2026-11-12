@@ -364,6 +364,16 @@ function Overview({
       SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) ||
       new Date(b.last_seen_at).getTime() - new Date(a.last_seen_at).getTime(),
   );
+  const isSetupRequired = sites.length === 0 || pendingSites > 0;
+  const isAllPaused = activeSites === 0 && pausedSites > 0;
+  const briefingState =
+    openFindings.length > 0 ? "has-findings" :
+    isSetupRequired ? "needs-setup" :
+    isAllPaused ? "is-paused" : "is-clear";
+  const briefingTone =
+    openFindings.length > 0
+      ? critical > 0 ? "critical" : high > 0 ? "high" : "medium"
+      : isSetupRequired ? "medium" : isAllPaused ? "low" : "healthy";
 
   const buckets = Array.from({ length: 10 }, () => ({ d: 0, r: 0 }));
   for (const f of findings) {
@@ -398,11 +408,11 @@ function Overview({
           </div>
         }
       />
-      <section className={`briefing card ${openFindings.length > 0 ? "has-findings" : "is-clear"}`}>
+      <section className={`briefing card ${briefingState}`}>
         <div className="eyebrow-row">
           <span className="briefing-kicker">
-            <Dot tone={openFindings.length > 0 ? (critical > 0 ? "critical" : high > 0 ? "high" : "medium") : "healthy"} />
-            {openFindings.length > 0 ? "ACTION REQUIRED" : sites.length === 0 || pendingSites > 0 ? "SETUP REQUIRED" : "SECURITY STATUS"}
+            <Dot tone={briefingTone} />
+            {openFindings.length > 0 ? "ACTION REQUIRED" : isSetupRequired ? "SETUP REQUIRED" : isAllPaused ? "MONITORING PAUSED" : "SECURITY STATUS"}
           </span>
           <code>
             {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" })} ·{" "}
@@ -516,21 +526,21 @@ function Overview({
               <Dot /> Live
             </span>
           </div>
-          {findings.slice(0, 3).map((f) => (
+          {priorityFindings.slice(0, 3).map((f) => (
             <div className="feed-row" key={f.id}>
               <span>
                 <Dot tone={f.severity} />
                 {f.severity}
               </span>
               <div>
-                <strong>{f.title}</strong>
+                <strong title={f.title}>{f.title}</strong>
                 <code>
                   {sites.find((s) => s.id === f.site_id)?.domain ?? ""} · {relTime(f.last_seen_at)}
                 </code>
               </div>
             </div>
           ))}
-          {findings.length === 0 && <p className="feed-empty">No threats detected yet.</p>}
+          {priorityFindings.length === 0 && <p className="feed-empty">No open threats. New findings will appear here.</p>}
         </div>
       </section>
       {sites.length > 0 && (
@@ -562,11 +572,6 @@ function Overview({
               </div>
             );
           })}
-          {sites.length === 0 && (
-            <div className="tr empty-row">
-              <span>No sites yet — add your first one.</span>
-            </div>
-          )}
         </div>
       </section>
       )}
