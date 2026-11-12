@@ -3928,3 +3928,8 @@ code, pre, kbd, samp {
 .slack-preview { font-size: 12px; }
 .status-hint,
 .empty-state-note { font-size: 12px; }
+
+
+@media (max-width: 520px) {
+  .chart > span { font-size: 11px; }
+}
