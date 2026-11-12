@@ -37,7 +37,8 @@ export default function AuthScreen() {
     <div className="auth-page">
       <div className="auth-card">
         <div className="auth-brand">
-          <img src="/logo-full.jpg" alt="Bulwark" className="auth-logo" />
+          <img src="/favicon.svg" alt="" aria-hidden="true" className="auth-mark" />
+          <span className="auth-wordmark">Bulwark</span>
         </div>
         <p className="auth-sub">Continuous website security for people who ship.</p>
 

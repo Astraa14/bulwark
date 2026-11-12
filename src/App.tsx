@@ -230,7 +230,8 @@ function Sidebar({
       {open && <button className="scrim" onClick={close} aria-label="Close navigation" />}
       <aside className={`sidebar ${open ? "open" : ""}`}>
         <div className="brand">
-          <img src="/logo-full.jpg" alt="Bulwark" className="brand-logo" />
+          <img src="/favicon.svg" alt="" aria-hidden="true" className="brand-mark" />
+          <span className="brand-wordmark">Bulwark</span>
         </div>
         <button className="workspace">
           Indie workspace <span>⌄</span>
