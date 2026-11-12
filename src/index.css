@@ -26,6 +26,12 @@
   --border-success: #285b3e;
   --border-danger: #71383b;
   --border-warning: #705621;
+  --status-healthy: #43c783;
+  --status-critical: #ff6b70;
+  --status-high: #ff9558;
+  --status-medium: #e5bd58;
+  --status-low: #76adff;
+  --status-info: #a1a1aa;
     font-family: Inter, ui-sans-serif, system-ui, sans-serif;
     color: var(--text-primary);
     background: var(--app-bg);
@@ -57,6 +63,12 @@
   --border-success: #bbf7d0;
   --border-danger: #fecaca;
   --border-warning: #fed7aa;
+  --status-healthy: #15803d;
+  --status-critical: #b91c1c;
+  --status-high: #c2410c;
+  --status-medium: #a87800;
+  --status-low: #2f6fea;
+  --status-info: #737373;
 }
   body {
     min-width: 320px;
@@ -152,11 +164,11 @@
 }
 .sidebar nav button:hover:not(.active) {
   background: var(--surface-hover);
-  color: #171717;
+  color: var(--text-primary);
 }
 .sidebar nav button.active {
   background: var(--surface-hover);
-  color: #171717;
+  color: var(--text-primary);
   font-weight: 500;
 }
 .sidebar nav small {
@@ -296,7 +308,7 @@
   gap: 8px;
   padding: 0 12px;
   font-size: 11px;
-  color: #525252;
+  color: var(--text-secondary);
 }
 .system-pill .dot {
   animation: pulse-green 2s ease-in-out infinite;
@@ -373,7 +385,7 @@ main {
 }
 .button.dark {
   background: var(--surface-inverse);
-  color: white;
+  color: var(--text-inverse);
   border-color: var(--border-inverse);
 }
 .button.dark:hover {
@@ -474,23 +486,23 @@ main {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #16a34a;
+  background: var(--status-healthy);
   flex: 0 0 auto;
 }
 .dot.critical {
-  background: #ef2f36;
+  background: var(--status-critical);
 }
 .dot.high {
-  background: #f0600f;
+  background: var(--status-high);
 }
 .dot.medium {
-  background: #c99200;
+  background: var(--status-medium);
 }
 .dot.low {
-  background: #2f6fea;
+  background: var(--status-low);
 }
 .dot.healthy {
-  background: #16a34a;
+  background: var(--status-healthy);
   animation: pulse-green 2s ease-in-out infinite;
 }
 @keyframes pulse-green {
@@ -884,7 +896,7 @@ main {
 .tabs button.selected,
 .provider-tabs button.selected {
   background: var(--surface-inverse);
-  color: white;
+  color: var(--text-inverse);
   border-color: var(--border-inverse);
 }
 .tabs small {
@@ -1376,7 +1388,7 @@ main {
   box-shadow: 0 1px 3px rgba(0,0,0,0.2);
 }
 .toggle.on {
-  background: #16a34a;
+  background: var(--status-healthy);
 }
 .toggle.on i {
   transform: translateX(16px);
@@ -1809,7 +1821,7 @@ main {
   min-height: 100vh;
   display: grid;
   place-items: center;
-  background: linear-gradient(135deg, #f8f8f8 0%, #f0f0f0 100%);
+  background: linear-gradient(135deg, var(--surface-subtle) 0%, var(--app-bg) 100%);
   padding: 24px;
 }
 .auth-card {
@@ -1860,7 +1872,7 @@ main {
 }
 .auth-tabs button.active {
   background: var(--surface);
-  color: #171717;
+  color: var(--text-primary);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
   font-weight: 500;
 }
@@ -1868,7 +1880,7 @@ main {
   display: block;
   font-size: 11px;
   font-weight: 500;
-  color: #525252;
+  color: var(--text-secondary);
   margin: 16px 0 6px;
 }
 .auth-card input {
@@ -1883,7 +1895,7 @@ main {
 }
 .auth-card input:focus {
   outline: none;
-  border-color: #171717;
+  border-color: var(--border-inverse);
   box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.06);
 }
 .auth-submit {
@@ -2038,7 +2050,7 @@ main {
 
 /* --------------------------------------------------- v1.1 additions */
 .dot.info {
-  background: #a3a3a3;
+  background: var(--status-info);
 }
 .filters select,
 .inline-select {
@@ -2071,7 +2083,7 @@ main {
 }
 .site-actions button:hover {
   color: var(--text-primary);
-  background: #f0f0f0;
+  background: var(--surface-hover);
   border-color: var(--border);
 }
 .site-actions button.danger:hover {
@@ -2219,7 +2231,7 @@ pre.explanation {
   display: grid;
   gap: 6px;
   font-size: 11.5px;
-  color: #525252;
+  color: var(--text-secondary);
   line-height: 1.5;
 }
 .slack-preview {
@@ -2311,7 +2323,7 @@ span.model-picker {
 }
 .modal form .button.dark {
   background: var(--surface-inverse);
-  color: white;
+  color: var(--text-inverse);
   border-color: var(--border-inverse);
 }
 
@@ -2529,7 +2541,7 @@ button:disabled {
   border-radius: 8px;
   text-align: center;
   padding: 0 14px;
-  color: #525252;
+  color: var(--text-secondary);
   background: var(--surface);
   font-weight: 500;
   transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
@@ -2545,7 +2557,7 @@ button:disabled {
 .tabs button.selected,
 .provider-tabs button.selected {
   background: var(--surface-inverse);
-  border-color: #171717;
+  border-color: var(--border-inverse);
   color: var(--text-inverse);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
@@ -2558,7 +2570,7 @@ button:disabled {
   margin: 0;
   padding: 0 5px;
   border-radius: 99px;
-  background: #f0f0f0;
+  background: var(--surface-hover);
   color: var(--text-secondary);
   font-size: 10px;
   line-height: 1;
@@ -2602,11 +2614,11 @@ button:disabled {
 }
 
 .site-actions button.danger {
-  color: #b91c1c;
+  color: var(--status-critical);
 }
 
 .site-actions button.danger:hover {
-  color: #b91c1c;
+  color: var(--status-critical);
   background: #fef2f2;
   border-color: var(--border-danger);
 }
@@ -2720,7 +2732,7 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #525252;
+  color: var(--text-secondary);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.055em;
@@ -2843,7 +2855,7 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--surface);
-  color: #525252;
+  color: var(--text-secondary);
   font-size: 11px;
 }
 .site-actions button:hover:not(:disabled) {
@@ -2884,7 +2896,7 @@ button:disabled {
   align-items: center;
   justify-content: center;
   text-align: center;
-  background: linear-gradient(145deg, #fafafa, #fff 68%);
+  background: linear-gradient(145deg, var(--surface-subtle), var(--surface) 68%);
   border-color: var(--border);
 }
 .sites-empty-state .empty-icon {
@@ -3299,4 +3311,57 @@ label { font-size: 13px; }
   .attention-grid { grid-template-columns: minmax(0, 1fr); }
   .setting-row { gap: 14px; }
   .setting-row > span:first-child { min-width: 0; }
+}
+
+
+/* Dark/light semantic statuses and authentication surfaces. */
+.auth-page {
+  background: linear-gradient(135deg, var(--surface-subtle) 0%, var(--app-bg) 100%);
+}
+.auth-card, .modal, .user-pop { color: var(--text-primary); }
+.auth-card label { color: var(--text-secondary); }
+.auth-tabs button.active { color: var(--text-primary); }
+.auth-card input:focus { border-color: var(--border-strong); }
+.auth-error, .modal-error { color: var(--status-critical); }
+.auth-notice { color: var(--status-healthy); }
+.dot { background: var(--status-healthy); }
+.dot.critical { background: var(--status-critical); }
+.dot.high { background: var(--status-high); }
+.dot.medium { background: var(--status-medium); }
+.dot.low { background: var(--status-low); }
+.dot.info { background: var(--status-info); }
+.dot.healthy { background: var(--status-healthy); }
+.toggle.on { background: var(--status-healthy); }
+.tag[class*="open"] {
+  border-color: var(--border-danger);
+  background: var(--surface-danger);
+  color: var(--status-critical);
+}
+.tag[class*="resolved"] {
+  border-color: var(--border-success);
+  background: var(--surface-success);
+  color: var(--status-healthy);
+}
+.tag[class*="acknowledged"] {
+  border-color: var(--border-warning);
+  background: var(--surface-warning);
+  color: var(--status-medium);
+}
+.tag[class*="ignored"] {
+  border-color: var(--border);
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+}
+.site-actions button.danger { color: var(--status-critical); }
+.site-actions button.danger:hover {
+  color: var(--status-critical);
+  background: var(--surface-danger);
+  border-color: var(--border-danger);
+}
+.priority { background: var(--surface-subtle); }
+.tabs small { background: var(--surface-hover); color: var(--text-secondary); }
+.site-actions button:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
 }
