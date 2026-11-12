@@ -26,6 +26,8 @@ import {
   type SiteRow,
 } from "@/lib/workspace";
 
+type Theme = "dark" | "light";
+
 type Page =
   | "Overview"
   | "Sites"
@@ -129,6 +131,8 @@ function Header({
   monitoringState,
   monitoringLabel,
   onGoSites,
+  theme,
+  onToggleTheme,
 }: {
   page: Page;
   onMenu: () => void;
@@ -138,6 +142,8 @@ function Header({
   monitoringState: "active" | "setup" | "paused";
   monitoringLabel: string;
   onGoSites: () => void;
+  theme: Theme;
+  onToggleTheme: () => void;
 }) {
   const [userMenu, setUserMenu] = useState(false);
   const label = email ?? "you@bulwark.app";
@@ -159,6 +165,25 @@ function Header({
             <path fillRule="evenodd" d="M9.75 2a.75.75 0 0 1 .75.75v.096A6.5 6.5 0 0 1 14.5 9.5a.75.75 0 0 1-1.5 0 5 5 0 0 0-3.25-4.667V5a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1-.75-.75v-.25A5 5 0 0 0 4.5 9.5a.75.75 0 0 1-1.5 0A6.5 6.5 0 0 1 7.5 2.846V2.75A.75.75 0 0 1 8.25 2h1.5ZM7 11.5a1 1 0 1 1 2 0 1 1 0 0 1-2 0Z" clipRule="evenodd" />
           </svg>
           AI: BYOK
+        </button>
+        <button
+          type="button"
+          className="theme-toggle"
+          onClick={onToggleTheme}
+          aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          {theme === "dark" ? (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="4" />
+              <path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M20.5 14.2A8.4 8.4 0 0 1 9.8 3.5 8.7 8.7 0 1 0 20.5 14.2Z" />
+            </svg>
+          )}
+          <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
         </button>
         <button
           type="button"
@@ -406,7 +431,7 @@ function Overview({
         subtitle="A quieter way to keep your code safe."
         action={
           <div className="title-actions">
-            <span className="range-label">Last 30 days</span>
+            <span className="range-label" aria-label="Threat activity range">Activity: last 30 days</span>
           </div>
         }
       />
@@ -465,6 +490,10 @@ function Overview({
                 <Button onClick={() => go("Threats")}>Review</Button>
               </div>
             ))}
+            <div className="attention-more">
+              <span>Showing 3 of {openFindings.length} open findings</span>
+              <button onClick={() => go("Threats")}>View all threats →</button>
+            </div>
           </div>
         )}
       </section>
@@ -1428,7 +1457,7 @@ function Settings({
             <div className="setting-row">
               <span>
                 <strong>Autonomy</strong>
-                <small>Bulwark never changes production without this being set to auto-fix.</small>
+                <small>Bulwark only makes production changes when Auto-fix is selected. Suggest only keeps every change under your control.</small>
               </span>
               <select
                 className="inline-select"
@@ -1569,8 +1598,8 @@ function Scans({
         <span>
           {filtered.length} scan{filtered.length === 1 ? "" : "s"} shown
         </span>
-        <button className="link-button" onClick={onChanged}>
-          Refresh
+        <button className="link-button refresh-button" onClick={onChanged}>
+          ↻ Refresh
         </button>
       </div>
       <div className="card data-table scans-table">
@@ -2023,7 +2052,7 @@ function AiCopilot({
       <section className="stats">
         <Stat label="Explained findings" value={String(explained)} note="Cached on each finding" />
         <Stat label="Open findings" value={String(open.length)} note={ready ? "Ready to explain" : "Add a key to explain"} />
-        <Stat label="Provider" value={ready ? keys[0].providerLabel : "—"} note={ready ? keys[0].model ?? "" : "BYOK required"} />
+        <Stat label="Provider" value={ready ? keys[0].providerLabel : "Not set"} note={ready ? keys[0].model ?? "" : "Connect an API key"} />
         <Stat label="Token markup" value="$0" note="You pay your provider directly" />
       </section>
       <div className="split-content">
@@ -2336,15 +2365,34 @@ function Modal({
 
 export default function App() {
   const { configured, loading, session } = useAuth();
+  const [theme, setTheme] = useState<Theme>(() => {
+    try {
+      return window.localStorage.getItem("bulwark-theme") === "light" ? "light" : "dark";
+    } catch {
+      return "dark";
+    }
+  });
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      window.localStorage.setItem("bulwark-theme", theme);
+    } catch {
+      // Theme still works for this session when storage is unavailable.
+    }
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((current) => current === "dark" ? "light" : "dark");
+  const shellProps = { theme, onToggleTheme: toggleTheme };
 
   // Demo mode: no Supabase env configured, keep the original mock UI.
-  if (!configured) return <AppShell />;
+  if (!configured) return <AppShell {...shellProps} />;
   if (loading) return <div className="boot">Loading Bulwark…</div>;
   if (!session) return <AuthScreen />;
-  return <AppShell />;
+  return <AppShell {...shellProps} />;
 }
 
-function AppShell() {
+function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
   const { user, signOut } = useAuth();
   const { sites, findings, scans, scanCount, refresh } = useWorkspace();
   const activeSiteCount = sites.filter((site) => site.status === "verified").length;
@@ -2494,6 +2542,8 @@ function AppShell() {
           monitoringState={monitoringState}
           monitoringLabel={monitoringLabel}
           onGoSites={() => go("Sites")}
+          theme={theme}
+          onToggleTheme={onToggleTheme}
         />
         <main className={activeFinding ? "detail-main" : ""}>{content}</main>
       </div>
