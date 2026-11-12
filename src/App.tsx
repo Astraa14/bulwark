@@ -99,15 +99,17 @@ function Button({
   onClick,
   className = "",
   download = false,
+  disabled = false,
 }: {
   children: React.ReactNode;
   dark?: boolean;
   onClick?: () => void;
   className?: string;
   download?: boolean;
+  disabled?: boolean;
 }) {
   return (
-    <button className={`button ${dark ? "dark" : ""} ${className}`} onClick={onClick}>
+    <button className={`button ${dark ? "dark" : ""} ${className}`} onClick={onClick} disabled={disabled}>
       {download && (
         <svg className="button-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M10 2.75v9.5m0 0 3.5-3.5M10 12.25l-3.5-3.5M4 14.75v2.5h12v-2.5" />
@@ -924,7 +926,7 @@ function Threats({
               if (worst) onOpen(worst);
             }}
           >
-            Review critical threat →
+            Review highest-priority threat →
           </Button>
         </div>
       )}
@@ -1306,18 +1308,26 @@ function Toggle({
   initial = false,
   checked,
   onChange,
+  disabled = false,
+  title,
 }: {
   initial?: boolean;
   checked?: boolean;
   onChange?: (next: boolean) => void;
+  disabled?: boolean;
+  title?: string;
 }) {
   const [on, setOn] = useState(initial);
   const value = checked ?? on;
   return (
     <button
-      aria-label={value ? "Disable" : "Enable"}
+      aria-label={disabled ? "Add a Slack webhook to enable alerts" : value ? "Disable" : "Enable"}
+      aria-pressed={value}
+      disabled={disabled}
+      title={title}
       className={`toggle ${value ? "on" : ""}`}
       onClick={() => {
+        if (disabled) return;
         if (onChange) onChange(!value);
         else setOn(!value);
       }}
@@ -1456,9 +1466,9 @@ function Settings({
             <div className="setting-row">
               <span>
                 <strong>Email</strong>
-                <small>Not enabled in this build.</small>
+                <small>Email alerts are not available yet.</small>
               </span>
-              <span className="tag">Off</span>
+              <span className="tag">Coming later</span>
             </div>
           </section>
         </div>
@@ -1824,7 +1834,7 @@ function Integrations({
 }) {
   const [webhook, setWebhook] = useState(settings?.slackWebhookUrl ?? "");
   const [severity, setSeverity] = useState<Severity>(settings?.slackMinSeverity ?? "high");
-  const [enabled, setEnabled] = useState(settings?.alertsEnabled ?? true);
+  const [enabled, setEnabled] = useState(settings?.alertsEnabled ?? false);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1844,7 +1854,7 @@ function Integrations({
       await onSave({
         slackWebhookUrl: webhook,
         slackMinSeverity: severity,
-        alertsEnabled: enabled,
+        alertsEnabled: enabled && Boolean(webhook.trim()),
       });
       onChanged();
       setMessage("Saved.");
@@ -1863,8 +1873,9 @@ function Integrations({
       await onSave({
         slackWebhookUrl: webhook,
         slackMinSeverity: severity,
-        alertsEnabled: enabled,
+        alertsEnabled: enabled && Boolean(webhook.trim()),
       });
+      if (!webhook.trim()) throw new Error("Add a Slack webhook URL before sending a test message.");
       await apiPost("/api/alerts/test", { webhookUrl: webhook });
       setMessage("Test message sent. Check your Slack channel.");
     } catch (err) {
@@ -1874,7 +1885,7 @@ function Integrations({
     }
   };
 
-  const configured = Boolean(settings?.slackWebhookUrl);
+  const configured = Boolean(webhook.trim());
 
   return (
     <>
@@ -1910,7 +1921,12 @@ function Integrations({
                 <strong>Send alerts</strong>
                 <small>Off pauses delivery without deleting the webhook.</small>
               </span>
-              <Toggle checked={enabled} onChange={setEnabled} />
+              <Toggle
+                checked={enabled && configured}
+                onChange={setEnabled}
+                disabled={!configured}
+                title={configured ? "Enable or pause Slack alert delivery" : "Add a webhook URL before enabling alerts"}
+              />
             </div>
             <div className="setting-row">
               <span>
@@ -1930,7 +1946,7 @@ function Integrations({
               </select>
             </div>
             <div className="modal-actions">
-              <Button onClick={test}>{busy === "test" ? "Sending…" : "Send test message"}</Button>
+              <Button onClick={test} disabled={!configured || busy !== null}>{busy === "test" ? "Sending…" : "Send test message"}</Button>
               <Button onClick={() => save("save")}>{busy === "save" ? "Saving…" : "Save"}</Button>
             </div>
             {error && <p className="modal-error">{error}</p>}
@@ -1946,7 +1962,7 @@ function Integrations({
             </div>
             <div>
               <span>Alerts</span>
-              <code>{enabled ? "Enabled" : "Paused"}</code>
+              <code>{configured ? (enabled ? "Enabled" : "Paused") : "Waiting for webhook"}</code>
             </div>
             <div>
               <span>Threshold</span>
@@ -2006,7 +2022,7 @@ function AiCopilot({
       </div>
       <section className="stats">
         <Stat label="Explained findings" value={String(explained)} note="Cached on each finding" />
-        <Stat label="Open findings" value={String(open.length)} note="Ready to explain" />
+        <Stat label="Open findings" value={String(open.length)} note={ready ? "Ready to explain" : "Add a key to explain"} />
         <Stat label="Provider" value={ready ? keys[0].providerLabel : "—"} note={ready ? keys[0].model ?? "" : "BYOK required"} />
         <Stat label="Token markup" value="$0" note="You pay your provider directly" />
       </section>
@@ -2027,7 +2043,18 @@ function AiCopilot({
                   {f.explanation ? "explained" : "not explained"}
                 </small>
               </span>
-              <button onClick={() => onOpen(f)}>{f.explanation ? "View →" : "Explain →"}</button>
+              <button
+                onClick={() => onOpen(f)}
+                disabled={!ready && !f.explanation}
+                title={!ready && !f.explanation ? "Connect an AI API key to explain this finding." : undefined}
+                aria-label={
+                  !ready && !f.explanation
+                    ? `Connect an AI API key to explain ${f.title}`
+                    : f.explanation ? `View explanation for ${f.title}` : `Explain ${f.title}`
+                }
+              >
+                {f.explanation ? "View →" : ready ? "Explain →" : "Add key to explain"}
+              </button>
             </div>
           ))}
           {open.length === 0 && <p className="muted pad">No open findings. Nothing to explain.</p>}
