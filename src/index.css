@@ -3201,7 +3201,6 @@ main {
   .theme-toggle { min-width: 36px; width: 36px; min-height: 36px; height: 36px; }
   .briefing { padding: 18px 16px; }
   .briefing h2 { font-size: 21px; }
-  .attention-more { align-items: flex-start; flex-direction: column; }
   .button { min-height: 40px; height: 40px; }
 }
 
@@ -3692,4 +3691,12 @@ code, pre, kbd, samp {
     padding-top: 12px;
     margin-top: 12px;
   }
+}
+
+
+.key-empty-hint {
+  display: block;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
 }
