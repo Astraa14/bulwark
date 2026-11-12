@@ -3384,3 +3384,172 @@ label { font-size: 13px; }
   .scans-table .scan-row { min-width: 720px; }
   .theme-toggle { flex: 0 0 36px; }
 }
+
+
+/* Theme regression fixes: keep every shared control on the active surface palette. */
+:root:not([data-theme="light"]) .brand-logo,
+:root:not([data-theme="light"]) .auth-logo {
+  filter: brightness(0) invert(1);
+}
+:root[data-theme="light"] .brand-logo,
+:root[data-theme="light"] .auth-logo {
+  filter: none;
+}
+
+/* Secondary buttons must not remain white in the dark theme. */
+.button:not(.dark) {
+  background: var(--surface);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+.button:not(.dark):hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.button:not(.dark):active:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+/* Header, search, filter, and form controls. */
+.global-search,
+.model-picker,
+.avatar,
+.filters input,
+.filters select,
+.filter-select,
+.inline-select,
+.modal input,
+.modal select,
+.modal textarea,
+.modal form input,
+.modal form select,
+.field-block input,
+.field-block select,
+.field-block textarea,
+.auth-card input {
+  background: var(--surface);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+.global-search {
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+}
+.global-search::placeholder,
+.filters input::placeholder,
+.field-block input::placeholder,
+.modal input::placeholder,
+.auth-card input::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+.model-picker:hover,
+.avatar:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.mobile-menu span { background: var(--text-primary); }
+
+/* Cards and controls used by Copilot, API Keys, settings, and detail views. */
+.copilot-copy,
+.prompt,
+.chat-box,
+.key-field,
+.key-field .button,
+.code-line button,
+.preferences button,
+.spend button,
+.side-setting > button,
+.site-detail dd button,
+.site-actions button {
+  background: var(--surface);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+.prompt:hover,
+.code-line button:hover,
+.preferences button:hover,
+.spend button:hover,
+.side-setting > button:hover,
+.site-detail dd button:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.site-actions button {
+  color: var(--text-secondary);
+}
+.site-actions button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.site-actions button.danger,
+.site-actions button.danger:hover {
+  color: var(--status-critical);
+}
+.site-actions button.danger:hover {
+  background: var(--surface-danger);
+  border-color: var(--border-danger);
+}
+
+/* Neutral tags, tab controls, and settings navigation. */
+.tag {
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+.tabs button,
+.provider-tabs button {
+  background: var(--surface);
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+.tabs button:hover:not(.selected),
+.provider-tabs button:hover:not(.selected) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.settings-tabs button { color: var(--text-secondary); }
+.settings-tabs button.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--text-primary);
+}
+
+/* Small theme-sensitive details that previously retained light-only values. */
+.progress i { background: var(--text-primary); }
+.empty-icon,
+.sites-empty-state .empty-icon {
+  background: var(--surface-hover);
+  border-color: var(--border);
+}
+.modal-head > button,
+.modal-close {
+  color: var(--text-muted);
+}
+.modal-head > button:hover,
+.modal-close:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+.table .empty-row,
+.tr.empty-row,
+.site-row.empty-row,
+.threat-row.empty-row {
+  color: var(--text-muted);
+}
+.filters > span,
+.threat-id,
+.detail-meta,
+.provider-foot,
+.ai-head code,
+.ai-actions span,
+.field-block label,
+.side-setting label,
+.key-empty p {
+  color: var(--text-muted);
+}
+.auth-card { border-color: var(--border); }
