@@ -20,6 +20,7 @@ import {
   type ApiKeyRow,
   type FindingRow,
   type FindingStatus,
+  type ScanCheckResult,
   type ScanRow,
   type Settings,
   type Severity,
@@ -311,7 +312,107 @@ function siteHealth(site: SiteRow, findings: FindingRow[]) {
     return { label: "At risk", tone: "critical" };
   }
   if (open.length) return { label: "Needs attention", tone: "high" };
-  return { label: "Healthy", tone: "healthy" };
+  return { label: "No open findings", tone: "healthy" };
+}
+
+type CheckOutcome = "passed" | "finding" | "not_checked" | "error";
+
+type ScanOutcomeSummary = Record<CheckOutcome, number> & {
+  detailed: boolean;
+  total: number;
+  completed: number;
+};
+
+const CHECK_OUTCOME_LABEL: Record<CheckOutcome, string> = {
+  passed: "Passed",
+  finding: "Finding",
+  not_checked: "Not checked",
+  error: "Error",
+};
+
+const CHECK_OUTCOME_ORDER: CheckOutcome[] = ["passed", "finding", "not_checked", "error"];
+
+function outcomeText(outcome: CheckOutcome, count: number) {
+  const label = CHECK_OUTCOME_LABEL[outcome].toLowerCase();
+  return `${count} ${label}${count === 1 ? "" : "s"}`;
+}
+
+function numberOrNull(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : null;
+}
+
+function checkOutcome(result: ScanCheckResult): CheckOutcome {
+  const status = String(result.status ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+
+  if (status === "error" || status === "errored" || status === "failed") return "error";
+  if (
+    result.complete === false ||
+    status === "not_checked" ||
+    status === "skipped" ||
+    status === "unavailable"
+  ) {
+    return "not_checked";
+  }
+  if (status === "finding" || status === "findings" || status === "issue" || status === "observed") {
+    return "finding";
+  }
+  if (status === "passed" || status === "pass" || status === "clean" || status === "complete") {
+    return "passed";
+  }
+  return "not_checked";
+}
+
+function scanOutcomeSummary(scan: ScanRow): ScanOutcomeSummary {
+  const results = Array.isArray(scan.check_results) ? scan.check_results : [];
+  const hasStoredCounts = scan.checks_errored != null || scan.checks_skipped != null;
+  const detailed = results.length > 0 || hasStoredCounts;
+  const fromResults: Record<CheckOutcome, number> = {
+    passed: 0,
+    finding: 0,
+    not_checked: 0,
+    error: 0,
+  };
+
+  for (const result of results) fromResults[checkOutcome(result)] += 1;
+
+  if (!detailed) {
+    return {
+      ...fromResults,
+      detailed: false,
+      total: numberOrNull(scan.checks_total) ?? 0,
+      completed: 0,
+    };
+  }
+
+  const total = numberOrNull(scan.checks_total) ?? results.length;
+  const passed = numberOrNull(scan.checks_passed) ?? fromResults.passed;
+  const error = numberOrNull(scan.checks_errored) ?? fromResults.error;
+  const notChecked = numberOrNull(scan.checks_skipped) ?? fromResults.not_checked;
+  const finding = results.length
+    ? fromResults.finding
+    : Math.max(0, total - passed - error - notChecked);
+
+  return {
+    passed,
+    finding,
+    not_checked: notChecked,
+    error,
+    detailed: true,
+    total,
+    completed: passed + finding,
+  };
+}
+
+function scanState(scan: ScanRow, summary = scanOutcomeSummary(scan)) {
+  if (scan.status === "failed") return { label: "Failed", tone: "critical" };
+  if (scan.status === "running") return { label: "Running", tone: "medium" };
+  if (scan.status === "partial" || (summary.detailed && (summary.error || summary.not_checked))) {
+    return { label: "Partial", tone: "medium" };
+  }
+  return { label: "Complete", tone: "healthy" };
 }
 
 function Overview({
@@ -359,7 +460,7 @@ function Overview({
     <>
       <PageTitle
         title="Overview"
-        subtitle="A quieter way to keep your code safe."
+        subtitle="A clearer view of your public website posture."
         action={
           <div className="title-actions">
             <Button>Last 30 days⌄</Button>
@@ -376,20 +477,20 @@ function Overview({
           note={verified === sites.length ? "All sites verified" : `${verified} of ${sites.length} verified`}
         />
         <Stat
-          label="Open threats"
+          label="Open findings"
           value={String(openFindings.length)}
           note={`${critical} critical · ${high} high · ${medium} medium`}
         />
         <Stat label="Scans completed" value={scanCount.toLocaleString()} note="Across all your sites" />
         <Stat
-          label="Monitoring uptime"
-          value={verified ? "24/7" : "—"}
-          note={verified ? "Worker checks every 60s" : "Add and verify a site to begin"}
+          label="Monitoring status"
+          value={verified ? "Active" : "—"}
+          note={verified ? "Scheduled external checks are running" : "Add and verify a site to begin"}
         />
       </section>
       <section className="briefing card">
         <div className="eyebrow-row">
-          <span>SECURITY BRIEFING</span>
+          <span>POSTURE BRIEFING</span>
           <code>
             {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" })} ·{" "}
             {new Date().toUTCString().slice(17, 22)} UTC
@@ -397,14 +498,14 @@ function Overview({
         </div>
         <h2>
           {openFindings.length === 0
-            ? "Nothing needs attention"
-            : `${openFindings.length} thing${openFindings.length === 1 ? "" : "s"} need attention`}
+            ? "No open findings need review"
+            : `${openFindings.length} finding${openFindings.length === 1 ? "" : "s"} need attention`}
         </h2>
         {openFindings.length === 0 ? (
           <p className="briefing-empty">
             {sites.length === 0
               ? "Add your first site to start watching it around the clock."
-              : "Every monitored site is clean right now. Bulwark keeps checking."}
+              : "No open findings are recorded right now. Bulwark keeps checking the public surface."}
           </p>
         ) : (
           <div className="attention-grid">
@@ -418,7 +519,7 @@ function Overview({
                   <strong>{f.title}</strong>
                   <code>{sites.find((s) => s.id === f.site_id)?.domain ?? ""}</code>
                 </div>
-                <Button onClick={() => go("Threats")}>Fix →</Button>
+                <Button onClick={() => go("Threats")}>Review →</Button>
               </div>
             ))}
           </div>
@@ -427,7 +528,7 @@ function Overview({
       <section className="overview-grid">
         <div className="card chart-card">
           <div className="card-heading">
-            <h3>Threat activity</h3>
+            <h3>Finding activity</h3>
             <span>30 days</span>
           </div>
           <div className="chart-count">
@@ -461,7 +562,7 @@ function Overview({
         </div>
         <div className="card feed">
           <div className="card-heading">
-            <h3>Live threat feed</h3>
+            <h3>Latest observations</h3>
             <span>
               <Dot /> Live
             </span>
@@ -480,12 +581,12 @@ function Overview({
               </div>
             </div>
           ))}
-          {findings.length === 0 && <p className="feed-empty">No threats detected yet.</p>}
+          {findings.length === 0 && <p className="feed-empty">No findings recorded yet.</p>}
         </div>
       </section>
       <section className="card sites-health">
         <div className="card-heading">
-          <h3>Sites health</h3>
+          <h3>Public site posture</h3>
           <button onClick={() => go("Sites")}>View all sites →</button>
         </div>
         <div className="table">
@@ -493,8 +594,7 @@ function Overview({
             <span>Domain</span>
             <span>Health</span>
             <span>Last scan</span>
-            <span>Open threats</span>
-            <span>Autonomy</span>
+            <span>Open findings</span>
           </div>
           {sites.map((s) => {
             const health = siteHealth(s, findings);
@@ -507,7 +607,6 @@ function Overview({
                 </span>
                 <code>{relTime(s.last_scan_at)}</code>
                 <span>{findings.filter((f) => f.site_id === s.id && f.status === "open").length}</span>
-                <span>{s.autonomy === "auto_fix" ? "Auto-fix" : "Suggest only"}</span>
               </div>
             );
           })}
@@ -534,12 +633,21 @@ function Sites({
   onVerify: (site: SiteRow) => void;
   sites: SiteRow[];
   findings: FindingRow[];
-  onScan: (id: string) => void;
+  onScan: (id: string) => Promise<void>;
   onChanged: () => void;
 }) {
   const [search, setSearch] = useState("");
+  const [healthFilter, setHealthFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [busy, setBusy] = useState<string | null>(null);
-  const filtered = sites.filter((s) => s.domain.includes(search.toLowerCase()));
+  const filtered = sites.filter((s) => {
+    const health = siteHealth(s, findings);
+    if (!s.domain.includes(search.toLowerCase())) return false;
+    if (statusFilter !== "all" && s.status !== statusFilter) return false;
+    if (healthFilter === "attention" && !["critical", "high"].includes(health.tone)) return false;
+    if (healthFilter === "no_open_findings" && health.label !== "No open findings") return false;
+    return true;
+  });
 
   const act = async (id: string, fn: () => Promise<unknown>) => {
     setBusy(id);
@@ -564,7 +672,7 @@ function Sites({
     <>
       <PageTitle
         title="Sites"
-        subtitle="Your projects, protected around the clock."
+        subtitle="External posture checks for the public sites you own."
         action={
           <Button dark onClick={openModal}>
             + Add site
@@ -577,11 +685,20 @@ function Sites({
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search domains..."
         />
-        <Button>Health: all⌄</Button>
-        <Button>Autonomy: all⌄</Button>
+        <select value={healthFilter} onChange={(e) => setHealthFilter(e.target.value)} aria-label="Finding state">
+          <option value="all">Findings: all</option>
+          <option value="attention">Needs attention</option>
+          <option value="no_open_findings">No open findings</option>
+        </select>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Monitoring status">
+          <option value="all">Monitoring: all</option>
+          <option value="verified">Active</option>
+          <option value="pending">Awaiting verification</option>
+          <option value="paused">Paused</option>
+        </select>
         <span>
-          {sites.length} site{sites.length === 1 ? "" : "s"} ·{" "}
-          {findings.filter((f) => f.status === "open").length} open threat
+          {filtered.length} of {sites.length} site{sites.length === 1 ? "" : "s"} shown ·{" "}
+          {findings.filter((f) => f.status === "open").length} open finding
           {findings.filter((f) => f.status === "open").length === 1 ? "" : "s"}
         </span>
       </div>
@@ -590,8 +707,7 @@ function Sites({
           <span>Domain</span>
           <span>Health</span>
           <span>Last scan</span>
-          <span>Threats</span>
-          <span>Autonomy</span>
+          <span>Findings</span>
           <span>Actions</span>
         </div>
         {filtered.map((s) => {
@@ -605,11 +721,10 @@ function Sites({
               </span>
               <code>{relTime(s.last_scan_at)}</code>
               <span>{findings.filter((f) => f.site_id === s.id && f.status === "open").length}</span>
-              <span className="tag">{s.autonomy === "auto_fix" ? "Auto-fix" : "Suggest only"}</span>
               <span className="site-actions">
                 {s.status === "verified" && (
-                  <button disabled={busy === s.id} onClick={() => onScan(s.id)}>
-                    {busy === s.id ? "Working…" : "Scan"}
+                  <button disabled={busy === s.id} onClick={() => void act(s.id, () => onScan(s.id))}>
+                    {busy === s.id ? "Scanning…" : "Scan now"}
                   </button>
                 )}
                 {s.status === "verified" && (
@@ -636,7 +751,7 @@ function Sites({
         })}
         {filtered.length === 0 && (
           <div className="site-row empty-row">
-            <span>No sites yet. Add one to start monitoring.</span>
+            <span>{sites.length ? "No sites match these filters." : "No sites yet. Add one to start monitoring."}</span>
           </div>
         )}
         <div className="table-footer">
@@ -683,7 +798,8 @@ function Sites({
         </section>
       )}
       <p className="page-note">
-        Monitoring runs independently of your AI provider. Explanations use your connected key.
+        Bulwark monitors the public website surface. It does not test private routes, authenticated
+        flows, or your full codebase. Explanations use your connected AI key.
       </p>
     </>
   );
@@ -1260,7 +1376,6 @@ function Settings({
   goIntegrations: () => void;
 }) {
   const [interval, setIntervalMinutes] = useState(settings?.scanIntervalMinutes ?? 60);
-  const [autonomy, setAutonomy] = useState<Settings["autonomy"]>(settings?.autonomy ?? "suggest");
   const [applyAll, setApplyAll] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -1269,7 +1384,6 @@ function Settings({
   useEffect(() => {
     if (!settings) return;
     setIntervalMinutes(settings.scanIntervalMinutes);
-    setAutonomy(settings.autonomy);
   }, [settings]);
 
   const save = async () => {
@@ -1277,12 +1391,12 @@ function Settings({
     setError(null);
     setMessage(null);
     try {
-      await onSave({ scanIntervalMinutes: interval, autonomy });
+      await onSave({ scanIntervalMinutes: interval });
       if (applyAll && sites.length) {
         await Promise.all(sites.map((s) => setSiteInterval(s.id, interval)));
         onChanged();
       }
-      setMessage("Saved. New scans pick this up on the next cycle.");
+      setMessage("Saved. Scheduled scans pick this up on the next cycle.");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -1334,17 +1448,13 @@ function Settings({
             </div>
             <div className="setting-row">
               <span>
-                <strong>Autonomy</strong>
-                <small>Bulwark never changes production without this being set to auto-fix.</small>
+                <strong>Monitoring scope</strong>
+                <small>
+                  Bulwark observes public website signals. It does not change your site or test
+                  authenticated paths.
+                </small>
               </span>
-              <select
-                className="inline-select"
-                value={autonomy}
-                onChange={(e) => setAutonomy(e.target.value as Settings["autonomy"])}
-              >
-                <option value="suggest">Suggest only</option>
-                <option value="auto_fix">Auto-fix</option>
-              </select>
+              <code>Observe only</code>
             </div>
             {error && <p className="modal-error">{error}</p>}
             {message && <p className="save-note">{message}</p>}
@@ -1361,7 +1471,7 @@ function Settings({
                 <code>{settings?.slackWebhookUrl ? "Webhook configured" : "Not configured"}</code>
               </span>
               <button onClick={goIntegrations}>Edit →</button>
-              <Toggle checked={Boolean(settings?.slackWebhookUrl && settings?.alertsEnabled)} />
+              <code>Managed in integrations</code>
             </div>
             <div className="setting-row">
               <span>
@@ -1395,8 +1505,8 @@ function Settings({
             <p>Billing and team seats are not part of this build yet.</p>
           </section>
           <section className="card side-setting">
-            <h3>Scan coverage</h3>
-            <label>Every scan checks</label>
+            <h3>Monitoring scope</h3>
+            <label>Checks may include</label>
             <ul className="coverage-list">
               <li>Uptime, HTTP status and TLS expiry</li>
               <li>Security headers, weak CSP, CORS and cookie flags</li>
@@ -1405,7 +1515,11 @@ function Settings({
               <li>Domain expiry, nameservers and mail records</li>
               <li>Defacement, robots.txt, sitemap and security.txt</li>
             </ul>
-            <p>{sites.filter((s) => s.status === "verified").length} site(s) actively scanning.</p>
+            <p>
+              {sites.filter((s) => s.status === "verified").length} site(s) actively scanning.
+              Coverage is limited to public pages and selected assets, not a comprehensive
+              vulnerability assessment.
+            </p>
           </section>
         </div>
       </div>
@@ -1438,17 +1552,37 @@ function Scans({
   const exportCsv = () => {
     downloadCsv(
       `bulwark-scans-${new Date().toISOString().slice(0, 10)}.csv`,
-      ["Started", "Site", "Status", "HTTP", "Response ms", "Checks passed", "Checks total", "Error"],
-      filtered.map((s) => [
-        s.started_at,
-        sites.find((x) => x.id === s.site_id)?.domain ?? "",
-        s.status,
-        s.http_status ?? "",
-        s.response_ms ?? "",
-        s.checks_passed,
-        s.checks_total,
-        s.error ?? "",
-      ]),
+      [
+        "Started",
+        "Site",
+        "Scan state",
+        "HTTP",
+        "Response ms",
+        "Checks total",
+        "Passed",
+        "Findings",
+        "Not checked",
+        "Errors",
+        "Outcome detail",
+        "Scan error",
+      ],
+      filtered.map((s) => {
+        const summary = scanOutcomeSummary(s);
+        return [
+          s.started_at,
+          sites.find((x) => x.id === s.site_id)?.domain ?? "",
+          scanState(s, summary).label,
+          s.http_status ?? "",
+          s.response_ms ?? "",
+          s.checks_total,
+          summary.detailed ? summary.passed : "",
+          summary.detailed ? summary.finding : "",
+          summary.detailed ? summary.not_checked : "",
+          summary.detailed ? summary.error : "",
+          summary.detailed ? `${summary.completed}/${summary.total} checks completed` : "Not recorded for this scan",
+          s.error ?? "",
+        ];
+      }),
     );
   };
 
@@ -1456,7 +1590,7 @@ function Scans({
     <>
       <PageTitle
         title="Scans"
-        subtitle="Every check Bulwark has run, in order."
+        subtitle="What each external posture scan completed, observed, or could not check."
         action={<Button onClick={exportCsv}>Export CSV ↗</Button>}
       />
       <div className="filters">
@@ -1471,6 +1605,7 @@ function Scans({
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Status">
           <option value="all">Status: all</option>
           <option value="completed">Completed</option>
+          <option value="partial">Partial</option>
           <option value="failed">Failed</option>
         </select>
         <span>
@@ -1484,29 +1619,67 @@ function Scans({
         <div className="scan-row table-head">
           <span>Started</span>
           <span>Site</span>
-          <span>Status</span>
-          <span>HTTP</span>
-          <span>Response</span>
-          <span>Checks</span>
+          <span>Scan state</span>
+          <span>Coverage</span>
+          <span>Check outcomes</span>
         </div>
-        {filtered.map((s) => (
-          <div className="scan-row" key={s.id}>
-            <code>{shortDate(s.started_at)}</code>
-            <code>{sites.find((x) => x.id === s.site_id)?.domain ?? "—"}</code>
-            <span>
-              <Dot tone={s.status === "completed" ? "healthy" : s.status === "failed" ? "critical" : "medium"} />
-              {s.status}
-            </span>
-            <code>{s.http_status ?? "—"}</code>
-            <code>{s.response_ms != null ? `${s.response_ms} ms` : "—"}</code>
-            <code>
-              {s.checks_passed}/{s.checks_total}
-            </code>
-          </div>
-        ))}
+        {filtered.map((s) => {
+          const summary = scanOutcomeSummary(s);
+          const state = scanState(s, summary);
+          const incompleteReason = [
+            summary.not_checked ? outcomeText("not_checked", summary.not_checked) : null,
+            summary.error ? outcomeText("error", summary.error) : null,
+          ]
+            .filter(Boolean)
+            .join(" · ");
+
+          return (
+            <div className="scan-row" key={s.id}>
+              <code>{shortDate(s.started_at)}</code>
+              <code>{sites.find((x) => x.id === s.site_id)?.domain ?? "—"}</code>
+              <span className={`scan-state ${state.tone}`}>
+                <Dot tone={state.tone} />
+                {state.label}
+              </span>
+              <span className="scan-coverage">
+                {summary.detailed ? (
+                  <>
+                    <strong>
+                      {summary.completed}/{summary.total} checked
+                    </strong>
+                    {incompleteReason && <small>{incompleteReason}</small>}
+                  </>
+                ) : (
+                  <>
+                    <strong>Outcome detail unavailable</strong>
+                    <small>This older scan did not record check-level results.</small>
+                  </>
+                )}
+              </span>
+              <span
+                className={`scan-outcomes ${summary.detailed ? "" : "unavailable"}`}
+                aria-label={
+                  summary.detailed
+                    ? CHECK_OUTCOME_ORDER.map((outcome) => outcomeText(outcome, summary[outcome])).join(", ")
+                    : "Check-level outcomes were not recorded for this scan"
+                }
+              >
+                {summary.detailed ? (
+                  CHECK_OUTCOME_ORDER.map((outcome) => (
+                    <span className={`check-outcome ${outcome}`} key={outcome}>
+                      <b>{summary[outcome]}</b> {CHECK_OUTCOME_LABEL[outcome]}
+                    </span>
+                  ))
+                ) : (
+                  <span className="check-outcome not_checked">Not recorded</span>
+                )}
+              </span>
+            </div>
+          );
+        })}
         {filtered.length === 0 && (
           <div className="scan-row empty-row">
-            <span>No scans yet. Verified sites are scanned automatically.</span>
+            <span>No scans yet. Verified sites are scheduled for external posture checks.</span>
           </div>
         )}
         <div className="table-footer">
@@ -1564,7 +1737,7 @@ function printReport({
 <html>
 <head>
 <meta charset="utf-8" />
-<title>Bulwark security report</title>
+<title>Bulwark external posture report</title>
 <style>
   * { box-sizing: border-box; }
   body { font-family: Inter, -apple-system, Segoe UI, sans-serif; color: #171717; margin: 40px; font-size: 12px; }
@@ -1586,7 +1759,7 @@ function printReport({
 <body>
   <div class="head">
     <div>
-      <h1>Bulwark security report</h1>
+      <h1>Bulwark external posture report</h1>
       <div class="muted">${escapeHtml(rangeLabel)} · generated ${escapeHtml(new Date().toLocaleString())}</div>
     </div>
     <strong>bulwark</strong>
@@ -1663,7 +1836,7 @@ function Reports({
     <>
       <PageTitle
         title="Reports"
-        subtitle="A clean record you can hand to a client or a reviewer."
+        subtitle="A clear record of external website posture observations."
         action={
           <div className="title-actions">
             <Button onClick={exportCsv}>Export CSV ↗</Button>

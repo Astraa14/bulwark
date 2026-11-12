@@ -40,16 +40,36 @@ export type FindingRow = {
   last_seen_at: string;
 };
 
+export type ScanStatus = "running" | "completed" | "partial" | "failed";
+
+/** A check-level result recorded by the scanner. */
+export type ScanCheckResult = {
+  key: string;
+  label: string;
+  /** `passed`, `finding`, `not_checked`, or `error` for new scans. */
+  status: string;
+  /** A check can explicitly report that it did not finish. */
+  complete?: boolean | null;
+  /** A safe, user-facing reason when the check could not run. */
+  error?: string | null;
+};
+
 export type ScanRow = {
   id: string;
   site_id: string;
   started_at: string;
   finished_at: string | null;
-  status: "running" | "completed" | "failed";
+  status: ScanStatus;
   http_status: number | null;
   response_ms: number | null;
   checks_total: number;
   checks_passed: number;
+  /** Number of checks that ended with an execution error. */
+  checks_errored?: number | null;
+  /** Number of checks intentionally skipped or not run. */
+  checks_skipped?: number | null;
+  /** Per-check outcomes for scans created after outcome tracking was enabled. */
+  check_results?: ScanCheckResult[] | null;
   error: string | null;
 };
 

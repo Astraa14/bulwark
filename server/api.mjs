@@ -160,7 +160,7 @@ app.post(
       return res.status(409).json({ error: "Site is not verified yet" });
     }
 
-    const out = await scanSite(db, site);
+    const out = await scanSite(db, site, { userId: req.user.id, manual: true });
     res.json({ ok: true, ...out });
   }),
 );
