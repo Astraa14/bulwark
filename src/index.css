@@ -3365,3 +3365,22 @@ label { font-size: 13px; }
   background: var(--surface-hover);
   border-color: var(--border-strong);
 }
+
+
+/* Dense datasets scroll inside their own panels on narrow screens. */
+.threat-table { overflow-x: auto; }
+.threat-table .threat-row { min-width: 900px; }
+.scans-table { overflow-x: auto; }
+.scans-table .scan-row { min-width: 760px; }
+@media (max-width: 800px) {
+  .threat-table, .scans-table, .sites-table, .sites-health .table { max-width: 100%; }
+  .overview-grid, .settings-grid, .api-grid, .split-content {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .chart-card { min-width: 0; }
+}
+@media (max-width: 520px) {
+  .threat-table .threat-row { min-width: 850px; }
+  .scans-table .scan-row { min-width: 720px; }
+  .theme-toggle { flex: 0 0 36px; }
+}
