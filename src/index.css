@@ -1376,10 +1376,14 @@ main {
   padding: 0 11px;
   font-size: 12px;
   outline: none;
+  width: 100%;
+  display: block;
 }
 .modal > .button {
   margin-top: 14px;
   height: 38px;
+  width: 100%;
+  display: block;
 }
 .success {
   text-align: center;
@@ -2075,5 +2079,81 @@ span.model-picker {
   .key-row {
     flex-direction: column;
   }
+}
+
+/* -- Tabs: auto-fit instead of fixed 4-col so no tab gets lost -- */
+.tabs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+/* -- Finding facts panel: don't tower over short findings -- */
+.copilot-panel {
+  min-height: 320px;
+}
+
+/* -- Modal forms: full-width stacked inputs/buttons -- */
+.modal form {
+  display: grid;
+  gap: 12px;
+}
+.modal form .field-block {
+  margin: 0;
+}
+.modal form label {
+  display: block;
+  font-size: 11px;
+  color: #737373;
+  margin-bottom: 4px;
+}
+.modal form input,
+.modal form select {
+  height: 36px;
+  border: 1px solid #e2e2e2;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 12px;
+  background: #fff;
+  width: 100%;
+}
+.modal form input:focus,
+.modal form select:focus {
+  outline: none;
+  border-color: #777;
+}
+.modal form .button {
+  width: 100%;
+  height: 36px;
+  margin-top: 8px;
+}
+.modal form .button.dark {
+  background: #171717;
+  color: white;
+  border-color: #171717;
+}
+
+/* -- List bullets re-enabled (Tailwind Preflight strips them) -- */
+.copilot-panel ul,
+.settings-grid ul,
+.api-grid ul,
+.side-setting ul,
+.coverage-list {
+  list-style-type: disc;
+  margin-left: 16px;
+}
+
+/* -- Focus-visible outlines for keyboard navigation -- */
+.button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #737373;
+  outline-offset: 2px;
+}
+.button.dark:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
 }
 
