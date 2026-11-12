@@ -918,7 +918,7 @@ function Threats({
               <Dot tone={f.severity} />
               {f.severity}
             </span>
-            <span className="tag">{f.status}</span>
+            <span className={`tag status-tag status-${f.status}`}>{f.status}</span>
             <code>{relTime(f.last_seen_at)}</code>
             <span>View threat →</span>
           </button>
@@ -1828,7 +1828,7 @@ function Reports({
               <Dot tone={f.severity} />
               {f.severity}
             </span>
-            <span className="tag">{f.status}</span>
+            <span className={`tag status-tag status-${f.status}`}>{f.status}</span>
             <code>{shortDate(f.first_seen_at)}</code>
             <span>{f.explanation ? "Yes" : "—"}</span>
           </div>
