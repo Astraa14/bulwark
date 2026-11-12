@@ -230,10 +230,7 @@ function Sidebar({
       {open && <button className="scrim" onClick={close} aria-label="Close navigation" />}
       <aside className={`sidebar ${open ? "open" : ""}`}>
         <div className="brand">
-          <svg className="brand-shield" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path fillRule="evenodd" d="M12 2.25a.75.75 0 01.513.202l7.5 6.75a.75.75 0 01.237.548v7.5a3.75 3.75 0 01-3.75 3.75H7.5a3.75 3.75 0 01-3.75-3.75v-7.5a.75.75 0 01.237-.548l7.5-6.75A.75.75 0 0112 2.25zm0 1.896L5.25 10.07v7.18a2.25 2.25 0 002.25 2.25H9v-5.25a3 3 0 016 0V19.5h1.5a2.25 2.25 0 002.25-2.25v-7.18L12 4.146zM13.5 19.5v-5.25a1.5 1.5 0 00-3 0V19.5h3z" clipRule="evenodd" />
-          </svg>
-          bulwark
+          <img src="/logo-full.jpg" alt="Bulwark" className="brand-logo" />
         </div>
         <button className="workspace">
           Indie workspace <span>⌄</span>

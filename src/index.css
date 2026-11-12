@@ -47,21 +47,14 @@
   flex-direction: column;
 }
 .brand {
-  font-size: 22px;
-  line-height: 32px;
-  font-weight: 700;
-  letter-spacing: -0.8px;
   padding: 0 12px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: #171717;
 }
-.brand-shield {
-  width: 20px;
-  height: 20px;
-  color: #171717;
-  flex: 0 0 auto;
+.brand-logo {
+  height: 26px;
+  width: auto;
+  object-fit: contain;
 }
 .workspace {
   display: flex;
@@ -1779,20 +1772,17 @@ main {
   box-shadow: 0 4px 24px rgba(0,0,0,0.06);
 }
 .auth-brand {
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: -0.03em;
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+}
+.auth-logo {
+  height: 32px;
+  width: auto;
+  object-fit: contain;
 }
 .auth-brand::before {
-  content: '';
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #171717;
+  display: none;
 }
 .auth-sub {
   margin: 8px 0 24px;
