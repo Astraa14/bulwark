@@ -7,8 +7,39 @@ import { adminClient } from "./lib.mjs";
 import { verifyDomain } from "./verify.mjs";
 import { scanSite } from "./worker.mjs";
 
-const PORT = Number(process.env.API_PORT ?? 8787);
+const PORT = Number(process.env.PORT ?? process.env.API_PORT ?? 8787);
 const app = express();
+
+const allowedOrigins = new Set(
+  [
+    process.env.BULWARK_APP_URL,
+    "http://localhost:8443",
+    "http://127.0.0.1:8443",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+  ].filter(Boolean),
+);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const allowed =
+    origin &&
+    (allowedOrigins.has(origin) ||
+      /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin) ||
+      /^http:\/\/(localhost|127\.0\.0\.1):\d+$/i.test(origin));
+
+  if (allowed) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Headers", "authorization, content-type");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Max-Age", "86400");
+  }
+
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
 app.use(express.json({ limit: "64kb" }));
 
 const db = adminClient();
@@ -82,6 +113,40 @@ app.post(
       .eq("id", site.id);
 
     res.json({ ok: true, method: result.method });
+  }),
+);
+
+app.post(
+  "/api/site/status",
+  requireUser,
+  wrap(async (req, res) => {
+    const site = await ownedSite(req.user.id, req.body?.siteId);
+    if (!site) return res.status(404).json({ error: "Site not found" });
+
+    const action = req.body?.action;
+
+    if (action === "pause") {
+      if (site.status !== "verified") {
+        return res.status(409).json({ error: "Only verified sites can be paused." });
+      }
+      await db.from("sites").update({ status: "paused" }).eq("id", site.id);
+      return res.json({ ok: true, status: "paused" });
+    }
+
+    if (action === "resume") {
+      if (site.status !== "paused") {
+        return res.status(409).json({
+          error: "This site has not been verified yet. Complete ownership verification first.",
+        });
+      }
+      await db
+        .from("sites")
+        .update({ status: "verified", next_scan_at: new Date().toISOString() })
+        .eq("id", site.id);
+      return res.json({ ok: true, status: "verified" });
+    }
+
+    return res.status(400).json({ error: "Unknown action." });
   }),
 );
 
@@ -268,6 +333,6 @@ app.post(
 
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
 
-app.listen(PORT, () => {
-  console.log(`Bulwark API listening on http://127.0.0.1:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Bulwark API listening on http://0.0.0.0:${PORT}`);
 });

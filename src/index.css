@@ -1515,9 +1515,21 @@ main {
   }
   .site-row {
     grid-template-columns: 1.5fr 1fr 0.7fr 0.6fr;
+    row-gap: 6px;
+    padding-top: 10px;
+    padding-bottom: 10px;
   }
-  .site-row > *:nth-child(5),
+  .site-row > *:nth-child(5) {
+    display: none;
+  }
   .site-row > *:nth-child(6) {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+    gap: 14px;
+    padding-top: 6px;
+    border-top: 1px dashed #efefef;
+  }
+  .site-row.table-head > *:nth-child(6) {
     display: none;
   }
   .threat-row {

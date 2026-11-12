@@ -466,12 +466,14 @@ function Overview({
 
 function Sites({
   openModal,
+  onVerify,
   sites,
   findings,
   onScan,
   onChanged,
 }: {
   openModal: () => void;
+  onVerify: (site: SiteRow) => void;
   sites: SiteRow[];
   findings: FindingRow[];
   onScan: (id: string) => void;
@@ -552,13 +554,19 @@ function Sites({
                     {busy === s.id ? "Working…" : "Scan"}
                   </button>
                 )}
-                {s.status === "verified" ? (
-                  <button disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "paused"))}>
+                {s.status === "verified" && (
+                  <button disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "pause"))}>
                     Pause
                   </button>
-                ) : (
-                  <button disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "verified"))}>
+                )}
+                {s.status === "paused" && (
+                  <button disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "resume"))}>
                     Resume
+                  </button>
+                )}
+                {s.status === "pending" && (
+                  <button disabled={busy === s.id} onClick={() => onVerify(s)}>
+                    Verify
                   </button>
                 )}
                 <button className="danger" disabled={busy === s.id} onClick={() => remove(s)}>
@@ -1912,15 +1920,17 @@ function Modal({
   close,
   onChanged,
   onAddKey,
+  initialSite,
 }: {
   type: "site" | "key";
   close: () => void;
   onChanged: () => void;
   onAddKey?: (input: { provider: string; key: string; label?: string; model?: string }) => Promise<unknown>;
+  initialSite?: SiteRow | null;
 }) {
-  const [step, setStep] = useState<"form" | "verify" | "done">("form");
+  const [step, setStep] = useState<"form" | "verify" | "done">(initialSite ? "verify" : "form");
   const [domain, setDomain] = useState("");
-  const [site, setSite] = useState<SiteRow | null>(null);
+  const [site, setSite] = useState<SiteRow | null>(initialSite ?? null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [method, setMethod] = useState<string | null>(null);
@@ -2163,6 +2173,7 @@ function AppShell() {
   const [activeFindingId, setActiveFindingId] = useState<string | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
   const [modal, setModal] = useState<"site" | "key" | null>(null);
+  const [siteToVerify, setSiteToVerify] = useState<SiteRow | null>(null);
 
   useEffect(() => {
     const timer = setInterval(() => void refresh(), 30_000);
@@ -2189,6 +2200,16 @@ function AppShell() {
     setActiveFindingId(null);
   };
 
+  const openSiteModal = (site?: SiteRow) => {
+    setSiteToVerify(site ?? null);
+    setModal("site");
+  };
+
+  const closeModal = () => {
+    setModal(null);
+    setSiteToVerify(null);
+  };
+
   const content = activeFinding ? (
     <ThreatDetail
       finding={activeFinding}
@@ -2200,14 +2221,15 @@ function AppShell() {
   ) : page === "Overview" ? (
     <Overview
       go={(p) => go(p)}
-      openModal={() => setModal("site")}
+      openModal={() => openSiteModal()}
       sites={sites}
       findings={findings}
       scanCount={scanCount}
     />
   ) : page === "Sites" ? (
     <Sites
-      openModal={() => setModal("site")}
+      openModal={() => openSiteModal()}
+      onVerify={openSiteModal}
       sites={sites}
       findings={findings}
       onScan={onScan}
@@ -2287,12 +2309,13 @@ function AppShell() {
       {modal && (
         <Modal
           type={modal}
-          close={() => setModal(null)}
+          close={closeModal}
           onChanged={() => {
             void refresh();
             void keysState.reload();
           }}
           onAddKey={keysState.add}
+          initialSite={modal === "site" ? siteToVerify : null}
         />
       )}
     </div>

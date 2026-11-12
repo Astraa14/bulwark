@@ -139,12 +139,8 @@ export function acceptBaseline(siteId: string) {
   return apiPost<{ ok: boolean }>("/api/site/baseline", { siteId });
 }
 
-export async function setSiteStatus(siteId: string, status: SiteStatus) {
-  if (!supabase) throw new Error("Supabase is not configured.");
-  const patch: Record<string, unknown> = { status };
-  if (status === "verified") patch.next_scan_at = new Date().toISOString();
-  const { error } = await supabase.from("sites").update(patch).eq("id", siteId);
-  if (error) throw new Error(error.message);
+export function setSiteStatus(siteId: string, action: "pause" | "resume") {
+  return apiPost<{ ok: boolean; status: SiteStatus }>("/api/site/status", { siteId, action });
 }
 
 export async function deleteSite(siteId: string) {
