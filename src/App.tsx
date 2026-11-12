@@ -469,7 +469,9 @@ function Overview({
           ) : null}
         </div>
         {openFindings.length > 0 && (
-          <div className="attention-grid">
+          <>
+            <div className="attention-caption">Highest-priority findings</div>
+            <div className="attention-grid">
             {priorityFindings.slice(0, 3).map((f) => (
               <div className="attention" key={f.id}>
                 <div>
@@ -484,7 +486,8 @@ function Overview({
                 </div>
               </div>
             ))}
-          </div>
+            </div>
+          </>
         )}
       </section>
       <section className="stats" aria-label="Workspace metrics">
