@@ -1704,7 +1704,7 @@ function Reports({
         subtitle="A clean record you can hand to a client or a reviewer."
         action={
           <div className="title-actions">
-            <Button onClick={exportCsv}>Export CSV</Button>
+            <Button onClick={exportCsv} download>Export CSV</Button>
             <Button dark onClick={() => printReport({ sites, findings: inRange, scans, rangeLabel })}>
               Download PDF
             </Button>
