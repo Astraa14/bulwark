@@ -3117,23 +3117,6 @@ main {
 .briefing-kicker, .eyebrow-row { font-size: 12px; }
 .briefing .attention strong { font-size: 14px; }
 .briefing .attention code { font-size: 12px; }
-.attention-more {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 15px;
-  padding-top: 13px;
-  border-top: 1px solid var(--border);
-  color: var(--text-muted);
-  font-size: 13px;
-}
-.attention-more button {
-  color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 600;
-}
-.attention-more button:hover { text-decoration: underline; }
 .overview-grid { gap: 18px; margin-bottom: 24px; }
 .chart-card, .feed { min-height: 240px; height: auto; padding: 20px 22px; }
 .card-heading h3, .feed h3 { font-size: 16px; }
@@ -3686,6 +3669,22 @@ code, pre, kbd, samp {
   overflow-wrap: anywhere;
 }
 @media (max-width: 520px) {
+  .attention + .attention {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    padding-left: 0;
+    padding-top: 12px;
+    margin-top: 12px;
+  }
+}
+
+
+/* Keep the priority preview readable as the main column narrows. */
+@media (max-width: 760px) {
+  .attention-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
   .attention + .attention {
     border-left: 0;
     border-top: 1px solid var(--border);
