@@ -124,12 +124,18 @@ function Header({
   email,
   onSignOut,
   onGoKeys,
+  monitoringState,
+  monitoringLabel,
+  onGoSites,
 }: {
   page: Page;
   onMenu: () => void;
   email?: string | null;
   onSignOut?: () => void;
   onGoKeys?: () => void;
+  monitoringState: "active" | "setup" | "paused";
+  monitoringLabel: string;
+  onGoSites: () => void;
 }) {
   const [userMenu, setUserMenu] = useState(false);
   const label = email ?? "you@bulwark.app";
@@ -152,9 +158,17 @@ function Header({
           </svg>
           AI: BYOK
         </button>
-        <div className="system-pill">
-          <Dot /> Monitoring active
-        </div>
+        <button
+          type="button"
+          className={`system-pill monitoring-status ${monitoringState}`}
+          onClick={onGoSites}
+          title="View site monitoring status"
+          aria-label={`${monitoringLabel}. Open Sites`}
+        >
+          <Dot tone={monitoringState === "active" ? "healthy" : monitoringState === "setup" ? "medium" : "low"} />
+          {monitoringLabel}
+          <span className="status-hint">View sites</span>
+        </button>
         <div className="user-menu">
           <button
             className="avatar"
@@ -340,7 +354,14 @@ function Overview({
   const critical = openFindings.filter((f) => f.severity === "critical").length;
   const high = openFindings.filter((f) => f.severity === "high").length;
   const medium = openFindings.filter((f) => f.severity === "medium").length;
-  const verified = sites.filter((s) => s.status === "verified").length;
+  const activeSites = sites.filter((site) => site.status === "verified").length;
+  const pausedSites = sites.filter((site) => site.status === "paused").length;
+  const pendingSites = sites.filter((site) => site.status === "pending").length;
+  const priorityFindings = [...openFindings].sort(
+    (a, b) =>
+      SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) ||
+      new Date(b.last_seen_at).getTime() - new Date(a.last_seen_at).getTime(),
+  );
 
   const buckets = Array.from({ length: 10 }, () => ({ d: 0, r: 0 }));
   for (const f of findings) {
@@ -362,27 +383,69 @@ function Overview({
 
   // Dynamic y-axis ticks based on peak
   const yTop = Math.max(4, Math.ceil(peak / 2) * 2);
-  const yMid = Math.round(yTop / 2);
-
-  return (
-    <>
-      <PageTitle
-        title="Overview"
-        subtitle="A quieter way to keep your code safe."
-        action={
-          <div className="title-actions">
-            <span className="range-label">Last 30 days</span>
-            <Button dark onClick={openModal}>
-              + Add site
-            </Button>
+  const      <section className={`briefing card ${openFindings.length > 0 ? "has-findings" : "is-clear"}`}>
+        <div className="eyebrow-row">
+          <span className="briefing-kicker">
+            <Dot tone={openFindings.length > 0 ? (critical > 0 ? "critical" : high > 0 ? "high" : "medium") : "healthy"} />
+            {openFindings.length > 0 ? "ACTION REQUIRED" : sites.length === 0 || pendingSites > 0 ? "SETUP REQUIRED" : "SECURITY STATUS"}
+          </span>
+          <code>
+            {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" })} ·{" "}
+            {new Date().toUTCString().slice(17, 22)} UTC
+          </code>
+        </div>
+        <div className="briefing-main">
+          <div className="briefing-copy">
+            <h2>
+              {openFindings.length === 0
+                ? "Nothing needs attention"
+                : `${openFindings.length} thing${openFindings.length === 1 ? "" : "s"} need attention`}
+            </h2>
+            <p className="briefing-summary">
+              {openFindings.length > 0
+                ? `${critical} critical · ${high} high · ${medium} medium findings across your monitored sites. Start with the highest severity.`
+                : sites.length === 0
+                  ? "Connect your first site to begin continuous security checks."
+                  : activeSites === 0 && pausedSites > 0
+                    ? "Your connected sites are paused. Resume monitoring whenever you are ready."
+                    : pendingSites > 0
+                      ? "Verify your pending site to start monitoring it."
+                      : "Your monitored sites are clear at the latest check. Bulwark keeps watching."}
+            </p>
           </div>
-        }
-      />
-      <section className="stats">
+          {openFindings.length > 0 ? (
+            <Button dark onClick={() => go("Threats")}>Review threats</Button>
+          ) : sites.length === 0 ? (
+            <Button dark onClick={openModal}>+ Add site</Button>
+          ) : pendingSites > 0 || activeSites === 0 ? (
+            <Button onClick={() => go("Sites")}>{pendingSites > 0 ? "Verify site" : "Manage sites"}</Button>
+          ) : null}
+        </div>
+        {openFindings.length > 0 && (
+          <div className="attention-grid">
+            {priorityFindings.slice(0, 3).map((f) => (
+              <div className="attention" key={f.id}>
+                <div>
+                  <span className="severity">
+                    <Dot tone={f.severity} />
+                    {f.severity}
+                  </span>
+                  <strong title={f.title}>{f.title}</strong>
+                  <code title={sites.find((s) => s.id === f.site_id)?.domain ?? ""}>
+                    {sites.find((s) => s.id === f.site_id)?.domain ?? ""}
+                  </code>
+                </div>
+                <Button onClick={() => go("Threats")}>Review</Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+      <section className="stats" aria-label="Workspace metrics">
         <Stat
-          label="Sites monitored"
+          label="Connected sites"
           value={String(sites.length)}
-          note={verified === sites.length ? "All sites verified" : `${verified} of ${sites.length} verified`}
+          note={sites.length === 0 ? "No sites connected yet" : `${activeSites} active · ${pausedSites} paused · ${pendingSites} awaiting setup`}
         />
         <Stat
           label="Open threats"
@@ -391,37 +454,11 @@ function Overview({
         />
         <Stat label="Scans completed" value={scanCount.toLocaleString()} note="Across all your sites" />
         <Stat
-          label="Monitoring uptime"
-          value={verified ? "24/7" : "—"}
-          note={verified ? "Worker checks every 60s" : "Add and verify a site to begin"}
+          label="Active monitors"
+          value={String(activeSites)}
+          note={activeSites > 0 ? "Verified sites currently scanning" : pausedSites > 0 ? "All verified sites are paused" : "Verify a site to start monitoring"}
         />
-      </section>
-      <section className="briefing card">
-        <div className="eyebrow-row">
-          <span>SECURITY BRIEFING</span>
-          <code>
-            {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" })} ·{" "}
-            {new Date().toUTCString().slice(17, 22)} UTC
-          </code>
-        </div>
-        <h2>
-          {openFindings.length === 0
-            ? "Nothing needs attention"
-            : `${openFindings.length} thing${openFindings.length === 1 ? "" : "s"} need attention`}
-        </h2>
-        {openFindings.length === 0 ? (
-          <p className="briefing-empty">
-            {sites.length === 0
-              ? "Add your first site to start watching it around the clock."
-              : "Every monitored site is clean right now. Bulwark keeps checking."}
-          </p>
-        ) : (
-          <div className="attention-grid">
-            {openFindings.slice(0, 3).map((f) => (
-              <div className="attention" key={f.id}>
-                <div>
-                  <span className="severity">
-                    <Dot tone={f.severity} />
+      </section>          <Dot tone={f.severity} />
                     {f.severity}
                   </span>
                   <strong>{f.title}</strong>
@@ -492,6 +529,7 @@ function Overview({
           {findings.length === 0 && <p className="feed-empty">No threats detected yet.</p>}
         </div>
       </section>
+      {sites.length > 0 && (
       <section className="card sites-health">
         <div className="card-heading">
           <h3>Sites health</h3>
@@ -509,7 +547,7 @@ function Overview({
             const health = siteHealth(s, findings);
             return (
               <div className="tr" key={s.id}>
-                <code>{s.domain}</code>
+                <code className="table-domain" title={s.domain}>{s.domain}</code>
                 <span>
                   <Dot tone={health.tone} />
                   {health.label}
@@ -527,6 +565,7 @@ function Overview({
           )}
         </div>
       </section>
+      )}
     </>
   );
 }
@@ -598,127 +637,124 @@ function Sites({
           </Button>
         }
       />
-      <div className="filters">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search domains..."
-        />
-        <select className="filter-select" value={healthFilter} onChange={(e) => setHealthFilter(e.target.value)} aria-label="Filter sites by health">
-          <option value="all">Health: all</option>
-          <option value="healthy">Healthy</option>
-          <option value="attention">Needs attention</option>
-          <option value="at-risk">At risk</option>
-          <option value="pending">Awaiting verification</option>
-          <option value="paused">Paused</option>
-        </select>
-        <select className="filter-select" value={autonomyFilter} onChange={(e) => setAutonomyFilter(e.target.value)} aria-label="Filter sites by autonomy">
-          <option value="all">Autonomy: all</option>
-          <option value="suggest">Suggest only</option>
-          <option value="auto_fix">Auto-fix</option>
-        </select>
-        <span>
-          {sites.length} site{sites.length === 1 ? "" : "s"} ·{" "}
-          {findings.filter((f) => f.status === "open").length} open threat
-          {findings.filter((f) => f.status === "open").length === 1 ? "" : "s"}
-        </span>
-      </div>
-      <div className="card data-table sites-table">
-        <div className="site-row table-head">
-          <span>Domain</span>
-          <span>Health</span>
-          <span>Last scan</span>
-          <span>Threats</span>
-          <span>Autonomy</span>
-          <span>Actions</span>
-        </div>
-        {filtered.map((s) => {
-          const health = siteHealth(s, findings);
-          return (
-            <div className="site-row" key={s.id}>
-              <code>{s.domain}</code>
-              <span>
-                <Dot tone={health.tone} />
-                {health.label}
-              </span>
-              <code>{relTime(s.last_scan_at)}</code>
-              <span>{findings.filter((f) => f.site_id === s.id && f.status === "open").length}</span>
-              <span className="tag">{s.autonomy === "auto_fix" ? "Auto-fix" : "Suggest only"}</span>
-              <span className="site-actions">
-                {s.status === "verified" && (
-                  <button disabled={busy === s.id} onClick={() => onScan(s.id)}>
-                    {busy === s.id ? "Working…" : "Scan"}
-                  </button>
-                )}
-                {s.status === "verified" && (
-                  <button disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "pause"))}>
-                    Pause
-                  </button>
-                )}
-                {s.status === "paused" && (
-                  <button disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "resume"))}>
-                    Resume
-                  </button>
-                )}
-                {s.status === "pending" && (
-                  <button disabled={busy === s.id} onClick={() => onVerify(s)}>
-                    Verify
-                  </button>
-                )}
-                <button className="danger" disabled={busy === s.id} onClick={() => remove(s)}>
-                  Delete
-                </button>
-              </span>
-            </div>
-          );
-        })}
-        {filtered.length === 0 && (
-          <div className="site-row empty-row">
-            <span>{sites.length === 0 ? "No sites yet. Add one to start monitoring." : "No sites match these filters."}</span>
-          </div>
-        )}
-        <div className="table-footer">
-          <span>
-            {sites.length} of {PLAN_SITE_LIMIT} site slots used
-          </span>
-          <span>{filtered.length} shown</span>
-        </div>
-      </div>
       {sites.length === 0 ? (
-        <div className="card empty-state">
+        <div className="card empty-state sites-empty-state">
           <div className="empty-icon">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
             </svg>
           </div>
-          <h2>No sites monitored yet</h2>
-          <p>
-            Add a domain, prove you own it with a DNS record, and Bulwark starts scanning it within a
-            minute.
-          </p>
-          <Button dark onClick={openModal}>
-            + Add site
-          </Button>
+          <h2>Protect your first site</h2>
+          <p>Add a domain you control, verify ownership with a DNS record or meta tag, and Bulwark will begin monitoring it.</p>
+          <Button dark onClick={openModal}>+ Add your first site</Button>
+          <span className="empty-state-note">Only domains you own or are authorized to manage can be monitored.</span>
         </div>
       ) : (
-        <section className="card activity">
-          <h3>Latest scans</h3>
-          {sites.map((s) => (
-            <div key={s.id}>
-              <code>{relTime(s.last_scan_at)}</code>
-              <span>
-                <strong>{s.domain}</strong>
-                <code>
-                  {s.status === "verified"
-                    ? `${intervalLabel(s.scan_interval_minutes)} · next ${relTime(s.next_scan_at)}`
-                    : s.status === "paused"
-                      ? "paused"
-                      : "awaiting verification"}
-                </code>
-              </span>
+        <>
+          <div className="filters">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search domains..."
+              aria-label="Search domains"
+            />
+            <select className="filter-select" value={healthFilter} onChange={(e) => setHealthFilter(e.target.value)} aria-label="Filter sites by health">
+              <option value="all">Health: all</option>
+              <option value="healthy">Healthy</option>
+              <option value="attention">Needs attention</option>
+              <option value="at-risk">At risk</option>
+              <option value="pending">Awaiting verification</option>
+              <option value="paused">Paused</option>
+            </select>
+            <select className="filter-select" value={autonomyFilter} onChange={(e) => setAutonomyFilter(e.target.value)} aria-label="Filter sites by autonomy">
+              <option value="all">Autonomy: all</option>
+              <option value="suggest">Suggest only</option>
+              <option value="auto_fix">Auto-fix</option>
+            </select>
+            <span>
+              {sites.length} site{sites.length === 1 ? "" : "s"} ·{" "}
+              {findings.filter((f) => f.status === "open").length} open threat
+              {findings.filter((f) => f.status === "open").length === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div className="card data-table sites-table">
+            <div className="site-row table-head">
+              <span>Domain</span>
+              <span>Health</span>
+              <span>Last scan</span>
+              <span>Threats</span>
+              <span>Autonomy</span>
+              <span>Actions</span>
             </div>
-          ))}
-        </section>
+            {filtered.map((s) => {
+              const health = siteHealth(s, findings);
+              return (
+                <div className="site-row" key={s.id}>
+                  <code className="table-domain" title={s.domain}>{s.domain}</code>
+                  <span>
+                    <Dot tone={health.tone} />
+                    {health.label}
+                  </span>
+                  <code>{relTime(s.last_scan_at)}</code>
+                  <span>{findings.filter((f) => f.site_id === s.id && f.status === "open").length}</span>
+                  <span className="tag">{s.autonomy === "auto_fix" ? "Auto-fix" : "Suggest only"}</span>
+                  <span className="site-actions">
+                    {s.status === "verified" && (
+                      <button disabled={busy === s.id} onClick={() => onScan(s.id)}>
+                        {busy === s.id ? "Working…" : "Scan"}
+                      </button>
+                    )}
+                    {s.status === "verified" && (
+                      <button disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "pause"))}>
+                        Pause
+                      </button>
+                    )}
+                    {s.status === "paused" && (
+                      <button disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "resume"))}>
+                        Resume
+                      </button>
+                    )}
+                    {s.status === "pending" && (
+                      <button disabled={busy === s.id} onClick={() => onVerify(s)}>
+                        Verify
+                      </button>
+                    )}
+                    <button className="danger" disabled={busy === s.id} onClick={() => remove(s)}>
+                      Delete
+                    </button>
+                  </span>
+                </div>
+              );
+            })}
+            {filtered.length === 0 && (
+              <div className="site-row empty-row">
+                <span>No sites match these filters. Adjust the search or clear a filter.</span>
+              </div>
+            )}
+            <div className="table-footer">
+              <span>{sites.length} of {PLAN_SITE_LIMIT} site slots used</span>
+              <span>{filtered.length} shown</span>
+            </div>
+          </div>
+          <section className="card activity">
+            <h3>Latest scans</h3>
+            {sites.map((s) => (
+              <div key={s.id}>
+                <code>{relTime(s.last_scan_at)}</code>
+                <span>
+                  <strong title={s.domain}>{s.domain}</strong>
+                  <code>
+                    {s.status === "verified"
+                      ? `${intervalLabel(s.scan_interval_minutes)} · next ${relTime(s.next_scan_at)}`
+                      : s.status === "paused"
+                        ? "paused"
+                        : "awaiting verification"}
+                  </code>
+                </span>
+              </div>
+            ))}
+          </section>
+        </>
       )}
       <p className="page-note">
         Monitoring runs independently of your AI provider. Explanations use your connected key.
@@ -836,8 +872,8 @@ function Threats({
         </div>
         {filtered.map((f) => (
           <button className="threat-row" key={f.id} onClick={() => onOpen(f)}>
-            <strong>{f.title}</strong>
-            <code>{sites.find((s) => s.id === f.site_id)?.domain ?? "—"}</code>
+            <strong className="table-title" title={f.title}>{f.title}</strong>
+            <code className="table-domain" title={sites.find((s) => s.id === f.site_id)?.domain ?? "—"}>{sites.find((s) => s.id === f.site_id)?.domain ?? "—"}</code>
             <span>
               <Dot tone={f.severity} />
               {f.severity}
@@ -2275,6 +2311,14 @@ export default function App() {
 function AppShell() {
   const { user, signOut } = useAuth();
   const { sites, findings, scans, scanCount, refresh } = useWorkspace();
+  const activeSiteCount = sites.filter((site) => site.status === "verified").length;
+  const pausedSiteCount = sites.filter((site) => site.status === "paused").length;
+  const pendingSiteCount = sites.filter((site) => site.status === "pending").length;
+  const monitoringState: "active" | "setup" | "paused" =
+    activeSiteCount > 0 ? "active" : pendingSiteCount > 0 || sites.length === 0 ? "setup" : "paused";
+  const monitoringLabel =
+    monitoringState === "active" ? "Monitoring active" :
+    monitoringState === "paused" ? "Monitoring paused" : "Setup required";
   const settingsState = useSettings();
   const keysState = useApiKeys();
   const [page, setPage] = useState<Page>("Overview");
@@ -2412,6 +2456,9 @@ function AppShell() {
           email={user?.email}
           onSignOut={signOut}
           onGoKeys={() => go("API Keys")}
+          monitoringState={monitoringState}
+          monitoringLabel={monitoringLabel}
+          onGoSites={() => go("Sites")}
         />
         <main className={activeFinding ? "detail-main" : ""}>{content}</main>
       </div>
