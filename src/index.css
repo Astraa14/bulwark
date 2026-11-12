@@ -2927,3 +2927,9 @@ button:focus:not(:focus-visible), a:focus:not(:focus-visible) { outline: none; }
   .sites-empty-state { min-height: 280px; margin-top: 12px; padding: 28px 20px; }
   .monitoring-status { display: none; }
 }
+
+@media (max-width: 800px) {
+  .sites-table .site-row > *:nth-child(3) {
+    display: block;
+  }
+}
