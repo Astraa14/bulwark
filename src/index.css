@@ -2290,38 +2290,8 @@ textarea:focus-visible {
 
 
 
-/* -- Reliable Bulwark wordmark: use the tracked SVG mark instead of the LFS raster logo -- */
-.brand {
-  gap: 8px;
-  min-height: 30px;
-}
-.brand-mark {
-  display: block;
-  width: 24px;
-  height: 24px;
-  flex: 0 0 auto;
-  object-fit: contain;
-}
-.brand-wordmark,
-.auth-wordmark {
-  color: #171717;
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.7px;
-  line-height: 1;
-}
-.auth-brand {
-  gap: 9px;
-  min-height: 34px;
-}
-.auth-mark {
-  display: block;
-  width: 30px;
-  height: 30px;
-  flex: 0 0 auto;
-  object-fit: contain;
-}
-.auth-wordmark {
-  font-size: 22px;
-  letter-spacing: -0.9px;
-}
+
+/* Official supplied Bulwark artwork */
+.brand-logo { display:block; width:28px; height:28px; object-fit:contain; flex:0 0 auto; }
+.auth-brand { min-height:58px; }
+.auth-logo { display:block; width:min(210px, 100%); height:auto; max-height:58px; object-fit:contain; }
