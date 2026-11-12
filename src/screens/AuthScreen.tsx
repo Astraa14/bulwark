@@ -12,6 +12,8 @@ export default function AuthScreen() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const logo = "/logo.png";
+
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (busy) return;
@@ -36,7 +38,13 @@ export default function AuthScreen() {
   return (
     <div className="auth-page">
       <div className="auth-card">
-        <div className="auth-brand">bulwark</div>
+        <div className="auth-brand">
+        <img
+          src={logo}
+          alt="Bulwark"
+          style={{ width: 32, height: 32, marginRight: 8 }}
+        />bulwark
+      </div>
         <p className="auth-sub">Continuous website security for people who ship.</p>
 
         <div className="auth-tabs" role="tablist">
