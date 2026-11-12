@@ -23,6 +23,7 @@
   --surface-danger: #281719;
   --surface-warning: #292112;
   --surface-success: #102218;
+  --border-success: #285b3e;
   --border-danger: #71383b;
   --border-warning: #705621;
     font-family: Inter, ui-sans-serif, system-ui, sans-serif;
@@ -53,6 +54,7 @@
   --surface-danger: #fef2f2;
   --surface-warning: #fff7ed;
   --surface-success: #f0fdf4;
+  --border-success: #bbf7d0;
   --border-danger: #fecaca;
   --border-warning: #fed7aa;
 }
