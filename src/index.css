@@ -2295,3 +2295,360 @@ textarea:focus-visible {
 .brand-logo { display:block; width:28px; height:28px; object-fit:contain; flex:0 0 auto; }
 .auth-brand { min-height:58px; }
 .auth-logo { display:block; width:min(210px, 100%); height:auto; max-height:58px; object-fit:contain; }
+
+
+/* -------------------------------------------------------------------------
+   Workspace width, control consistency, and responsive polish
+   ------------------------------------------------------------------------- */
+
+/* Let page content use the available desktop canvas instead of staying
+   artificially narrow on wide monitors. */
+main {
+  width: 100%;
+  max-width: 1760px;
+  padding: 36px clamp(26px, 3vw, 52px) 48px;
+}
+
+.detail-layout {
+  width: 100%;
+  max-width: 1480px;
+  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.85fr);
+  gap: 28px;
+}
+
+.range-label {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  color: #737373;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.workspace {
+  cursor: default;
+  user-select: none;
+}
+
+.button {
+  min-height: 36px;
+  height: 36px;
+  padding: 0 14px;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  justify-content: center;
+}
+
+.button-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.button:disabled,
+button:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.button:not(:disabled):active {
+  transform: translateY(0.5px);
+}
+
+.button:focus-visible,
+.sidebar nav button:focus-visible,
+.workspace:focus-visible,
+.tabs button:focus-visible,
+.provider-tabs button:focus-visible,
+.settings-tabs button:focus-visible,
+.site-actions button:focus-visible,
+.threat-row:focus-visible,
+.link-button:focus-visible,
+.preferences button:focus-visible,
+.spend button:focus-visible,
+.filters select:focus-visible,
+.inline-select:focus-visible,
+.modal select:focus-visible,
+.code-line button:focus-visible {
+  outline: 2px solid #8a8a8a;
+  outline-offset: 2px;
+}
+
+.button.dark:focus-visible {
+  outline-color: #171717;
+  outline-offset: 3px;
+}
+
+/* Native selects share one clear, aligned chevron instead of browser-specific
+   arrows and the old text glyphs. */
+.filters select,
+.filter-select,
+.inline-select,
+.modal form select,
+.modal select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: #fff;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23737373' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  background-size: 14px 14px;
+  padding-right: 34px;
+  cursor: pointer;
+}
+
+.filters select,
+.filter-select {
+  min-width: 148px;
+  height: 36px;
+  border: 1px solid #dedede;
+  border-radius: 8px;
+  padding-left: 12px;
+  color: #404040;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.filters select:hover,
+.filter-select:hover,
+.inline-select:hover,
+.modal form select:hover {
+  border-color: #c6c6c6;
+}
+
+.filters select:focus,
+.filter-select:focus,
+.inline-select:focus,
+.modal form select:focus {
+  outline: none;
+  border-color: #777;
+  box-shadow: 0 0 0 3px rgba(23, 23, 23, 0.05);
+}
+
+.inline-select {
+  min-width: 180px;
+  height: 36px;
+  border: 1px solid #dedede;
+  border-radius: 8px;
+  padding: 0 34px 0 12px;
+  font-size: 12px;
+  background-position: right 11px center;
+}
+
+.modal form select,
+.modal select {
+  padding-left: 10px;
+  padding-right: 34px;
+}
+
+.filters {
+  gap: 10px;
+  align-items: center;
+}
+
+.filters input {
+  height: 36px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.filters .button {
+  min-width: 0;
+  text-align: center;
+}
+
+/* Tabs use equal, flexible targets and visible hover/selected states. */
+.tabs {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.tabs button,
+.provider-tabs button {
+  min-height: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 8px;
+  text-align: center;
+  padding: 0 14px;
+  color: #525252;
+  background: #fff;
+  font-weight: 500;
+  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.tabs button:hover:not(.selected),
+.provider-tabs button:hover:not(.selected) {
+  background: #f7f7f7;
+  border-color: #cfcfcf;
+  color: #171717;
+}
+
+.tabs button.selected,
+.provider-tabs button.selected {
+  background: #171717;
+  border-color: #171717;
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.tabs small {
+  min-width: 21px;
+  height: 19px;
+  display: inline-grid;
+  place-items: center;
+  margin: 0;
+  padding: 0 5px;
+  border-radius: 99px;
+  background: #f0f0f0;
+  color: #525252;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.tabs button.selected small {
+  background: rgba(255,255,255,0.16);
+  color: #fff;
+}
+
+.settings-tabs {
+  gap: clamp(20px, 3vw, 48px);
+}
+
+.settings-tabs button {
+  min-height: 42px;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+.settings-tabs button:hover:not(.active) {
+  color: #171717;
+}
+
+.settings-tabs button.active {
+  font-weight: 600;
+}
+
+.site-actions {
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.site-actions button {
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 11px;
+}
+
+.site-actions button.danger {
+  color: #b91c1c;
+}
+
+.site-actions button.danger:hover {
+  color: #b91c1c;
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
+.threat-row:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline-offset: -2px;
+}
+
+.site-row code,
+.threat-row code,
+.key-field code {
+  overflow-wrap: anywhere;
+}
+
+.link-button,
+.card-heading button,
+.setting-row button {
+  border-radius: 6px;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.link-button:hover,
+.card-heading button:hover,
+.setting-row button:hover {
+  color: #171717;
+  text-decoration: underline;
+}
+
+.preferences button,
+.spend button,
+.code-line button {
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.preferences button:hover,
+.spend button:hover,
+.code-line button:hover {
+  background: #f7f7f7;
+  border-color: #c8c8c8;
+}
+
+@media (max-width: 1100px) {
+  main {
+    padding: 30px 24px 40px;
+  }
+  .detail-layout {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 800px) {
+  main,
+  .detail-main {
+    padding: 24px 16px 32px;
+  }
+  .filters select,
+  .filter-select {
+    flex: 1 1 145px;
+    min-width: 0;
+  }
+  .tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .tabs button {
+    padding: 0 10px;
+  }
+  .inline-select {
+    min-width: 150px;
+  }
+}
+
+@media (max-width: 520px) {
+  .filters select,
+  .filter-select {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+  .range-label {
+    min-height: 32px;
+    padding-left: 0;
+  }
+  .button {
+    min-height: 36px;
+  }
+  .page-title {
+    flex-wrap: wrap;
+  }
+  .page-title .title-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
