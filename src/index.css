@@ -3700,3 +3700,246 @@ code, pre, kbd, samp {
   font-size: 13px;
   line-height: 1.5;
 }
+
+
+/* Typography finishing pass: readable dates, metadata and secondary labels. */
+:root {
+  --font-ui: "Geist", Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-code: "Geist Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+html, body, button, input, select, textarea {
+  font-family: var(--font-ui);
+}
+code, pre, kbd, samp {
+  font-family: var(--font-code);
+}
+.eyebrow-row,
+.briefing-kicker,
+.eyebrow-row > code {
+  font-size: 12px;
+  line-height: 18px;
+}
+.attention strong {
+  font-size: 14px;
+  line-height: 1.4;
+}
+.attention code {
+  font-size: 12px;
+  line-height: 1.45;
+}
+.severity { font-size: 12px; line-height: 18px; }
+.card-heading h3,
+.feed h3 { font-size: 16px; line-height: 1.35; }
+.card-heading span { font-size: 12px; line-height: 18px; }
+.chart-count span { font-size: 12px; line-height: 18px; }
+.legend { font-size: 12px; line-height: 17px; }
+.chart > span { font-size: 11px; line-height: 15px; }
+.y-axis { font-size: 11px; line-height: 1.2; }
+.feed-row { font-size: 13px; min-height: 58px; }
+.feed-row strong { font-size: 14px; line-height: 1.4; }
+.feed-row code { font-size: 12px; line-height: 1.4; }
+.table .tr { font-size: 13px; min-height: 52px; }
+.table .tr code { font-size: 12px; }
+.site-row { font-size: 13px; min-height: 52px; }
+.site-row code { font-size: 12px; }
+.threat-row { font-size: 13px; min-height: 52px; }
+.threat-row strong { font-size: 14px; }
+.threat-row code { font-size: 12px; }
+.scan-row { font-size: 13px; min-height: 52px; }
+.scan-row code { font-size: 12px; }
+.table-head, .table .th { font-size: 12px; }
+.tag { font-size: 12px; line-height: 18px; }
+.table-footer { font-size: 12px; line-height: 18px; }
+.page-note, .settings-foot { font-size: 12px; line-height: 1.5; }
+.detail-meta, .back, .threat-id { font-size: 12px; line-height: 1.5; }
+.priority p { font-size: 13px; line-height: 1.5; }
+.priority small { font-size: 12px; }
+.meaning small, .detail-buttons > span { font-size: 12px; }
+.copilot-head span,
+.copilot-panel > small,
+.copilot-panel label { font-size: 12px; }
+.copilot-copy p,
+.prompt,
+.chat-box textarea { font-size: 13px; line-height: 1.55; }
+.notice { font-size: 13px; line-height: 1.5; }
+.provider-name p,
+.provider-name > span { font-size: 12px; }
+.provider-foot { font-size: 12px; }
+.preferences > p { font-size: 13px; line-height: 1.5; }
+.preferences strong { font-size: 13px; }
+.preferences small,
+.preferences button,
+.spend button { font-size: 12px; }
+.save-row span { font-size: 12px; }
+.spend > small { font-size: 12px; }
+.spend > span,
+.spend > div:not(.progress) { font-size: 12px; }
+.setting-title p { font-size: 13px; line-height: 1.5; }
+.setting-row strong { font-size: 14px; }
+.setting-row small,
+.setting-row code { font-size: 12px; line-height: 1.45; }
+.side-setting label,
+.side-setting > button { font-size: 12px; }
+.side-setting > div { font-size: 13px; }
+.side-setting p,
+.side-setting code { font-size: 12px; }
+.settings-foot { font-size: 12px; }
+.empty-state p { font-size: 13px; line-height: 1.5; }
+.modal p { font-size: 13px; line-height: 1.5; }
+.modal label { font-size: 12px; }
+.modal input,
+.modal select,
+.modal textarea { font-size: 14px; }
+.auth-card label { font-size: 12px; }
+.auth-foot { font-size: 12px; }
+.user-pop span { font-size: 12px; }
+.modal-note { font-size: 12px; line-height: 1.5; }
+.verify-box small { font-size: 11px; }
+.code-line button { font-size: 12px; }
+.field-block label { font-size: 12px; }
+.field-block input,
+.field-block select,
+.field-block textarea { font-size: 14px; }
+.save-note { font-size: 12px; }
+.muted,
+.coverage-list,
+.fact-list { font-size: 12px; line-height: 1.5; }
+.detail-url { font-size: 12px; }
+.ai-head code { font-size: 12px; }
+.ai-actions span { font-size: 12px; }
+.filters > span { font-size: 12px; }
+.filters input,
+.filters select,
+.filter-select,
+.inline-select { font-size: 14px; }
+.tabs button,
+.provider-tabs button { font-size: 14px; }
+.tabs small { font-size: 12px; }
+.site-actions button { font-size: 12px; }
+.link-button { font-size: 13px; }
+.status-hint { font-size: 12px; }
+.empty-state-note { font-size: 12px; }
+
+.chart-card > .card-heading {
+  gap: 14px;
+  min-width: 0;
+}
+.chart-card > .card-heading h3 {
+  min-width: 0;
+  line-height: 1.35;
+}
+.chart-range {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 520px) {
+  .chart-card > .card-heading {
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .chart-range {
+    min-height: 28px;
+    padding: 4px 9px;
+    font-size: 12px;
+  }
+  .chart > span { font-size: 10px; }
+}
+
+
+/* Remaining microcopy is raised to a comfortable dashboard size. */
+.plan-upgrade,
+.global-search,
+.global-search kbd,
+.model-picker,
+.system-pill,
+.avatar { font-size: 12px; }
+.stat span { font-size: 13px; }
+.stat small { font-size: 12px; line-height: 1.35; }
+.attention-caption {
+  margin: 18px 0 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .055em;
+  line-height: 18px;
+  text-transform: uppercase;
+}
+.card-heading button { font-size: 12px; }
+.detail-head p,
+.site-detail > p,
+.detail-head > span,
+.site-detail dl,
+.activity > div,
+.activity strong { font-size: 12px; line-height: 1.5; }
+.activity code { font-size: 12px; }
+.code-card pre,
+.code-card > code { font-size: 12px; line-height: 1.55; }
+.spending-label,
+.detail-meta,
+.priority p,
+.copilot-panel > small,
+.copilot-panel label,
+.provider-name p,
+.provider-name > span,
+.preferences > p,
+.preferences strong,
+.preferences small,
+.save-row span,
+.spend > small,
+.spend > span,
+.spend > div:not(.progress),
+.setting-title p,
+.setting-row strong,
+.setting-row small,
+.setting-row code,
+.side-setting label,
+.side-setting > button,
+.side-setting > div,
+.side-setting p,
+.side-setting code,
+.settings-foot,
+.modal p,
+.modal label,
+.auth-card label,
+.auth-foot,
+.modal-note,
+.verify-box small,
+.code-line button,
+.key-empty p,
+.field-block label,
+.save-note,
+.muted,
+.coverage-list,
+.fact-list,
+.slack-preview { font-size: 12px; }
+.status-hint,
+.empty-state-note { font-size: 12px; }
+
+
+@media (max-width: 520px) {
+  .chart > span { font-size: 11px; }
+}
+
+
+/* Dates are interface copy, not code: use Geist Sans to avoid a cramped mono look. */
+.eyebrow-row > code,
+.chart > span {
+  font-family: var(--font-ui);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.y-axis { font-family: var(--font-code); }

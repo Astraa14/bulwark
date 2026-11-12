@@ -429,11 +429,6 @@ function Overview({
       <PageTitle
         title="Overview"
         subtitle="A quieter way to keep your code safe."
-        action={
-          <div className="title-actions">
-            <span className="range-label" aria-label="Threat activity range">Activity: last 30 days</span>
-          </div>
-        }
       />
       <section className={`briefing card ${briefingState}`}>
         <div className="eyebrow-row">
@@ -474,7 +469,9 @@ function Overview({
           ) : null}
         </div>
         {openFindings.length > 0 && (
-          <div className="attention-grid">
+          <>
+            <div className="attention-caption">Highest-priority findings</div>
+            <div className="attention-grid">
             {priorityFindings.slice(0, 3).map((f) => (
               <div className="attention" key={f.id}>
                 <div>
@@ -489,7 +486,8 @@ function Overview({
                 </div>
               </div>
             ))}
-          </div>
+            </div>
+          </>
         )}
       </section>
       <section className="stats" aria-label="Workspace metrics">
@@ -514,7 +512,7 @@ function Overview({
         <div className="card chart-card">
           <div className="card-heading">
             <h3>Threat activity</h3>
-            <span>30 days</span>
+            <span className="chart-range" aria-label="Threat activity for the last 30 days">Last 30 days</span>
           </div>
           <div className="chart-count">
             <strong>{findings.length}</strong>
