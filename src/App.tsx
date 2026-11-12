@@ -487,13 +487,8 @@ function Overview({
                     {sites.find((s) => s.id === f.site_id)?.domain ?? ""}
                   </code>
                 </div>
-                <Button onClick={() => go("Threats")}>Review</Button>
               </div>
             ))}
-            <div className="attention-more">
-              <span>Showing 3 of {openFindings.length} open findings</span>
-              <button onClick={() => go("Threats")}>View all threats →</button>
-            </div>
           </div>
         )}
       </section>
@@ -1243,9 +1238,7 @@ function ApiKeys({
                 <p>
                   No AI key yet. Add an OpenAI or Anthropic key to unlock plain-English explanations.
                 </p>
-                <Button dark onClick={openModal}>
-                  + Add API key
-                </Button>
+                <span className="key-empty-hint">Add a key using the button above to unlock explanations.</span>
               </div>
             ) : (
               keys.map((k) => (
@@ -1418,7 +1411,7 @@ function Settings({
         title="Settings"
         subtitle="Set boundaries. Let Bulwark handle the watching."
         action={
-          <Button dark onClick={save}>
+          <Button dark onClick={save} disabled={busy}>
             {busy ? "Saving…" : "Save changes"}
           </Button>
         }
@@ -1790,7 +1783,7 @@ function Reports({
           <div className="title-actions">
             <Button onClick={exportCsv} download>Export CSV</Button>
             <Button dark onClick={() => printReport({ sites, findings: inRange, scans, rangeLabel })}>
-              Download PDF
+              Print / Save PDF
             </Button>
           </div>
         }
@@ -1900,14 +1893,9 @@ function Integrations({
     setError(null);
     setMessage(null);
     try {
-      await onSave({
-        slackWebhookUrl: webhook,
-        slackMinSeverity: severity,
-        alertsEnabled: enabled && Boolean(webhook.trim()),
-      });
       if (!webhook.trim()) throw new Error("Add a Slack webhook URL before sending a test message.");
       await apiPost("/api/alerts/test", { webhookUrl: webhook });
-      setMessage("Test message sent. Check your Slack channel.");
+      setMessage("Test message sent. Save changes separately to keep this configuration.");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -1923,7 +1911,7 @@ function Integrations({
         title="Integrations"
         subtitle="Send the signal where you already work."
         action={
-          <Button dark onClick={() => save("save")}>
+          <Button dark onClick={() => save("save")} disabled={busy !== null}>
             {busy === "save" ? "Saving…" : "Save changes"}
           </Button>
         }
@@ -1992,7 +1980,6 @@ function Integrations({
             </div>
             <div className="modal-actions">
               <Button onClick={test} disabled={!configured || busy !== null}>{busy === "test" ? "Sending…" : "Send test message"}</Button>
-              <Button onClick={() => save("save")}>{busy === "save" ? "Saving…" : "Save"}</Button>
             </div>
             {error && <p className="modal-error" role="alert">{error}</p>}
             {message && <p className="save-note" role="status" aria-live="polite">{message}</p>}
