@@ -98,14 +98,21 @@ function Button({
   dark = false,
   onClick,
   className = "",
+  download = false,
 }: {
   children: React.ReactNode;
   dark?: boolean;
   onClick?: () => void;
   className?: string;
+  download?: boolean;
 }) {
   return (
     <button className={`button ${dark ? "dark" : ""} ${className}`} onClick={onClick}>
+      {download && (
+        <svg className="button-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M10 2.75v9.5m0 0 3.5-3.5M10 12.25l-3.5-3.5M4 14.75v2.5h12v-2.5" />
+        </svg>
+      )}
       {children}
     </button>
   );
@@ -234,9 +241,9 @@ function Sidebar({
           <span className="sr-only">Bulwark</span>
           
         </div>
-        <button className="workspace">
-          Indie workspace <span>⌄</span>
-        </button>
+        <div className="workspace" aria-label="Current workspace">
+          Indie workspace
+        </div>
         <nav>
           {nav.map((item) => (
             <button
@@ -364,7 +371,7 @@ function Overview({
         subtitle="A quieter way to keep your code safe."
         action={
           <div className="title-actions">
-            <Button>Last 30 days⌄</Button>
+            <span className="range-label">Last 30 days</span>
             <Button dark onClick={openModal}>
               + Add site
             </Button>
@@ -540,8 +547,26 @@ function Sites({
   onChanged: () => void;
 }) {
   const [search, setSearch] = useState("");
+  const [healthFilter, setHealthFilter] = useState("all");
+  const [autonomyFilter, setAutonomyFilter] = useState("all");
   const [busy, setBusy] = useState<string | null>(null);
-  const filtered = sites.filter((s) => s.domain.includes(search.toLowerCase()));
+  const filtered = sites.filter((site) => {
+    const matchesSearch = site.domain.includes(search.trim().toLowerCase());
+    const openFindings = findings.filter((finding) => finding.site_id === site.id && finding.status === "open");
+    const healthKey =
+      site.status === "pending"
+        ? "pending"
+        : site.status === "paused"
+          ? "paused"
+          : openFindings.some((finding) => finding.severity === "critical" || finding.severity === "high")
+            ? "at-risk"
+            : openFindings.length > 0
+              ? "attention"
+              : "healthy";
+    const matchesHealth = healthFilter === "all" || healthKey === healthFilter;
+    const matchesAutonomy = autonomyFilter === "all" || site.autonomy === autonomyFilter;
+    return matchesSearch && matchesHealth && matchesAutonomy;
+  });
 
   const act = async (id: string, fn: () => Promise<unknown>) => {
     setBusy(id);
@@ -579,8 +604,19 @@ function Sites({
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search domains..."
         />
-        <Button>Health: all⌄</Button>
-        <Button>Autonomy: all⌄</Button>
+        <select className="filter-select" value={healthFilter} onChange={(e) => setHealthFilter(e.target.value)} aria-label="Filter sites by health">
+          <option value="all">Health: all</option>
+          <option value="healthy">Healthy</option>
+          <option value="attention">Needs attention</option>
+          <option value="at-risk">At risk</option>
+          <option value="pending">Awaiting verification</option>
+          <option value="paused">Paused</option>
+        </select>
+        <select className="filter-select" value={autonomyFilter} onChange={(e) => setAutonomyFilter(e.target.value)} aria-label="Filter sites by autonomy">
+          <option value="all">Autonomy: all</option>
+          <option value="suggest">Suggest only</option>
+          <option value="auto_fix">Auto-fix</option>
+        </select>
         <span>
           {sites.length} site{sites.length === 1 ? "" : "s"} ·{" "}
           {findings.filter((f) => f.status === "open").length} open threat
@@ -638,7 +674,7 @@ function Sites({
         })}
         {filtered.length === 0 && (
           <div className="site-row empty-row">
-            <span>No sites yet. Add one to start monitoring.</span>
+            <span>{sites.length === 0 ? "No sites yet. Add one to start monitoring." : "No sites match these filters."}</span>
           </div>
         )}
         <div className="table-footer">
@@ -752,7 +788,7 @@ function Threats({
       <PageTitle
         title="Threats"
         subtitle="Know what matters. Understand what to do next."
-        action={<Button onClick={exportCsv}>Export CSV ↗</Button>}
+        action={<Button onClick={exportCsv} download>Export CSV</Button>}
       />
       <div className="tabs">
         {(["All threats", "Open", "Acknowledged", "Resolved", "Ignored"] as const).map((label) => (
@@ -1459,7 +1495,7 @@ function Scans({
       <PageTitle
         title="Scans"
         subtitle="Every check Bulwark has run, in order."
-        action={<Button onClick={exportCsv}>Export CSV ↗</Button>}
+        action={<Button onClick={exportCsv} download>Export CSV</Button>}
       />
       <div className="filters">
         <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} aria-label="Site">
@@ -1668,7 +1704,7 @@ function Reports({
         subtitle="A clean record you can hand to a client or a reviewer."
         action={
           <div className="title-actions">
-            <Button onClick={exportCsv}>Export CSV ↗</Button>
+            <Button onClick={exportCsv}>Export CSV</Button>
             <Button dark onClick={() => printReport({ sites, findings: inRange, scans, rangeLabel })}>
               Download PDF
             </Button>
