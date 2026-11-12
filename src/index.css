@@ -3858,3 +3858,73 @@ code, pre, kbd, samp {
   }
   .chart > span { font-size: 10px; }
 }
+
+
+/* Remaining microcopy is raised to a comfortable dashboard size. */
+.plan-upgrade,
+.global-search,
+.global-search kbd,
+.model-picker,
+.system-pill,
+.avatar { font-size: 12px; }
+.stat span { font-size: 13px; }
+.stat small { font-size: 12px; line-height: 1.35; }
+.attention-caption {
+  margin: 18px 0 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .055em;
+  line-height: 18px;
+  text-transform: uppercase;
+}
+.card-heading button { font-size: 12px; }
+.detail-head p,
+.site-detail > p,
+.detail-head > span,
+.site-detail dl,
+.activity > div,
+.activity strong { font-size: 12px; line-height: 1.5; }
+.activity code { font-size: 12px; }
+.code-card pre,
+.code-card > code { font-size: 12px; line-height: 1.55; }
+.spending-label,
+.detail-meta,
+.priority p,
+.copilot-panel > small,
+.copilot-panel label,
+.provider-name p,
+.provider-name > span,
+.preferences > p,
+.preferences strong,
+.preferences small,
+.save-row span,
+.spend > small,
+.spend > span,
+.spend > div:not(.progress),
+.setting-title p,
+.setting-row strong,
+.setting-row small,
+.setting-row code,
+.side-setting label,
+.side-setting > button,
+.side-setting > div,
+.side-setting p,
+.side-setting code,
+.settings-foot,
+.modal p,
+.modal label,
+.auth-card label,
+.auth-foot,
+.modal-note,
+.verify-box small,
+.code-line button,
+.key-empty p,
+.field-block label,
+.save-note,
+.muted,
+.coverage-list,
+.fact-list,
+.slack-preview { font-size: 12px; }
+.status-hint,
+.empty-state-note { font-size: 12px; }
