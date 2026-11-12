@@ -1238,9 +1238,7 @@ function ApiKeys({
                 <p>
                   No AI key yet. Add an OpenAI or Anthropic key to unlock plain-English explanations.
                 </p>
-                <Button dark onClick={openModal}>
-                  + Add API key
-                </Button>
+                <span className="key-empty-hint">Add a key using the button above to unlock explanations.</span>
               </div>
             ) : (
               keys.map((k) => (
@@ -1413,7 +1411,7 @@ function Settings({
         title="Settings"
         subtitle="Set boundaries. Let Bulwark handle the watching."
         action={
-          <Button dark onClick={save}>
+          <Button dark onClick={save} disabled={busy}>
             {busy ? "Saving…" : "Save changes"}
           </Button>
         }
@@ -1785,7 +1783,7 @@ function Reports({
           <div className="title-actions">
             <Button onClick={exportCsv} download>Export CSV</Button>
             <Button dark onClick={() => printReport({ sites, findings: inRange, scans, rangeLabel })}>
-              Download PDF
+              Print / Save PDF
             </Button>
           </div>
         }
@@ -1918,7 +1916,7 @@ function Integrations({
         title="Integrations"
         subtitle="Send the signal where you already work."
         action={
-          <Button dark onClick={() => save("save")}>
+          <Button dark onClick={() => save("save")} disabled={busy !== null}>
             {busy === "save" ? "Saving…" : "Save changes"}
           </Button>
         }
@@ -1987,7 +1985,6 @@ function Integrations({
             </div>
             <div className="modal-actions">
               <Button onClick={test} disabled={!configured || busy !== null}>{busy === "test" ? "Sending…" : "Send test message"}</Button>
-              <Button onClick={() => save("save")}>{busy === "save" ? "Saving…" : "Save"}</Button>
             </div>
             {error && <p className="modal-error" role="alert">{error}</p>}
             {message && <p className="save-note" role="status" aria-live="polite">{message}</p>}
