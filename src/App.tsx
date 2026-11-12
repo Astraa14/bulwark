@@ -473,17 +473,6 @@ function Overview({
           value={String(activeSites)}
           note={activeSites > 0 ? "Verified sites currently scanning" : pausedSites > 0 ? "All verified sites are paused" : "Verify a site to start monitoring"}
         />
-      </section>          <Dot tone={f.severity} />
-                    {f.severity}
-                  </span>
-                  <strong>{f.title}</strong>
-                  <code>{sites.find((s) => s.id === f.site_id)?.domain ?? ""}</code>
-                </div>
-                <Button onClick={() => go("Threats")}>Fix →</Button>
-              </div>
-            ))}
-          </div>
-        )}
       </section>
       <section className="overview-grid">
         <div className="card chart-card">
