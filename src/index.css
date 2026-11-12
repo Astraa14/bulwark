@@ -3384,3 +3384,279 @@ label { font-size: 13px; }
   .scans-table .scan-row { min-width: 720px; }
   .theme-toggle { flex: 0 0 36px; }
 }
+
+
+/* Theme regression fixes: keep every shared control on the active surface palette. */
+:root:not([data-theme="light"]) .brand-logo,
+:root:not([data-theme="light"]) .auth-logo {
+  filter: brightness(0) invert(1);
+}
+:root[data-theme="light"] .brand-logo,
+:root[data-theme="light"] .auth-logo {
+  filter: none;
+}
+
+/* Secondary buttons must not remain white in the dark theme. */
+.button:not(.dark) {
+  background: var(--surface);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+.button:not(.dark):hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.button:not(.dark):active:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+/* Header, search, filter, and form controls. */
+.global-search,
+.model-picker,
+.avatar,
+.filters input,
+.filters select,
+.filter-select,
+.inline-select,
+.modal input,
+.modal select,
+.modal textarea,
+.modal form input,
+.modal form select,
+.field-block input,
+.field-block select,
+.field-block textarea,
+.auth-card input {
+  background: var(--surface);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+.global-search {
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+}
+.global-search::placeholder,
+.filters input::placeholder,
+.field-block input::placeholder,
+.modal input::placeholder,
+.auth-card input::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+.model-picker:hover,
+.avatar:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.mobile-menu span { background: var(--text-primary); }
+
+/* Cards and controls used by Copilot, API Keys, settings, and detail views. */
+.copilot-copy,
+.prompt,
+.chat-box,
+.key-field,
+.key-field .button,
+.code-line button,
+.preferences button,
+.spend button,
+.side-setting > button,
+.site-detail dd button,
+.site-actions button {
+  background: var(--surface);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+.prompt:hover,
+.code-line button:hover,
+.preferences button:hover,
+.spend button:hover,
+.side-setting > button:hover,
+.site-detail dd button:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.site-actions button {
+  color: var(--text-secondary);
+}
+.site-actions button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.site-actions button.danger,
+.site-actions button.danger:hover {
+  color: var(--status-critical);
+}
+.site-actions button.danger:hover {
+  background: var(--surface-danger);
+  border-color: var(--border-danger);
+}
+
+/* Neutral tags, tab controls, and settings navigation. */
+.tag {
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+.tabs button,
+.provider-tabs button {
+  background: var(--surface);
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+.tabs button:hover:not(.selected),
+.provider-tabs button:hover:not(.selected) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.settings-tabs button { color: var(--text-secondary); }
+.settings-tabs button.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--text-primary);
+}
+
+/* Small theme-sensitive details that previously retained light-only values. */
+.progress i { background: var(--text-primary); }
+.empty-icon,
+.sites-empty-state .empty-icon {
+  background: var(--surface-hover);
+  border-color: var(--border);
+}
+.modal-head > button,
+.modal-close {
+  color: var(--text-muted);
+}
+.modal-head > button:hover,
+.modal-close:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+.table .empty-row,
+.tr.empty-row,
+.site-row.empty-row,
+.threat-row.empty-row {
+  color: var(--text-muted);
+}
+.filters > span,
+.threat-id,
+.detail-meta,
+.provider-foot,
+.ai-head code,
+.ai-actions span,
+.field-block label,
+.side-setting label,
+.key-empty p {
+  color: var(--text-muted);
+}
+.auth-card { border-color: var(--border); }
+
+
+/* Consistent dividers and muted copy across every dashboard panel. */
+.sidebar,
+.topbar,
+.feed-row,
+.table .tr,
+.site-row,
+.table-footer,
+.copilot-head,
+.setting-row,
+.scan-row,
+.key-row,
+.attention + .attention,
+.user-pop,
+.auth-card,
+.copilot-copy,
+.prompt,
+.chat-box,
+.key-field,
+.site-detail dd button,
+.side-setting > button,
+.tabs button,
+.provider-tabs button {
+  border-color: var(--border);
+}
+.briefing { border-color: var(--border); }
+.briefing .attention-grid { border-top-color: var(--border); }
+.attention + .attention { border-left-color: var(--border); }
+.workspace,
+.sidebar nav button,
+.plan-upgrade,
+.page-title p,
+.attention code,
+.chart-count span,
+.legend,
+.chart > span,
+.y-axis,
+.feed-row code,
+.filters > span,
+.provider-foot,
+.spend > small,
+.spend > span,
+.settings-tabs button,
+.side-setting label,
+.side-setting code,
+.table .th,
+.site-row.table-head,
+.scan-row.table-head,
+.threat-row.table-head,
+.user-pop span,
+.empty-state-note,
+.status-hint {
+  color: var(--text-muted);
+}
+.briefing-summary { color: var(--text-secondary); }
+.settings-tabs button.active { color: var(--text-primary); }
+.sidebar nav button.active,
+.sidebar nav button:hover:not(.active) {
+  color: var(--text-primary);
+}
+.sidebar nav small {
+  color: var(--text-secondary);
+  background: var(--surface);
+  border-color: var(--border);
+}
+.empty-state-note { color: var(--text-muted); }
+.modal-head > button,
+.modal-close { color: var(--text-muted); }
+.modal-head > button:hover,
+.modal-close:hover { color: var(--text-primary); }
+.sidebar { border-right-color: var(--border); }
+.topbar { border-bottom-color: var(--border); }
+.table-footer { border-top-color: var(--border); }
+.scan-row, .site-row, .feed-row, .table .tr, .setting-row, .key-row {
+  border-top-color: var(--border);
+}
+.copilot-head { border-bottom-color: var(--border); }
+.settings-tabs button.active { border-bottom-color: var(--text-primary); }
+.filters select:hover,
+.filter-select:hover,
+.inline-select:hover,
+.modal form select:hover,
+.site-actions button:hover:not(:disabled),
+.preferences button:hover,
+.spend button:hover,
+.code-line button:hover {
+  border-color: var(--border-strong);
+}
+.button:focus-visible,
+.sidebar nav button:focus-visible,
+.workspace:focus-visible,
+.tabs button:focus-visible,
+.provider-tabs button:focus-visible,
+.settings-tabs button:focus-visible,
+.site-actions button:focus-visible,
+.threat-row:focus-visible,
+.link-button:focus-visible,
+.preferences button:focus-visible,
+.spend button:focus-visible,
+.filters select:focus-visible,
+.inline-select:focus-visible,
+.modal select:focus-visible,
+.code-line button:focus-visible {
+  outline-color: var(--text-muted);
+}
+.button.dark:focus-visible { outline-color: var(--text-inverse); }
