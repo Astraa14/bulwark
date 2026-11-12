@@ -1834,7 +1834,7 @@ function Integrations({
 }) {
   const [webhook, setWebhook] = useState(settings?.slackWebhookUrl ?? "");
   const [severity, setSeverity] = useState<Severity>(settings?.slackMinSeverity ?? "high");
-  const [enabled, setEnabled] = useState(settings?.alertsEnabled ?? false);
+  const [enabled, setEnabled] = useState(Boolean(settings?.slackWebhookUrl && settings?.alertsEnabled));
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1843,7 +1843,7 @@ function Integrations({
     if (!settings) return;
     setWebhook(settings.slackWebhookUrl ?? "");
     setSeverity(settings.slackMinSeverity);
-    setEnabled(settings.alertsEnabled);
+    setEnabled(Boolean(settings.slackWebhookUrl && settings.alertsEnabled));
   }, [settings]);
 
   const save = async (label: string) => {
