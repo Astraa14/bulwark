@@ -3933,3 +3933,13 @@ code, pre, kbd, samp {
 @media (max-width: 520px) {
   .chart > span { font-size: 11px; }
 }
+
+
+/* Dates are interface copy, not code: use Geist Sans to avoid a cramped mono look. */
+.eyebrow-row > code,
+.chart > span {
+  font-family: var(--font-ui);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.y-axis { font-family: var(--font-code); }
