@@ -1468,8 +1468,8 @@ function Settings({
                 <option value="auto_fix">Auto-fix</option>
               </select>
             </div>
-            {error && <p className="modal-error">{error}</p>}
-            {message && <p className="save-note">{message}</p>}
+            {error && <p className="modal-error" role="alert">{error}</p>}
+            {message && <p className="save-note" role="status" aria-live="polite">{message}</p>}
           </section>
 
           <section className="card setting-list alerts">
@@ -1862,6 +1862,7 @@ function Integrations({
   email?: string | null;
 }) {
   const [webhook, setWebhook] = useState(settings?.slackWebhookUrl ?? "");
+  const [showWebhook, setShowWebhook] = useState(false);
   const [severity, setSeverity] = useState<Severity>(settings?.slackMinSeverity ?? "high");
   const [enabled, setEnabled] = useState(Boolean(settings?.slackWebhookUrl && settings?.alertsEnabled));
   const [busy, setBusy] = useState<string | null>(null);
@@ -1939,11 +1940,26 @@ function Integrations({
             </div>
             <div className="field-block">
               <label>Incoming webhook URL</label>
-              <input
-                value={webhook}
-                onChange={(e) => setWebhook(e.target.value)}
-                placeholder="https://hooks.slack.com/services/T000/B000/xxxx"
-              />
+              <div className="webhook-input-row">
+                <input
+                  type={showWebhook ? "text" : "password"}
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={webhook}
+                  onChange={(e) => setWebhook(e.target.value)}
+                  placeholder="https://hooks.slack.com/services/T000/B000/xxxx"
+                  aria-label="Slack incoming webhook URL"
+                />
+                <button
+                  type="button"
+                  className="field-reveal"
+                  onClick={() => setShowWebhook((visible) => !visible)}
+                  aria-pressed={showWebhook}
+                >
+                  {showWebhook ? "Hide" : "Show"}
+                </button>
+              </div>
+              <small className="field-help">The webhook is hidden while you are not editing it.</small>
             </div>
             <div className="setting-row">
               <span>
@@ -1978,8 +1994,8 @@ function Integrations({
               <Button onClick={test} disabled={!configured || busy !== null}>{busy === "test" ? "Sending…" : "Send test message"}</Button>
               <Button onClick={() => save("save")}>{busy === "save" ? "Saving…" : "Save"}</Button>
             </div>
-            {error && <p className="modal-error">{error}</p>}
-            {message && <p className="save-note">{message}</p>}
+            {error && <p className="modal-error" role="alert">{error}</p>}
+            {message && <p className="save-note" role="status" aria-live="polite">{message}</p>}
           </section>
         </div>
         <div>
