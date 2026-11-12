@@ -487,13 +487,8 @@ function Overview({
                     {sites.find((s) => s.id === f.site_id)?.domain ?? ""}
                   </code>
                 </div>
-                <Button onClick={() => go("Threats")}>Review</Button>
               </div>
             ))}
-            <div className="attention-more">
-              <span>Showing 3 of {openFindings.length} open findings</span>
-              <button onClick={() => go("Threats")}>View all threats →</button>
-            </div>
           </div>
         )}
       </section>
