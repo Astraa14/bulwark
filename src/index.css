@@ -2933,3 +2933,6 @@ button:focus:not(:focus-visible), a:focus:not(:focus-visible) { outline: none; }
     display: block;
   }
 }
+
+.briefing.needs-setup { border-left-color: #c99200; }
+.briefing.is-paused { border-left-color: #a3a3a3; }
