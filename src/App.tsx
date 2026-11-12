@@ -514,7 +514,7 @@ function Overview({
         <div className="card chart-card">
           <div className="card-heading">
             <h3>Threat activity</h3>
-            <span>30 days</span>
+            <span className="chart-range" aria-label="Threat activity for the last 30 days">Last 30 days</span>
           </div>
           <div className="chart-count">
             <strong>{findings.length}</strong>
