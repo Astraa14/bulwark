@@ -1893,14 +1893,9 @@ function Integrations({
     setError(null);
     setMessage(null);
     try {
-      await onSave({
-        slackWebhookUrl: webhook,
-        slackMinSeverity: severity,
-        alertsEnabled: enabled && Boolean(webhook.trim()),
-      });
       if (!webhook.trim()) throw new Error("Add a Slack webhook URL before sending a test message.");
       await apiPost("/api/alerts/test", { webhookUrl: webhook });
-      setMessage("Test message sent. Check your Slack channel.");
+      setMessage("Test message sent. Save changes separately to keep this configuration.");
     } catch (err) {
       setError((err as Error).message);
     } finally {
