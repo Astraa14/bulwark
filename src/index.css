@@ -3700,3 +3700,66 @@ code, pre, kbd, samp {
   font-size: 13px;
   line-height: 1.5;
 }
+
+
+/* Threat activity chart: give the range label breathing room and clear hierarchy. */
+.chart-card > .card-heading {
+  gap: 14px;
+  min-width: 0;
+}
+.chart-card > .card-heading h3 {
+  min-width: 0;
+  line-height: 1.35;
+}
+.chart-range {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-family: "Geist", Inter, ui-sans-serif, system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.chart-count span {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-muted);
+}
+.legend {
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.chart > span {
+  font-size: 11px;
+  line-height: 14px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.y-axis {
+  font-size: 10px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 520px) {
+  .chart-card > .card-heading {
+    align-items: center;
+    gap: 8px;
+  }
+  .chart-range {
+    min-height: 26px;
+    padding: 3px 8px;
+    font-size: 12px;
+  }
+  .chart > span {
+    font-size: 10px;
+  }
+}
