@@ -2944,10 +2944,7 @@ button:focus:not(:focus-visible), a:focus:not(:focus-visible) { outline: none; }
   opacity: 0.48;
   box-shadow: none;
 }
-.button:disabled:hover,
-.button.dark:disabled:hover {
-  background: inherit;
-  border-color: inherit;
+.button:disabled:hover {
   box-shadow: none;
 }
 .toggle:disabled {
