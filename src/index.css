@@ -2936,3 +2936,28 @@ button:focus:not(:focus-visible), a:focus:not(:focus-visible) { outline: none; }
 
 .briefing.needs-setup { border-left-color: #c99200; }
 .briefing.is-paused { border-left-color: #a3a3a3; }
+
+
+/* Clear, accessible states for actions that require setup first. */
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+  box-shadow: none;
+}
+.button:disabled:hover,
+.button.dark:disabled:hover {
+  background: inherit;
+  border-color: inherit;
+  box-shadow: none;
+}
+.toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #525252;
+  outline-offset: 2px;
+}
