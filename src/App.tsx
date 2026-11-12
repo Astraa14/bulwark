@@ -383,7 +383,23 @@ function Overview({
 
   // Dynamic y-axis ticks based on peak
   const yTop = Math.max(4, Math.ceil(peak / 2) * 2);
-  const      <section className={`briefing card ${openFindings.length > 0 ? "has-findings" : "is-clear"}`}>
+  const yMid = Math.round(yTop / 2);
+
+  return (
+    <>
+      <PageTitle
+        title="Overview"
+        subtitle="A quieter way to keep your code safe."
+        action={
+          <div className="title-actions">
+            <span className="range-label">Last 30 days</span>
+            <Button dark onClick={openModal}>
+              + Add site
+            </Button>
+          </div>
+        }
+      />
+      <section className={`briefing card ${openFindings.length > 0 ? "has-findings" : "is-clear"}`}>
         <div className="eyebrow-row">
           <span className="briefing-kicker">
             <Dot tone={openFindings.length > 0 ? (critical > 0 ? "critical" : high > 0 ? "high" : "medium") : "healthy"} />
@@ -2312,7 +2328,6 @@ function AppShell() {
   const { user, signOut } = useAuth();
   const { sites, findings, scans, scanCount, refresh } = useWorkspace();
   const activeSiteCount = sites.filter((site) => site.status === "verified").length;
-  const pausedSiteCount = sites.filter((site) => site.status === "paused").length;
   const pendingSiteCount = sites.filter((site) => site.status === "pending").length;
   const monitoringState: "active" | "setup" | "paused" =
     activeSiteCount > 0 ? "active" : pendingSiteCount > 0 || sites.length === 0 ? "setup" : "paused";
