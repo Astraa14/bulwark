@@ -2,38 +2,20 @@ import { connect } from "node:tls";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
-const UA = "BulwarkBot/0.2 (+https://bulwark.app/bot)";
+const UA = "BulwarkBot/0.3 (+https://bulwark.app/bot)";
+
+// ============================================================================
+// SSRF / outbound network safety
+// ============================================================================
 
 const BLOCKED_PRIVATE_PREFIXES = [
-  "10.",
-  "127.",
-  "169.254.",
-  "172.16.",
-  "172.17.",
-  "172.18.",
-  "172.19.",
-  "172.20.",
-  "172.21.",
-  "172.22.",
-  "172.23.",
-  "172.24.",
-  "172.25.",
-  "172.26.",
-  "172.27.",
-  "172.28.",
-  "172.29.",
-  "172.30.",
-  "172.31.",
-  "192.168.",
-  "::1",
-  "fc",
-  "fd",
-  "fe80:",
-  "fe9",
-  "fea",
-  "feb",
-  "::ffff:",
+  "10.", "127.", "169.254.", "172.16.", "172.17.", "172.18.", "172.19.",
+  "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.",
+  "172.27.", "172.28.", "172.29.", "172.30.", "172.31.", "192.168.",
+  "::1", "fc", "fd", "fe80:", "fe9", "fea", "feb", "::ffff:",
 ];
+
+const ALLOWED_PORTS = new Set([80, 443]);
 
 function isBlockedIpAddress(ip) {
   const value = String(ip ?? "").trim().toLowerCase();
@@ -56,18 +38,28 @@ export function isBlockedOutboundHost(hostname) {
   return false;
 }
 
+export function isUnsafeIp(ip) {
+  return isBlockedIpAddress(ip);
+}
+
 async function resolvePublicAddresses(hostname) {
   const value = String(hostname ?? "").trim().toLowerCase().replace(/\.$/, "");
   if (!value || isBlockedOutboundHost(value)) return [];
+  const results = await lookup(value, { all: true });
+  return results.map((entry) => entry.address);
+}
+
+/** True when the hostname resolves to a blocked/private address, or DNS fails. */
+export async function hasUnsafeDns(hostname) {
   try {
-    const results = await lookup(value, { all: true });
-    return results.map((entry) => entry.address);
+    const addrs = await resolvePublicAddresses(hostname);
+    return addrs.some((addr) => isBlockedIpAddress(addr));
   } catch {
-    return [];
+    return true;
   }
 }
 
-export async function ensureSafeFetchUrl(urlString) {
+async function ensureSafeFetchUrl(urlString) {
   const parsed = new URL(urlString);
   if (!["http:", "https:"].includes(parsed.protocol)) {
     throw new Error(`Blocked outbound target: unsupported protocol ${parsed.protocol}`);
@@ -78,6 +70,11 @@ export async function ensureSafeFetchUrl(urlString) {
     throw new Error(`Blocked outbound target: ${host}`);
   }
 
+  const port = Number(parsed.port) || (parsed.protocol === "https:" ? 443 : 80);
+  if (!ALLOWED_PORTS.has(port)) {
+    throw new Error(`Blocked outbound target: port ${port} is not allowed`);
+  }
+
   const resolved = await resolvePublicAddresses(host);
   if (resolved.some((addr) => isBlockedIpAddress(addr))) {
     throw new Error(`Blocked outbound target: ${host}`);
@@ -85,6 +82,74 @@ export async function ensureSafeFetchUrl(urlString) {
 
   return parsed.toString();
 }
+
+async function readBodySafe(res) {
+  try {
+    await res.text();
+  } catch {
+    // Ignore read errors; status/headers are already captured.
+  }
+}
+
+async function fetchWithTimeout(urlString, opts = {}) {
+  const { timeout = 15000, method = "GET", headers = {}, maxRedirects = 3 } = opts;
+
+  let current = await ensureSafeFetchUrl(urlString);
+
+  let redirectCount = 0;
+  while (true) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      const res = await fetch(current, {
+        method,
+        redirect: "manual",
+        signal: controller.signal,
+        headers: { "user-agent": UA, accept: "*/*", ...headers },
+      });
+
+      if (res.status >= 300 && res.status < 400) {
+        await readBodySafe(res);
+        const location = res.headers.get("location");
+        if (location && redirectCount < maxRedirects) {
+          redirectCount += 1;
+          current = await ensureSafeFetchUrl(new URL(location, current).toString());
+          continue;
+        }
+        return res;
+      }
+
+      return res;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+// ============================================================================
+// Check outcome model
+// ============================================================================
+
+// outcome: "pass" | "finding" | "error" | "not_checked"
+// A check must never infer "pass" from an empty findings array when it errored.
+
+function checkResult(key, outcome, findings = [], error = null) {
+  return { key, outcome, findings, error };
+}
+
+async function runCheck(key, fn) {
+  try {
+    const { findings, error } = await fn();
+    const outcome = error ? "error" : findings.length ? "finding" : "pass";
+    return checkResult(key, outcome, findings, error ?? null);
+  } catch (err) {
+    return checkResult(key, "error", [], err?.message ?? String(err));
+  }
+}
+
+// ============================================================================
+// Detectors
+// ============================================================================
 
 const SECURITY_HEADERS = [
   {
@@ -100,8 +165,7 @@ const SECURITY_HEADERS = [
     check: "header_csp",
     title: "Missing Content-Security-Policy",
     severity: "medium",
-    detail:
-      "No CSP means injected scripts run freely. It is the strongest single defence against XSS.",
+    detail: "No CSP means injected scripts run freely. It is the strongest single defence against XSS.",
   },
   {
     key: "x-content-type-options",
@@ -231,23 +295,8 @@ const SECRET_PATTERNS = [
 ];
 
 const MULTI_PART_SUFFIXES = new Set([
-  "co.uk",
-  "org.uk",
-  "ac.uk",
-  "gov.uk",
-  "com.au",
-  "net.au",
-  "org.au",
-  "co.nz",
-  "co.jp",
-  "com.br",
-  "co.in",
-  "com.sg",
-  "com.mx",
-  "co.za",
-  "com.tr",
-  "com.hk",
-  "co.kr",
+  "co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au", "org.au", "co.nz",
+  "co.jp", "com.br", "co.in", "com.sg", "com.mx", "co.za", "com.tr", "com.hk", "co.kr",
 ]);
 
 function finding(check_key, title, severity, detail, extra = {}) {
@@ -275,102 +324,39 @@ function isIpOrLocal(domain) {
   return /^((\d{1,3}\.){3}\d{1,3}|[0-9a-f:]+)$/.test(domain) || domain === "localhost" || domain.endsWith(".local");
 }
 
-async function fetchWithTimeout(url, { timeout = 15000, method = "GET", headers = {}, maxRedirects = 3 } = {}) {
-  let current = url;
-  let redirectCount = 0;
-
-  while (true) {
-    current = await ensureSafeFetchUrl(current);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-    try {
-      const res = await fetch(current, {
-        method,
-        redirect: "manual",
-        signal: controller.signal,
-        headers: { "user-agent": UA, accept: "*/*", ...headers },
-      });
-
-      if (res.status >= 300 && res.status < 400) {
-        const location = res.headers.get("location");
-        if (location && redirectCount < maxRedirects) {
-          redirectCount += 1;
-          current = new URL(location, current).toString();
-          continue;
-        }
-      }
-
-      return res;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-}
-
-export async function checkUptime(domain) {
-  const start = Date.now();
+async function safeFetch(url, timeout = 8000) {
   try {
-    const res = await fetchWithTimeout(`https://${domain}/`);
-    const responseMs = Date.now() - start;
+    const res = await fetchWithTimeout(url, { timeout });
+    if (res.status !== 200) return { found: false };
     const body = await res.text().catch(() => "");
-    return { ok: true, status: res.status, responseMs, body, headers: res.headers, finalUrl: res.url };
+    return { found: true, body, contentType: res.headers.get("content-type") ?? "" };
   } catch (err) {
-    return { ok: false, error: err?.message ?? String(err), responseMs: Date.now() - start };
+    return { found: false, error: err?.message ?? String(err) };
   }
 }
 
-export function checkTls(domain) {
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = (value) => {
-      if (done) return;
-      done = true;
-      resolve(value);
-    };
-
-    const socket = connect(
-      { host: domain, port: 443, servername: domain, timeout: 10000 },
-      () => {
-        const cert = socket.getPeerCertificate();
-        socket.end();
-        if (!cert?.valid_to) return finish(null);
-        const expires = new Date(cert.valid_to);
-        const days = Math.round((expires.getTime() - Date.now()) / 86_400_000);
-        finish({
-          days,
-          validTo: cert.valid_to,
-          issuer: cert.issuer?.O ?? cert.issuer?.CN ?? "unknown",
-          subject: cert.subject?.CN ?? domain,
-        });
-      },
-    );
-
-    socket.on("error", () => finish(null));
-    socket.on("timeout", () => {
-      socket.destroy();
-      finish(null);
-    });
-  });
-}
-
-async function checkExposedFiles(domain) {
-  const probes = EXPOSED_FILES.map(async (file) => {
-    try {
-      const res = await fetchWithTimeout(`https://${domain}${file.path}`, { timeout: 8000 });
-      if (res.status !== 200) return null;
-      const body = await res.text().catch(() => "");
-      if (!file.matches(body)) return null;
-      return finding(file.check, file.title, file.severity, file.detail, {
-        url: `https://${domain}${file.path}`,
-        evidence: `${res.status} ${res.headers.get("content-type") ?? "unknown"} · ${body.length} bytes`,
-      });
-    } catch {
-      return null;
-    }
-  });
-
-  const results = await Promise.all(probes);
-  return results.filter(Boolean);
+async function checkExposedFilesInner(domain) {
+  const findings = [];
+  const errors = [];
+  await Promise.all(
+    EXPOSED_FILES.map(async (file) => {
+      try {
+        const res = await fetchWithTimeout(`https://${domain}${file.path}`, { timeout: 8000 });
+        if (res.status !== 200) return;
+        const body = await res.text().catch(() => "");
+        if (!file.matches(body)) return;
+        findings.push(
+          finding(file.check, file.title, file.severity, file.detail, {
+            url: `https://${domain}${file.path}`,
+            evidence: `${res.status} ${res.headers.get("content-type") ?? "unknown"} · ${body.length} bytes`,
+          }),
+        );
+      } catch (err) {
+        errors.push(`${file.path}: ${err?.message ?? String(err)}`);
+      }
+    }),
+  );
+  return { findings, error: errors.length ? errors.join("; ") : null };
 }
 
 function checkHeaders(headers) {
@@ -436,60 +422,53 @@ function checkCspQuality(headers) {
   return out;
 }
 
-async function checkCors(domain) {
-  try {
-    const probeOrigin = "https://bulwark-cors-probe.example";
-    const res = await fetchWithTimeout(`https://${domain}/`, {
-      timeout: 10000,
-      headers: { origin: probeOrigin },
-    });
-    const allow = res.headers.get("access-control-allow-origin");
-    const credentials = (res.headers.get("access-control-allow-credentials") ?? "").toLowerCase();
-    if (!allow) return [];
-
-    if (allow === "*" && credentials === "true") {
-      return [
-        finding(
-          "cors_wildcard_credentials",
-          "CORS allows any origin with credentials",
-          "high",
-          "Any website can read authenticated responses from your API, which exposes user data cross-site.",
-          { evidence: "access-control-allow-origin: * · allow-credentials: true" },
-        ),
-      ];
-    }
-    if (allow === probeOrigin) {
-      return [
-        finding(
-          "cors_reflects_origin",
-          "CORS reflects any origin",
-          "medium",
-          "The server echoes back whatever Origin it receives. Combined with cookies, any site can read your users' data.",
-          { evidence: `access-control-allow-origin: ${allow}` },
-        ),
-      ];
-    }
-    if (allow === "*") {
-      return [
-        finding(
-          "cors_wildcard",
-          "CORS is open to every origin",
-          "low",
-          "Public cross-origin reads are allowed. Fine for a public API, risky if any response contains private data.",
-          { evidence: "access-control-allow-origin: *" },
-        ),
-      ];
-    }
-    return [];
-  } catch {
-    return [];
+async function checkCorsInner(domain) {
+  const findings = [];
+  const probeOrigin = "https://bulwark-cors-probe.example";
+  const res = await fetchWithTimeout(`https://${domain}/`, {
+    timeout: 10000,
+    headers: { origin: probeOrigin },
+  });
+  const allow = res.headers.get("access-control-allow-origin");
+  const credentials = (res.headers.get("access-control-allow-credentials") ?? "").toLowerCase();
+  if (!allow) return { findings, error: null };
+  if (allow === "*" && credentials === "true") {
+    findings.push(
+      finding(
+        "cors_wildcard_credentials",
+        "CORS allows any origin with credentials",
+        "high",
+        "Any website can read authenticated responses from your API, which exposes user data cross-site.",
+        { evidence: "access-control-allow-origin: * · allow-credentials: true" },
+      ),
+    );
+  } else if (allow === probeOrigin) {
+    findings.push(
+      finding(
+        "cors_reflects_origin",
+        "CORS reflects any origin",
+        "medium",
+        "The server echoes back whatever Origin it receives. Combined with cookies, any site can read your users' data.",
+        { evidence: `access-control-allow-origin: ${allow}` },
+      ),
+    );
+  } else if (allow === "*") {
+    findings.push(
+      finding(
+        "cors_wildcard",
+        "CORS is open to every origin",
+        "low",
+        "Public cross-origin reads are allowed. Fine for a public API, risky if any response contains private data.",
+        { evidence: "access-control-allow-origin: *" },
+      ),
+    );
   }
+  return { findings, error: null };
 }
 
 function checkCookies(headers) {
   const raw = typeof headers.getSetCookie === "function" ? headers.getSetCookie() : [];
   if (!raw.length) return [];
-
   const problems = [];
   for (const cookie of raw) {
     const name = cookie.split("=")[0]?.trim() ?? "cookie";
@@ -499,7 +478,6 @@ function checkCookies(headers) {
     if (sensitive && !lower.includes("httponly")) problems.push(`${name} missing HttpOnly`);
     if (!lower.includes("samesite")) problems.push(`${name} missing SameSite`);
   }
-
   if (!problems.length) return [];
   const severe = problems.some((p) => p.includes("HttpOnly"));
   return [
@@ -547,28 +525,26 @@ function checkDirectoryListing(html) {
   return [];
 }
 
-async function fetchOptional(url, timeout = 8000) {
-  try {
-    const res = await fetchWithTimeout(url, { timeout });
-    if (res.status !== 200) return null;
-    const body = await res.text().catch(() => "");
-    return { body, contentType: res.headers.get("content-type") ?? "" };
-  } catch {
-    return null;
-  }
-}
-
-async function checkDiscovery(domain) {
-  const out = [];
+async function checkDiscoveryInner(domain) {
+  const findings = [];
+  const errors = [];
   const [robots, sitemap, securityTxt, securityTxtAlt] = await Promise.all([
-    fetchOptional(`https://${domain}/robots.txt`),
-    fetchOptional(`https://${domain}/sitemap.xml`),
-    fetchOptional(`https://${domain}/.well-known/security.txt`),
-    fetchOptional(`https://${domain}/security.txt`),
+    safeFetch(`https://${domain}/robots.txt`),
+    safeFetch(`https://${domain}/sitemap.xml`),
+    safeFetch(`https://${domain}/.well-known/security.txt`),
+    safeFetch(`https://${domain}/security.txt`),
   ]);
 
-  if (!robots) {
-    out.push(
+  const record = (res, label) => {
+    if (res.error) errors.push(`${label}: ${res.error}`);
+    return res;
+  };
+  record(robots, "robots.txt");
+  record(sitemap, "sitemap.xml");
+  record(securityTxt, "security.txt");
+
+  if (!robots.error && !robots.found) {
+    findings.push(
       finding(
         "robots_missing",
         "No robots.txt",
@@ -577,12 +553,12 @@ async function checkDiscovery(domain) {
         { url: `https://${domain}/robots.txt` },
       ),
     );
-  } else {
+  } else if (robots.found) {
     const paths = [...robots.body.matchAll(/^\s*(?:disallow|allow):\s*(\/\S*)/gim)]
       .map((m) => m[1])
       .filter((p) => /\/(admin|config|backup|private|db|sql|env|secret|internal|staging)/i.test(p));
     if (paths.length) {
-      out.push(
+      findings.push(
         finding(
           "robots_sensitive_paths",
           "robots.txt points at sensitive paths",
@@ -594,8 +570,8 @@ async function checkDiscovery(domain) {
     }
   }
 
-  if (!sitemap) {
-    out.push(
+  if (!sitemap.error && !sitemap.found) {
+    findings.push(
       finding(
         "sitemap_missing",
         "No sitemap.xml",
@@ -604,8 +580,8 @@ async function checkDiscovery(domain) {
         { url: `https://${domain}/sitemap.xml` },
       ),
     );
-  } else if (!/<(urlset|sitemapindex)[\s>]/i.test(sitemap.body)) {
-    out.push(
+  } else if (sitemap.found && !/<(urlset|sitemapindex)[\s>]/i.test(sitemap.body)) {
+    findings.push(
       finding(
         "sitemap_invalid",
         "sitemap.xml is not a sitemap",
@@ -616,12 +592,12 @@ async function checkDiscovery(domain) {
     );
   }
 
-  const security = securityTxt ?? securityTxtAlt;
-  const securityUrl = securityTxt
+  const security = securityTxt.found ? securityTxt : securityTxtAlt.found ? securityTxtAlt : null;
+  const securityUrl = security === securityTxt
     ? `https://${domain}/.well-known/security.txt`
     : `https://${domain}/security.txt`;
   if (!security) {
-    out.push(
+    findings.push(
       finding(
         "security_txt_missing",
         "No security.txt",
@@ -631,7 +607,7 @@ async function checkDiscovery(domain) {
       ),
     );
   } else if (!/^\s*contact\s*:/im.test(security.body)) {
-    out.push(
+    findings.push(
       finding(
         "security_txt_invalid",
         "security.txt has no Contact field",
@@ -642,7 +618,7 @@ async function checkDiscovery(domain) {
     );
   }
 
-  return out;
+  return { findings, error: errors.length ? errors.join("; ") : null };
 }
 
 function redactSecret(value) {
@@ -664,7 +640,6 @@ function decodeJwtRole(token) {
 function scanTextForSecrets(text, sourceUrl) {
   const out = [];
   if (!text) return out;
-
   for (const pattern of SECRET_PATTERNS) {
     pattern.re.lastIndex = 0;
     const match = pattern.re.exec(text);
@@ -682,7 +657,6 @@ function scanTextForSecrets(text, sourceUrl) {
       ),
     );
   }
-
   const jwtRe = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
   for (const match of text.matchAll(jwtRe)) {
     if (decodeJwtRole(match[0]) === "service_role") {
@@ -701,7 +675,6 @@ function scanTextForSecrets(text, sourceUrl) {
       break;
     }
   }
-
   return out;
 }
 
@@ -718,24 +691,21 @@ function collectScriptUrls(html, pageUrl) {
       // Ignore malformed references.
     }
   };
-
   for (const m of html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)) push(m[1]);
   for (const m of html.matchAll(/<link[^>]+href=["']([^"']+\.js(?:\?[^"']*)?)["']/gi)) push(m[1]);
   return [...urls];
 }
 
-async function checkLeakedSecrets(domain, page) {
-  const out = [];
+async function checkLeakedSecretsInner(domain, page) {
+  const findings = [];
   const seen = new Set();
-
   const add = (items) => {
     for (const item of items) {
       if (seen.has(item.check_key)) continue;
       seen.add(item.check_key);
-      out.push(item);
+      findings.push(item);
     }
   };
-
   add(scanTextForSecrets(page.body, page.finalUrl));
 
   const pageHost = new URL(page.finalUrl).host;
@@ -751,15 +721,10 @@ async function checkLeakedSecrets(domain, page) {
 
   const bundles = await Promise.all(
     candidates.map(async (url) => {
-      try {
-        const res = await fetchWithTimeout(url, { timeout: 12000 });
-        if (res.status !== 200) return null;
-        const body = await res.text().catch(() => "");
-        if (!body || body.length > 4_000_000) return null;
-        return { url, body };
-      } catch {
-        return null;
-      }
+      const res = await safeFetch(url, 12000);
+      if (!res.found || res.error) return null;
+      if (!res.body || res.body.length > 4_000_000) return null;
+      return { url, body: res.body };
     }),
   );
 
@@ -768,7 +733,7 @@ async function checkLeakedSecrets(domain, page) {
     add(scanTextForSecrets(bundle.body, bundle.url));
   }
 
-  return out;
+  return { findings, error: null };
 }
 
 let rdapBootstrapCache = null;
@@ -790,8 +755,9 @@ async function rdapBaseUrl(tld) {
   return null;
 }
 
-async function checkDomainExpiry(domain) {
-  if (isIpOrLocal(domain)) return [];
+async function checkDomainExpiryInner(domain) {
+  const findings = [];
+  if (isIpOrLocal(domain)) return { findings, error: null };
   const registrable = registrableDomain(domain);
   const tld = registrable.split(".").pop();
 
@@ -812,15 +778,15 @@ async function checkDomainExpiry(domain) {
       expiration = (json.events ?? []).find((e) => e.eventAction === "expiration")?.eventDate;
       if (expiration) break;
     } catch {
-      // Try the next registry endpoint.
+      continue;
     }
   }
 
-  if (!expiration) return [];
+  if (!expiration) return { findings, error: null };
   const days = Math.round((new Date(expiration).getTime() - Date.now()) / 86_400_000);
 
   if (days < 0) {
-    return [
+    findings.push(
       finding(
         "domain_expired",
         "Domain registration expired",
@@ -828,10 +794,9 @@ async function checkDomainExpiry(domain) {
         "The domain has lapsed. Anyone can register it and take over your traffic and email.",
         { evidence: `Expired ${Math.abs(days)} day(s) ago · ${expiration}` },
       ),
-    ];
-  }
-  if (days <= 14) {
-    return [
+    );
+  } else if (days <= 14) {
+    findings.push(
       finding(
         "domain_expiring",
         "Domain expires within 14 days",
@@ -839,10 +804,9 @@ async function checkDomainExpiry(domain) {
         "If renewal fails the site and its email stop working, and the domain can be snapped up by someone else.",
         { evidence: `Expires in ${days} day(s) · ${expiration}` },
       ),
-    ];
-  }
-  if (days <= 45) {
-    return [
+    );
+  } else if (days <= 45) {
+    findings.push(
       finding(
         "domain_expiring_soon",
         "Domain expires within 45 days",
@@ -850,9 +814,9 @@ async function checkDomainExpiry(domain) {
         "Renew now so an expired card cannot take the site offline.",
         { evidence: `Expires in ${days} day(s) · ${expiration}` },
       ),
-    ];
+    );
   }
-  return [];
+  return { findings, error: null };
 }
 
 async function dohQuery(name, type) {
@@ -870,15 +834,15 @@ async function dohQuery(name, type) {
   }
 }
 
-async function checkDns(domain) {
-  if (isIpOrLocal(domain)) return [];
+async function checkDnsInner(domain) {
+  const findings = [];
+  if (isIpOrLocal(domain)) return { findings, error: null };
   const registrable = registrableDomain(domain);
-  const out = [];
 
   const [ns, mx] = await Promise.all([dohQuery(registrable, "NS"), dohQuery(registrable, "MX")]);
 
   if (ns && ns.length === 0) {
-    out.push(
+    findings.push(
       finding(
         "dns_no_ns",
         "No nameservers returned",
@@ -889,7 +853,7 @@ async function checkDns(domain) {
     );
   }
   if (mx && mx.length === 0) {
-    out.push(
+    findings.push(
       finding(
         "dns_no_mx",
         "No mail records (MX)",
@@ -899,7 +863,7 @@ async function checkDns(domain) {
       ),
     );
   }
-  return out;
+  return { findings, error: null };
 }
 
 function visibleText(html) {
@@ -989,9 +953,60 @@ export async function fetchPageSample(domain) {
   return pageSampleFromHtml(page.body);
 }
 
-function registerCheckOutcome(map, key, status) {
-  map[key] = status;
+// ============================================================================
+// Individual checks (single-request, gating, etc.)
+// ============================================================================
+
+export async function checkUptime(domain) {
+  const start = Date.now();
+  try {
+    const res = await fetchWithTimeout(`https://${domain}/`);
+    const responseMs = Date.now() - start;
+    const body = await res.text().catch(() => "");
+    return { ok: true, status: res.status, responseMs, body, headers: res.headers, finalUrl: res.url };
+  } catch (err) {
+    return { ok: false, error: err?.message ?? String(err), responseMs: Date.now() - start };
+  }
 }
+
+export function checkTls(domain) {
+  return new Promise((resolve) => {
+    if (isBlockedOutboundHost(domain)) {
+      return resolve({ error: `Blocked TLS target: ${domain}` });
+    }
+    let done = false;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      resolve(value);
+    };
+    const socket = connect(
+      { host: domain, port: 443, servername: domain, timeout: 10000 },
+      () => {
+        const cert = socket.getPeerCertificate();
+        socket.end();
+        if (!cert?.valid_to) return finish(null);
+        const expires = new Date(cert.valid_to);
+        const days = Math.round((expires.getTime() - Date.now()) / 86_400_000);
+        finish({
+          days,
+          validTo: cert.valid_to,
+          issuer: cert.issuer?.O ?? cert.issuer?.CN ?? "unknown",
+          subject: cert.subject?.CN ?? domain,
+        });
+      },
+    );
+    socket.on("error", () => finish(null));
+    socket.on("timeout", () => {
+      socket.destroy();
+      finish(null);
+    });
+  });
+}
+
+// ============================================================================
+// Orchestrator
+// ============================================================================
 
 export async function runChecks(rawDomain, { baseline = null } = {}) {
   const domain = normalizeDomain(rawDomain);
@@ -999,139 +1014,155 @@ export async function runChecks(rawDomain, { baseline = null } = {}) {
   const start = Date.now();
   const checkResults = {};
 
+  const register = (key, outcome, error = null) => {
+    checkResults[key] = outcome;
+  };
+
+  // --- Gating check: site uptime ---
   const page = await checkUptime(domain);
-
   if (!page.ok) {
-    registerCheckOutcome(checkResults, "site_uptime", "error");
+    register("site_uptime", "error", page.error);
     findings.push(
-      finding("site_unreachable", "Site unreachable", "critical", "The site did not respond over HTTPS within 15 seconds.", {
-        evidence: page.error,
-      }),
+      finding(
+        "site_unreachable",
+        "Site unreachable",
+        "critical",
+        "The site did not respond over HTTPS within 15 seconds.",
+        { evidence: page.error },
+      ),
     );
-
-    const checksPassed = 0;
-    const checksErrored = 1;
-    const checksSkipped = 0;
-    const checksTotal = 1;
-
     return {
       domain,
       status: "failed",
       httpStatus: null,
       responseMs: page.responseMs,
-      checksTotal,
-      checksPassed,
-      checksErrored,
-      checksSkipped,
+      checksTotal: 1,
+      checksPassed: 0,
+      checksErrored: 1,
+      checksSkipped: 0,
       checkResults,
       findings,
       error: page.error,
     };
   }
+  register("site_uptime", "pass");
 
-  registerCheckOutcome(checkResults, "site_uptime", "pass");
-
+  // --- HTTP status ---
   if (page.status >= 500) {
-    registerCheckOutcome(checkResults, "http_status", "finding");
+    register("http_status", "finding");
     findings.push(
       finding("http_5xx", "Server error on the homepage", "critical", "The homepage returned a 5xx error.", {
         evidence: `HTTP ${page.status}`,
       }),
     );
   } else if (page.status >= 400) {
-    registerCheckOutcome(checkResults, "http_status", "finding");
+    register("http_status", "finding");
     findings.push(
       finding("http_4xx", "Homepage returned an error status", "high", "The homepage is not serving successfully.", {
         evidence: `HTTP ${page.status}`,
       }),
     );
   } else {
-    registerCheckOutcome(checkResults, "http_status", "pass");
+    register("http_status", "pass");
   }
 
+  // --- Response time ---
   if (page.responseMs > 3000) {
-    registerCheckOutcome(checkResults, "response_time", "finding");
+    register("response_time", "finding");
     findings.push(
       finding("slow_response", "Slow homepage response", "low", "The homepage took over 3 seconds to respond.", {
         evidence: `${page.responseMs} ms`,
       }),
     );
   } else {
-    registerCheckOutcome(checkResults, "response_time", "pass");
+    register("response_time", "pass");
   }
 
+  // --- TLS ---
   const tls = await checkTls(domain);
-  if (!tls) {
-    registerCheckOutcome(checkResults, "tls", "error");
+  if (tls.error) {
+    register("tls", "error", tls.error);
+    findings.push(
+      finding("tls_unavailable", "TLS certificate could not be read", "high", "Could not establish a TLS session to read the certificate."),
+    );
+  } else if (!tls) {
+    register("tls", "error", "TLS connection returned no certificate data");
     findings.push(
       finding("tls_unavailable", "TLS certificate could not be read", "high", "Could not establish a TLS session to read the certificate."),
     );
   } else if (tls.days < 0) {
-    registerCheckOutcome(checkResults, "tls", "finding");
+    register("tls", "finding");
     findings.push(
       finding("tls_expired", "TLS certificate expired", "critical", "Browsers will show a full-page warning to every visitor.", {
         evidence: `Expired ${Math.abs(tls.days)} day(s) ago · ${tls.validTo}`,
       }),
     );
   } else if (tls.days <= 14) {
-    registerCheckOutcome(checkResults, "tls", "finding");
+    register("tls", "finding");
     findings.push(
       finding("tls_expiring", "TLS certificate expires soon", "high", `Certificate expires in ${tls.days} day(s).`, {
         evidence: `${tls.validTo} · issued by ${tls.issuer}`,
       }),
     );
   } else if (tls.days <= 30) {
-    registerCheckOutcome(checkResults, "tls", "finding");
+    register("tls", "finding");
     findings.push(
       finding("tls_expiring_soon", "TLS certificate expires within 30 days", "medium", `Certificate expires in ${tls.days} day(s).`, {
         evidence: `${tls.validTo} · issued by ${tls.issuer}`,
       }),
     );
   } else {
-    registerCheckOutcome(checkResults, "tls", "pass");
+    register("tls", "pass");
   }
 
+  // --- Header-based checks (no network beyond the page already fetched) ---
   const headersFindings = checkHeaders(page.headers);
   findings.push(...headersFindings);
-  registerCheckOutcome(checkResults, "security_headers", headersFindings.length ? "finding" : "pass");
+  register("security_headers", headersFindings.length ? "finding" : "pass");
 
   const cspFindings = checkCspQuality(page.headers);
   findings.push(...cspFindings);
-  registerCheckOutcome(checkResults, "csp_policy", cspFindings.length ? "finding" : "pass");
+  register("csp_policy", cspFindings.length ? "finding" : "pass");
 
   const cookieFindings = checkCookies(page.headers);
   findings.push(...cookieFindings);
-  registerCheckOutcome(checkResults, "cookies", cookieFindings.length ? "finding" : "pass");
+  register("cookies", cookieFindings.length ? "finding" : "pass");
 
   const mixedContentFindings = checkMixedContent(page.body, page.finalUrl);
   findings.push(...mixedContentFindings);
-  registerCheckOutcome(checkResults, "mixed_content", mixedContentFindings.length ? "finding" : "pass");
+  register("mixed_content", mixedContentFindings.length ? "finding" : "pass");
 
   const directoryFindings = checkDirectoryListing(page.body);
   findings.push(...directoryFindings);
-  registerCheckOutcome(checkResults, "directory_listing", directoryFindings.length ? "finding" : "pass");
+  register("directory_listing", directoryFindings.length ? "finding" : "pass");
 
   const defacement = checkDefacement(page.body, baseline);
   findings.push(...defacement.findings);
-  registerCheckOutcome(checkResults, "defacement", defacement.findings.length ? "finding" : "pass");
+  register("defacement", defacement.findings.length ? "finding" : "pass");
 
-  const [exposed, cors, discovery, secrets, domainExpiry, dns] = await Promise.all([
-    checkExposedFiles(domain),
-    checkCors(domain),
-    checkDiscovery(domain),
-    checkLeakedSecrets(domain, page),
-    checkDomainExpiry(domain),
-    checkDns(domain),
+  // --- Parallel network checks ---
+  const [
+    exposedResult,
+    corsResult,
+    discoveryResult,
+    secretsResult,
+    domainExpiryResult,
+    dnsResult,
+  ] = await Promise.all([
+    runCheck("exposed_files", () => checkExposedFilesInner(domain)),
+    runCheck("cors", () => checkCorsInner(domain)),
+    runCheck("public_discovery", () => checkDiscoveryInner(domain)),
+    runCheck("secrets", () => checkLeakedSecretsInner(domain, page)),
+    runCheck("domain_registration", () => checkDomainExpiryInner(domain)),
+    runCheck("dns", () => checkDnsInner(domain)),
   ]);
 
-  findings.push(...exposed, ...cors, ...discovery, ...secrets, ...domainExpiry, ...dns);
-  registerCheckOutcome(checkResults, "exposed_files", exposed.length ? "finding" : "pass");
-  registerCheckOutcome(checkResults, "cors", cors.length ? "finding" : "pass");
-  registerCheckOutcome(checkResults, "public_discovery", discovery.length ? "finding" : "pass");
-  registerCheckOutcome(checkResults, "secrets", secrets.length ? "finding" : "pass");
-  registerCheckOutcome(checkResults, "domain_registration", domainExpiry.length ? "finding" : "pass");
-  registerCheckOutcome(checkResults, "dns", dns.length ? "finding" : "pass");
+  for (const r of [exposedResult, corsResult, discoveryResult, secretsResult, domainExpiryResult, dnsResult]) {
+    findings.push(...r.findings);
+    register(r.key, r.outcome, r.error ?? null);
+  }
 
+  // Deduplicate by check_key (keep first occurrence).
   const unique = [];
   const seen = new Set();
   for (const f of findings) {
@@ -1140,9 +1171,9 @@ export async function runChecks(rawDomain, { baseline = null } = {}) {
     unique.push(f);
   }
 
-  const checksPassed = Object.values(checkResults).filter((value) => value === "pass").length;
-  const checksErrored = Object.values(checkResults).filter((value) => value === "error").length;
-  const checksSkipped = Object.values(checkResults).filter((value) => value === "not_checked").length;
+  const checksPassed = Object.values(checkResults).filter((v) => v === "pass").length;
+  const checksErrored = Object.values(checkResults).filter((v) => v === "error").length;
+  const checksSkipped = Object.values(checkResults).filter((v) => v === "not_checked").length;
   const checksTotal = Object.keys(checkResults).length;
 
   const status = checksErrored || checksSkipped ? "partial" : "completed";
@@ -1165,6 +1196,4 @@ export async function runChecks(rawDomain, { baseline = null } = {}) {
   };
 }
 
-export { normalizeDomain };
-
-
+export { normalizeDomain, ensureSafeFetchUrl };
