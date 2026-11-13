@@ -1,20 +1,10 @@
 import express from "express";
-import { createHmac, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { explainWithProvider } from "./ai.mjs";
 import { getSettings, saveSettings, sendSlack } from "./alerts.mjs";
 import { fetchPageSample } from "./checks.mjs";
 import { addKey, deleteKey, listKeys, markKeyUsed, resolveKey } from "./keys.mjs";
-import {
-  addConnection,
-  deleteConnection,
-  listConnections,
-  resolveConnection,
-  setWebhookSecret,
-} from "./connections.mjs";
-import { scanGitHubRepo } from "./github.mjs";
-import { scanSupabaseProject } from "./supabase.mjs";
 import { adminClient } from "./lib.mjs";
 import { verifyDomain } from "./verify.mjs";
 import { scanSite } from "./worker.mjs";
@@ -54,7 +44,6 @@ app.use((req, res, next) => {
 });
 
 app.use(express.static(path.join(__dirname, "../dist")));
-
 app.use(express.json({ limit: "64kb" }));
 
 const db = adminClient();
@@ -87,7 +76,6 @@ async function ownedSite(userId, siteId) {
     .eq("user_id", userId)
     .maybeSingle();
 
-  // Pre-migration fallback when the defacement columns do not exist yet.
   if (error?.message?.includes("page_sample")) {
     const retry = await db
       .from("sites")
@@ -107,14 +95,10 @@ app.get("/api/health", (_req, res) =>
   res.json({
     ok: true,
     service: "bulwark-api",
-    // Render injects this so a deploy can be verified from the health check.
     commit: process.env.RENDER_GIT_COMMIT ?? null,
   }),
 );
 
-// ---------------------------------------------------------------------------
-// Ownership + scanning
-// ---------------------------------------------------------------------------
 app.post(
   "/api/verify",
   requireUser,
@@ -182,7 +166,7 @@ app.post(
       return res.status(409).json({ error: "Site is not verified yet" });
     }
 
-    const out = await scanSite(db, site, { userId: req.user.id, manual: true });
+    const out = await scanSite(db, site);
     res.json({ ok: true, ...out });
   }),
 );
@@ -207,9 +191,6 @@ app.post(
   }),
 );
 
-// ---------------------------------------------------------------------------
-// BYOK keys
-// ---------------------------------------------------------------------------
 app.get(
   "/api/keys",
   requireUser,
@@ -240,201 +221,6 @@ app.delete(
   }),
 );
 
-// ---------------------------------------------------------------------------
-// Read-only GitHub + Supabase connections (encrypted at rest)
-// ---------------------------------------------------------------------------
-
-app.get(
-  "/api/connections/github",
-  requireUser,
-  wrap(async (req, res) => {
-    res.json({ connections: await listConnections(db, req.user.id, "github_connections") });
-  }),
-);
-
-app.post(
-  "/api/connections/github",
-  requireUser,
-  wrap(async (req, res) => {
-    try {
-      const conn = await addConnection(db, req.user.id, "github_connections", req.body ?? {});
-      res.status(201).json({ ok: true, connection: conn });
-    } catch (err) {
-      res.status(400).json({ error: err.message });
-    }
-  }),
-);
-
-app.delete(
-  "/api/connections/github/:id",
-  requireUser,
-  wrap(async (req, res) => {
-    await deleteConnection(db, req.user.id, req.params.id, "github_connections");
-    res.json({ ok: true });
-  }),
-);
-
-app.get(
-  "/api/connections/supabase",
-  requireUser,
-  wrap(async (req, res) => {
-    res.json({ connections: await listConnections(db, req.user.id, "supabase_connections") });
-  }),
-);
-
-app.post(
-  "/api/connections/supabase",
-  requireUser,
-  wrap(async (req, res) => {
-    try {
-      const conn = await addConnection(db, req.user.id, "supabase_connections", req.body ?? {});
-      res.status(201).json({ ok: true, connection: conn });
-    } catch (err) {
-      res.status(400).json({ error: err.message });
-    }
-  }),
-);
-
-app.delete(
-  "/api/connections/supabase/:id",
-  requireUser,
-  wrap(async (req, res) => {
-    await deleteConnection(db, req.user.id, req.params.id, "supabase_connections");
-    res.json({ ok: true });
-  }),
-);
-
-app.post(
-  "/api/connections/github/:id/scan",
-  requireUser,
-  wrap(async (req, res) => {
-    const conn = await resolveConnection(db, req.user.id, req.params.id, "github_connections");
-    if (!conn) return res.status(404).json({ error: "GitHub connection not found" });
-
-    const { owner, repo } = req.body ?? {};
-    if (!owner || !repo) {
-      return res.status(400).json({ error: "Missing owner and repo." });
-    }
-
-    const result = await scanGitHubRepo(conn.token, owner, repo);
-
-    await db.from("github_connections").update({ last_checked_at: new Date().toISOString() }).eq("id", req.params.id);
-
-    // Persist scan record + findings so they appear in the UI alongside website scans.
-    const startedAt = new Date().toISOString();
-    const finishedAt = new Date().toISOString();
-
-    const { data: scan, error: scanError } = await db
-      .from("scans")
-      .insert({
-        site_id: null,
-        status: result.error ? "failed" : "completed",
-        http_status: null,
-        response_ms: null,
-        checks_total: 1,
-        checks_passed: result.error ? 0 : 1,
-        checks_errored: result.error ? 1 : 0,
-        checks_skipped: 0,
-        check_results: { github_scan: result.error ? "error" : "pass" },
-        error: result.error ?? null,
-        started_at: startedAt,
-        finished_at: finishedAt,
-      })
-      .select("id")
-      .single();
-
-    if (scanError) throw new Error(`insert scan: ${scanError.message}`);
-
-    const findingRows = (result.findings ?? []).map((f) => ({
-      scan_id: scan.id,
-      site_id: null,
-      check_key: f.check_key ?? "github_finding",
-      title: f.title ?? "GitHub finding",
-      severity: f.severity ?? "medium",
-      status: "open",
-      detail: f.detail ?? null,
-      evidence: f.evidence ?? null,
-      url: f.url ?? null,
-      affected_resource: f.affected_resource ?? null,
-      first_seen_at: finishedAt,
-      last_seen_at: finishedAt,
-    }));
-
-    if (findingRows.length) {
-      const { error: insertError } = await db.from("findings").insert(findingRows);
-      if (insertError) throw new Error(`insert findings: ${insertError.message}`);
-    }
-
-    res.json({ ok: true, scanId: scan.id, ...result });
-  }),
-);
-
-app.post(
-  "/api/connections/supabase/:id/scan",
-  requireUser,
-  wrap(async (req, res) => {
-    const conn = await resolveConnection(db, req.user.id, req.params.id, "supabase_connections");
-    if (!conn) return res.status(404).json({ error: "Supabase connection not found" });
-
-    const result = await scanSupabaseProject(conn.projectUrl, conn.apiKey);
-
-    await db
-      .from("supabase_connections")
-      .update({ last_checked_at: new Date().toISOString() })
-      .eq("id", req.params.id);
-
-    // Persist scan record + findings so they appear in the UI alongside website scans.
-    const startedAt = new Date().toISOString();
-    const finishedAt = new Date().toISOString();
-
-    const { data: scan, error: scanError } = await db
-      .from("scans")
-      .insert({
-        site_id: null,
-        status: result.error ? "failed" : "completed",
-        http_status: null,
-        response_ms: null,
-        checks_total: 1,
-        checks_passed: result.error ? 0 : 1,
-        checks_errored: result.error ? 1 : 0,
-        checks_skipped: 0,
-        check_results: { supabase_scan: result.error ? "error" : "pass" },
-        error: result.error ?? null,
-        started_at: startedAt,
-        finished_at: finishedAt,
-      })
-      .select("id")
-      .single();
-
-    if (scanError) throw new Error(`insert scan: ${scanError.message}`);
-
-    const findingRows = (result.findings ?? []).map((f) => ({
-      scan_id: scan.id,
-      site_id: null,
-      check_key: f.check_key ?? "supabase_finding",
-      title: f.title ?? "Supabase finding",
-      severity: f.severity ?? "medium",
-      status: "open",
-      detail: f.detail ?? null,
-      evidence: f.evidence ?? null,
-      url: f.url ?? null,
-      affected_resource: f.affected_resource ?? null,
-      first_seen_at: finishedAt,
-      last_seen_at: finishedAt,
-    }));
-
-    if (findingRows.length) {
-      const { error: insertError } = await db.from("findings").insert(findingRows);
-      if (insertError) throw new Error(`insert findings: ${insertError.message}`);
-    }
-
-    res.json({ ok: true, scanId: scan.id, ...result });
-  }),
-);
-
-// ---------------------------------------------------------------------------
-// AI explanations (cached on the finding row)
-// ---------------------------------------------------------------------------
 app.post(
   "/api/explain",
   requireUser,
@@ -500,9 +286,6 @@ app.post(
   }),
 );
 
-// ---------------------------------------------------------------------------
-// Settings + alerts
-// ---------------------------------------------------------------------------
 app.get(
   "/api/settings",
   requireUser,
@@ -545,165 +328,8 @@ app.post(
   }),
 );
 
-// ---------------------------------------------------------------------------
-// Platform findings (GitHub / Supabase scans, site_id = null)
-// ---------------------------------------------------------------------------
-
-app.get(
-  "/api/findings/platform",
-  requireUser,
-  wrap(async (req, res) => {
-    const { data, error } = await db
-      .from("findings")
-      .select("*")
-      .is("site_id", null)
-      .order("last_seen_at", { ascending: false })
-      .limit(200);
-    if (error) throw new Error(`load platform findings: ${error.message}`);
-    res.json({ findings: data ?? [] });
-  }),
-);
-
-app.post(
-  "/api/connections/github/:id/webhook-secret",
-  requireUser,
-  wrap(async (req, res) => {
-    const conn = await resolveConnection(db, req.user.id, req.params.id, "github_connections");
-    if (!conn) return res.status(404).json({ error: "GitHub connection not found" });
-    const { secret } = req.body ?? {};
-    if (!secret || typeof secret !== "string") {
-      return res.status(400).json({ error: "Missing webhook secret." });
-    }
-    await setWebhookSecret(db, req.user.id, req.params.id, secret);
-    res.json({ ok: true });
-  }),
-);
-
-// ---------------------------------------------------------------------------
-// GitHub webhook (no bearer token — validated by HMAC signature)
-// ---------------------------------------------------------------------------
-
-app.post(
-  "/api/webhooks/github",
-  express.raw({ type: "*/*" }),
-  wrap(async (req, res) => {
-    const signature = req.headers["x-hub-signature-256"];
-    const event = req.headers["x-github-event"];
-    const deliveryId = req.headers["x-github-delivery"];
-
-    if (!signature || !event) {
-      return res.status(401).json({ error: "Missing GitHub webhook headers" });
-    }
-
-    // Find the connection by looking up the webhook secret.
-    // We try all connections since the webhook doesn't carry a user ID.
-    const { data: connections, error: connError } = await db
-      .from("github_connections")
-      .select("*")
-      .not("webhook_secret_encrypted", "is", null);
-    if (connError) throw new Error(`load connections: ${connError.message}`);
-
-    let matched = null;
-    for (const row of connections ?? []) {
-      try {
-        const secret = decrypt(row.webhook_secret_encrypted);
-        const expected = createHmac("sha256", secret).update(req.body).digest("hex");
-        if (timingSafeEqual(Buffer.from(`sha256=${expected}`), Buffer.from(signature))) {
-          matched = row;
-          break;
-        }
-      } catch {
-        // Skip connections whose secret can't be decrypted.
-      }
-    }
-
-    if (!matched) {
-      return res.status(401).json({ error: "No matching webhook secret" });
-    }
-
-    // Only handle push events for drift detection.
-    if (event !== "push") {
-      return res.json({ ok: true, ignored: true });
-    }
-
-    const payload = JSON.parse(req.body.toString("utf8"));
-    const { repository, ref, after, before } = payload;
-    if (!repository || !after) {
-      return res.status(400).json({ error: "Invalid push payload" });
-    }
-
-    const owner = repository.owner.login;
-    const repo = repository.name;
-    const conn = await resolveConnection(db, matched.user_id, matched.id, "github_connections");
-    if (!conn) {
-      return res.status(404).json({ error: "Connection not found" });
-    }
-
-    // Skip if the commit hasn't changed since last scan.
-    if (matched.last_scanned_commit === after) {
-      return res.json({ ok: true, skipped: true, reason: "already scanned" });
-    }
-
-    // Scan the repo.
-    const result = await scanGitHubRepo(conn.token, owner, repo);
-
-    // Update the last scanned commit.
-    await db
-      .from("github_connections")
-      .update({ last_scanned_commit: after, last_checked_at: new Date().toISOString() })
-      .eq("id", matched.id);
-
-    // Detect drift: new findings compared to previous open findings.
-    const { data: priorFindings, error: priorError } = await db
-      .from("findings")
-      .select("id, check_key, title, severity, status, affected_resource, evidence, detail, url")
-      .eq("site_id", null)
-      .eq("user_id", matched.user_id)
-      .eq("status", "open")
-      .order("last_seen_at", { ascending: false });
-    if (priorError) throw new Error(`load prior findings: ${priorError.message}`);
-
-    const priorKeys = new Set(
-      (priorFindings ?? []).map((f) => `${f.check_key}\0${f.affected_resource ?? ""}`),
-    );
-
-    const newFindings = (result.findings ?? []).filter(
-      (f) => !priorKeys.has(`${f.check_key}\0${f.affected_resource ?? ""}`),
-    );
-
-    if (newFindings.length > 0 && matched.user_id) {
-      const { data: site } = await db
-        .from("sites")
-        .select("id, domain, user_id")
-        .eq("user_id", matched.user_id)
-        .limit(1)
-        .maybeSingle();
-
-      try {
-        await alertNewFindings(db, {
-          site: site
-            ? { id: site.id, domain: site.domain, user_id: matched.user_id }
-            : { id: null, domain: `${owner}/${repo}`, user_id: matched.user_id },
-          findings: newFindings,
-          userId: matched.user_id,
-          appUrl: process.env.BULWARK_APP_URL ?? "http://localhost:8443",
-        });
-      } catch (err) {
-        console.error(`slack alert failed for ${owner}/${repo}: ${err.message}`);
-      }
-    }
-
-    res.json({
-      ok: true,
-      repository: `${owner}/${repo}`,
-      commit: after,
-      findings: result.findings.length,
-      newFindings: newFindings.length,
-    });
-  }),
-);
-
-app.get("*", (_req, res) => {
+app.get("/{*path}", (req, res, next) => {
+  if (req.path === "/api" || req.path.startsWith("/api/")) return next();
   res.sendFile(path.join(__dirname, "../dist/index.html"));
 });
 
