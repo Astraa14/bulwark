@@ -108,4 +108,3 @@ export async function setWebhookSecret(db, userId, id, secret) {
 
   return { ok: true };
 }
-}
