@@ -535,3 +535,55 @@ grant execute on function public.record_scan_result(
   uuid, text, integer, integer, integer, integer, integer, integer,
   jsonb, text, timestamptz, integer, text, timestamptz, boolean, text
 ) to service_role;
+
+-- >>> supabase/migrations/20261113040000_github_connections.sql
+-- Read-only GitHub repository connections.
+
+create table if not exists public.github_connections (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  github_username text not null,
+  token_encrypted text not null,
+  label text,
+  last_checked_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+alter table public.github_connections enable row level security;
+
+drop policy if exists "github_connections_select_own" on public.github_connections;
+create policy "github_connections_select_own" on public.github_connections
+  for select using (auth.uid() = user_id);
+
+drop policy if exists "github_connections_delete_own" on public.github_connections;
+create policy "github_connections_delete_own" on public.github_connections
+  for delete using (auth.uid() = user_id);
+
+create index if not exists github_connections_user_idx on public.github_connections (user_id);
+
+-- >>> supabase/migrations/20261113050000_supabase_connections.sql
+-- Read-only Supabase project connections.
+
+create table if not exists public.supabase_connections (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  project_ref text not null,
+  project_name text,
+  project_url_encrypted text not null,
+  api_key_encrypted text not null,
+  label text,
+  last_checked_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+alter table public.supabase_connections enable row level security;
+
+drop policy if exists "supabase_connections_select_own" on public.supabase_connections;
+create policy "supabase_connections_select_own" on public.supabase_connections
+  for select using (auth.uid() = user_id);
+
+drop policy if exists "supabase_connections_delete_own" on public.supabase_connections;
+create policy "supabase_connections_delete_own" on public.supabase_connections
+  for delete using (auth.uid() = user_id);
+
+create index if not exists supabase_connections_user_idx on public.supabase_connections (user_id);

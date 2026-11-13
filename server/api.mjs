@@ -3,6 +3,9 @@ import { explainWithProvider } from "./ai.mjs";
 import { getSettings, saveSettings, sendSlack } from "./alerts.mjs";
 import { fetchPageSample } from "./checks.mjs";
 import { addKey, deleteKey, listKeys, markKeyUsed, resolveKey } from "./keys.mjs";
+import { addConnection, deleteConnection, listConnections, resolveConnection } from "./connections.mjs";
+import { scanGitHubRepo } from "./github.mjs";
+import { scanSupabaseProject } from "./supabase.mjs";
 import { adminClient } from "./lib.mjs";
 import { verifyDomain } from "./verify.mjs";
 import { scanSite } from "./worker.mjs";
@@ -222,6 +225,105 @@ app.delete(
   wrap(async (req, res) => {
     await deleteKey(db, req.user.id, req.params.id);
     res.json({ ok: true });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Read-only GitHub + Supabase connections (encrypted at rest)
+// ---------------------------------------------------------------------------
+
+app.get(
+  "/api/connections/github",
+  requireUser,
+  wrap(async (req, res) => {
+    res.json({ connections: await listConnections(db, req.user.id, "github_connections") });
+  }),
+);
+
+app.post(
+  "/api/connections/github",
+  requireUser,
+  wrap(async (req, res) => {
+    try {
+      const conn = await addConnection(db, req.user.id, "github_connections", req.body ?? {});
+      res.status(201).json({ ok: true, connection: conn });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  }),
+);
+
+app.delete(
+  "/api/connections/github/:id",
+  requireUser,
+  wrap(async (req, res) => {
+    await deleteConnection(db, req.user.id, req.params.id, "github_connections");
+    res.json({ ok: true });
+  }),
+);
+
+app.get(
+  "/api/connections/supabase",
+  requireUser,
+  wrap(async (req, res) => {
+    res.json({ connections: await listConnections(db, req.user.id, "supabase_connections") });
+  }),
+);
+
+app.post(
+  "/api/connections/supabase",
+  requireUser,
+  wrap(async (req, res) => {
+    try {
+      const conn = await addConnection(db, req.user.id, "supabase_connections", req.body ?? {});
+      res.status(201).json({ ok: true, connection: conn });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  }),
+);
+
+app.delete(
+  "/api/connections/supabase/:id",
+  requireUser,
+  wrap(async (req, res) => {
+    await deleteConnection(db, req.user.id, req.params.id, "supabase_connections");
+    res.json({ ok: true });
+  }),
+);
+
+app.post(
+  "/api/connections/github/:id/scan",
+  requireUser,
+  wrap(async (req, res) => {
+    const conn = await resolveConnection(db, req.user.id, req.params.id, "github_connections");
+    if (!conn) return res.status(404).json({ error: "GitHub connection not found" });
+
+    const { owner, repo } = req.body ?? {};
+    if (!owner || !repo) {
+      return res.status(400).json({ error: "Missing owner and repo." });
+    }
+
+    const result = await scanGitHubRepo(conn.token, owner, repo);
+
+    await db.from("github_connections").update({ last_checked_at: new Date().toISOString() }).eq("id", req.params.id);
+
+    res.json({ ok: true, ...result });
+  }),
+);
+
+app.post(
+  "/api/connections/supabase/:id/scan",
+  requireUser,
+  wrap(async (req, res) => {
+    const conn = await resolveConnection(db, req.user.id, req.params.id, "supabase_connections");
+    if (!conn) return res.status(404).json({ error: "Supabase connection not found" });
+
+    const result = await scanSupabaseProject(conn.projectUrl, conn.apiKey);
+
+    await db.from("supabase_connections").update({ last_checked_at: new Date().toISOString() }).eq("id", req.params.id);
+
+    res.json({ ok: true, ...result });
   }),
 );
 

@@ -835,7 +835,7 @@ async function rdapBaseUrl(tld) {
           services: [],
         };
       } else {
-        rdapBootstrapCache = await res.json();
+        rdapBootstrapCache = JSON.parse(res.body ?? "{}");
         rdapBootstrapCache.cached = true;
       }
     } catch (err) {
@@ -883,7 +883,7 @@ async function checkDomainExpiryInner(domain) {
         rdapError = res.status === null ? "no response" : `HTTP ${res.status}`;
         continue;
       }
-      const json = await res.json();
+      const json = JSON.parse(res.body ?? "{}");
       expiration = (json.events ?? []).find((e) => e.eventAction === "expiration")?.eventDate;
       if (expiration) break;
     } catch (err) {
@@ -943,7 +943,7 @@ async function dohQuery(name, type) {
   if (res.status === null || !res.ok) {
     return { records: null, error: res.status === null ? "no response" : `HTTP ${res.status}` };
   }
-  const json = await res.json();
+  const json = JSON.parse(res.body ?? "{}");
   if (json.Status !== 0) return { records: [], error: null };
   return { records: json.Answer ?? [], error: null };
 }
