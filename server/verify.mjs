@@ -4,9 +4,10 @@ import {
   isUnsafeIp,
   hasUnsafeDns,
   ensureSafeFetchUrl,
+  fetchWithTimeout,
 } from "./checks.mjs";
 
-const UA = "BulwarkBot/0.3 (+https://bulwark.app/bot)";
+const UA = "BulwarkBot/0.4 (+https://bulwark.app/bot)";
 
 /**
  * Ownership proof. Either:
@@ -31,39 +32,39 @@ export async function verifyDomain(rawDomain, token) {
   }
 
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
-
     let redirectCount = 0;
     const maxRedirects = 5;
     let currentUrl = `https://${domain}/`;
 
     while (redirectCount <= maxRedirects) {
-      // Validate the URL we are about to fetch (scheme, host, port, DNS).
+      // ensureSafeFetchUrl validates scheme, host, port, and DNS before each hop.
       currentUrl = await ensureSafeFetchUrl(currentUrl);
 
-      const res = await fetch(currentUrl, {
-        redirect: "manual",
+      const res = await fetchWithTimeout(currentUrl, {
+        timeout: 15000,
         headers: { "user-agent": UA },
-        signal: controller.signal,
       });
+
+      if (res.error) {
+        return { ok: false, method: null, error: res.error };
+      }
+      if (res.status === null) {
+        return { ok: false, method: null, error: "no response" };
+      }
 
       // Validate redirect target before following.
       if (res.status >= 300 && res.status < 400) {
-        const location = res.headers.get("location");
+        const location = res.headers["location"];
         if (!location) break;
         const nextUrl = new URL(location, currentUrl);
         if (!["http:", "https:"].includes(nextUrl.protocol)) {
-          clearTimeout(timer);
           return { ok: false, method: null, error: "Redirect to unsupported scheme" };
         }
         if (isUnsafeIp(nextUrl.hostname) || await hasUnsafeDns(nextUrl.hostname)) {
-          clearTimeout(timer);
           return { ok: false, method: null, error: "Redirect to unsafe IP range" };
         }
         const port = Number(nextUrl.port) || (nextUrl.protocol === "https:" ? 443 : 80);
         if (port !== 80 && port !== 443) {
-          clearTimeout(timer);
           return { ok: false, method: null, error: "Redirect to non-web port" };
         }
 
@@ -73,9 +74,7 @@ export async function verifyDomain(rawDomain, token) {
       }
 
       // Not a redirect: check for the meta tag.
-      const html = await res.text();
-      clearTimeout(timer);
-
+      const html = res.body ?? "";
       const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const re = new RegExp(
         `<meta[^>]+name=["']bulwark-verify["'][^>]+content=["']${escaped}["']`,

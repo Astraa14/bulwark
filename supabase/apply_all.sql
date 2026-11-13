@@ -391,3 +391,147 @@ alter table public.scans drop constraint if exists scans_status_check;
 alter table public.scans
   add constraint scans_status_check
   check (status in ('running', 'completed', 'partial', 'failed'));
+
+-- >>> supabase/migrations/20261113020000_scan_claims.sql
+-- Cross-process scan claims.
+-- An in-memory lock cannot coordinate the API process with the worker or
+-- multiple deployed instances. A short database lease makes the claim atomic.
+
+alter table public.sites
+  add column if not exists scan_claim_token uuid,
+  add column if not exists scan_claim_expires_at timestamptz;
+
+create or replace function public.claim_site_scan(
+  p_site_id uuid,
+  p_claim_token uuid,
+  p_lease_seconds integer default 900
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  claimed boolean := false;
+begin
+  if p_lease_seconds < 60 or p_lease_seconds > 1800 then
+    raise exception 'Invalid scan lease duration';
+  end if;
+
+  update public.sites
+     set scan_claim_token = p_claim_token,
+         scan_claim_expires_at = now() + make_interval(secs => p_lease_seconds)
+    where id = p_site_id
+      and status = 'verified'
+      and (scan_claim_expires_at is null or scan_claim_expires_at < now());
+
+  claimed := found;
+  return claimed;
+end;
+$$;
+
+create or replace function public.release_site_scan(
+  p_site_id uuid,
+  p_claim_token uuid
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  released boolean := false;
+begin
+  update public.sites
+     set scan_claim_token = null,
+         scan_claim_expires_at = null
+    where id = p_site_id
+      and scan_claim_token = p_claim_token;
+
+  released := found;
+  return released;
+end;
+$$;
+
+revoke all on function public.claim_site_scan(uuid, uuid, integer) from public, anon, authenticated;
+revoke all on function public.release_site_scan(uuid, uuid) from public, anon, authenticated;
+grant execute on function public.claim_site_scan(uuid, uuid, integer) to service_role;
+grant execute on function public.release_site_scan(uuid, uuid) to service_role;
+
+-- >>> supabase/migrations/20261113030000_atomic_scan_persistence.sql
+-- Atomic scan persistence and idempotent retries.
+
+alter table public.scans
+  add column if not exists idempotency_key text;
+
+create unique index if not exists scans_idempotency_key_idx
+  on public.scans (idempotency_key)
+  where idempotency_key is not null;
+
+create or replace function public.record_scan_result(
+  p_site_id uuid,
+  p_status text,
+  p_http_status integer,
+  p_response_ms integer,
+  p_checks_total integer,
+  p_checks_passed integer,
+  p_checks_errored integer,
+  p_checks_skipped integer,
+  p_check_results jsonb,
+  p_error text,
+  p_finished_at timestamptz,
+  p_interval_minutes integer,
+  p_page_sample text,
+  p_page_sample_at timestamptz,
+  p_should_update_sample boolean,
+  p_idempotency_key text
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_scan_id uuid;
+begin
+  if p_idempotency_key is not null then
+    select id into v_scan_id
+    from public.scans
+    where idempotency_key = p_idempotency_key
+    limit 1;
+
+    if v_scan_id is not null then
+      return v_scan_id;
+    end if;
+  end if;
+
+  insert into public.scans (
+    site_id, status, http_status, response_ms,
+    checks_total, checks_passed, checks_errored, checks_skipped,
+    check_results, error, finished_at, idempotency_key
+  ) values (
+    p_site_id, p_status, p_http_status, p_response_ms,
+    p_checks_total, p_checks_passed, p_checks_errored, p_checks_skipped,
+    p_check_results, p_error, p_finished_at, p_idempotency_key
+  )
+  returning id into v_scan_id;
+
+  update public.sites
+     set last_scan_at = p_finished_at,
+         next_scan_at = p_finished_at + make_interval(mins => p_interval_minutes),
+         page_sample = case when p_should_update_sample then p_page_sample else page_sample end,
+         page_sample_at = case when p_should_update_sample then p_page_sample_at else page_sample_at end
+   where id = p_site_id;
+
+  return v_scan_id;
+end;
+$$;
+
+revoke all on function public.record_scan_result(
+  uuid, text, integer, integer, integer, integer, integer, integer,
+  jsonb, text, timestamptz, integer, text, timestamptz, boolean, text
+) from public, anon, authenticated;
+grant execute on function public.record_scan_result(
+  uuid, text, integer, integer, integer, integer, integer, integer,
+  jsonb, text, timestamptz, integer, text, timestamptz, boolean, text
+) to service_role;

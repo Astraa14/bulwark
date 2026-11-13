@@ -38,32 +38,45 @@ function pickExisting(existing, identity) {
     ?? matches[0];
 }
 
-/** Writes one scan + its findings and reschedules the site. */
+/** Writes one scan + its findings and reschedules the site atomically. */
 export async function scanSite(db, site) {
   const claimToken = await claimSiteScan(db, site.id);
+  const idempotencyKey = `scan:${site.id}:${Date.now()}`;
   try {
     const { runChecks } = await import("./checks.mjs");
     const result = await runChecks(site.domain, { baseline: site.page_sample ?? null });
 
-    const { data: scan, error: scanError } = await db
-      .from("scans")
-      .insert({
-        site_id: site.id,
-        status: result.status,
-        http_status: result.httpStatus,
-        response_ms: result.responseMs,
-        checks_total: result.checksTotal,
-        checks_passed: result.checksPassed,
-        checks_errored: result.checksErrored ?? 0,
-        checks_skipped: result.checksSkipped ?? 0,
-        check_results: result.checkResults ?? {},
-        error: result.error ?? null,
-        finished_at: new Date().toISOString(),
-      })
-      .select("id")
-      .single();
+    const now = new Date().toISOString();
+    const interval = site.scan_interval_minutes ?? 60;
+    const similarity = result.defacementSimilarity ?? 1;
+    const shouldUpdateSample =
+      result.status === "completed" && (!site.page_sample || similarity >= 0.55);
 
-    if (scanError) throw new Error(`insert scan: ${scanError.message}`);
+    // Persist scan record + site schedule atomically via a single RPC.
+    const { data: scanResult, error: scanError } = await db.rpc(
+      "record_scan_result",
+      {
+        p_site_id: site.id,
+        p_status: result.status,
+        p_http_status: result.httpStatus,
+        p_response_ms: result.responseMs,
+        p_checks_total: result.checksTotal,
+        p_checks_passed: result.checksPassed,
+        p_checks_errored: result.checksErrored ?? 0,
+        p_checks_skipped: result.checksSkipped ?? 0,
+        p_check_results: result.checkResults ?? {},
+        p_error: result.error ?? null,
+        p_finished_at: now,
+        p_interval_minutes: interval,
+        p_page_sample: shouldUpdateSample ? result.pageSample : null,
+        p_page_sample_at: shouldUpdateSample ? now : null,
+        p_should_update_sample: shouldUpdateSample,
+        p_idempotency_key: idempotencyKey,
+      },
+    );
+
+    if (scanError) throw new Error(`record scan: ${scanError.message}`);
+    const scanId = scanResult;
 
     const { data: existing, error: existingError } = await db
       .from("findings")
@@ -90,11 +103,11 @@ export async function scanSite(db, site) {
         detail: finding.detail ?? null,
         evidence: finding.evidence ?? null,
         url: finding.url ?? null,
-        last_seen_at: new Date().toISOString(),
+        last_seen_at: now,
       };
 
       if (!prior) {
-        toInsert.push({ scan_id: scan.id, site_id: site.id, ...fields });
+        toInsert.push({ scan_id: scanId, site_id: site.id, ...fields });
       } else if (prior.status === "ignored") {
         // Respect an explicit ignore for this exact resource.
         continue;
@@ -126,31 +139,12 @@ export async function scanSite(db, site) {
         (row) => row.status === "open" && !seenIdentities.has(findingIdentity(row)),
       );
       for (const row of staleRows) {
-        const { error } = await db.from("findings").update({ status: "resolved" }).eq("id", row.id);
+        const { error } = await db
+          .from("findings")
+          .update({ status: "resolved" })
+          .eq("id", row.id);
         if (error) throw new Error(`resolve finding: ${error.message}`);
       }
-    }
-
-    const interval = site.scan_interval_minutes ?? 60;
-    const update = {
-      last_scan_at: new Date().toISOString(),
-      next_scan_at: new Date(Date.now() + interval * 60_000).toISOString(),
-    };
-
-    const similarity = result.defacementSimilarity ?? 1;
-    if (result.status === "completed" && (!site.page_sample || similarity >= 0.55)) {
-      update.page_sample = result.pageSample;
-      update.page_sample_at = new Date().toISOString();
-    }
-
-    const { error: siteError } = await db.from("sites").update(update).eq("id", site.id);
-    if (siteError?.message?.includes("page_sample")) {
-      delete update.page_sample;
-      delete update.page_sample_at;
-      const { error } = await db.from("sites").update(update).eq("id", site.id);
-      if (error) throw new Error(`update site schedule: ${error.message}`);
-    } else if (siteError) {
-      throw new Error(`update site schedule: ${siteError.message}`);
     }
 
     // Newly created and reopened findings are both actionable state changes.
@@ -168,7 +162,7 @@ export async function scanSite(db, site) {
     }
 
     return {
-      scanId: scan.id,
+      scanId: scanId,
       findings: result.findings.length,
       newFindings: toInsert.length,
       reopenedFindings: toReopen.length,

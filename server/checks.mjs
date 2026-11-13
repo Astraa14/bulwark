@@ -83,24 +83,58 @@ async function ensureSafeFetchUrl(urlString) {
   return parsed.toString();
 }
 
-async function readBodySafe(res) {
+const MAX_BODY_BYTES = 4_000_000;
+
+/** @typedef {Object} FetchResult
+ * @property {boolean} ok
+ * @property {number|null} status
+ * @property {Record<string,string>} headers
+ * @property {string|null} body
+ * @property {string|null} url
+ * @property {string|null} error
+ * @property {boolean} redirected
+ */
+
+async function readBodyBounded(res, maxBytes = MAX_BODY_BYTES) {
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
   try {
-    await res.text();
-  } catch {
-    // Ignore read errors; status/headers are already captured.
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      total += value.length;
+      if (total > maxBytes) {
+        reader.releaseLock();
+        throw new Error(`Response body exceeds ${maxBytes} byte limit`);
+      }
+    }
+  } finally {
+    reader.releaseLock();
   }
+  const buffer = Buffer.concat(chunks.map((c) => Buffer.from(c)));
+  return buffer.toString("utf8");
 }
 
+/**
+ * @param {string} urlString
+ * @param {{timeout?:number, method?:string, headers?:Object, maxRedirects?:number}} opts
+ * @returns {Promise<FetchResult>}
+ */
 async function fetchWithTimeout(urlString, opts = {}) {
   const { timeout = 15000, method = "GET", headers = {}, maxRedirects = 3 } = opts;
 
   let current = await ensureSafeFetchUrl(urlString);
 
-  let redirectCount = 0;
-  while (true) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-    try {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  let redirected = false;
+
+  try {
+    let redirectCount = 0;
+    while (true) {
       const res = await fetch(current, {
         method,
         redirect: "manual",
@@ -108,21 +142,60 @@ async function fetchWithTimeout(urlString, opts = {}) {
         headers: { "user-agent": UA, accept: "*/*", ...headers },
       });
 
+      const headerList = {};
+      res.headers.forEach((value, key) => {
+        headerList[key] = value;
+      });
+
       if (res.status >= 300 && res.status < 400) {
-        await readBodySafe(res);
         const location = res.headers.get("location");
         if (location && redirectCount < maxRedirects) {
           redirectCount += 1;
+          redirected = true;
           current = await ensureSafeFetchUrl(new URL(location, current).toString());
+          await res.body?.cancel();
           continue;
         }
-        return res;
+        // Consume and discard the redirect response body.
+        try {
+          await readBodyBounded(res);
+        } catch {
+          // Ignore body read errors on terminal redirect responses.
+        }
+        return {
+          ok: res.ok,
+          status: res.status,
+          headers: headerList,
+          body: null,
+          url: res.url,
+          error: null,
+          redirected,
+        };
       }
 
-      return res;
-    } finally {
-      clearTimeout(timer);
+      const body = await readBodyBounded(res);
+      return {
+        ok: res.ok,
+        status: res.status,
+        headers: headerList,
+        body,
+        url: res.url,
+        error: null,
+        redirected,
+      };
     }
+  } catch (err) {
+    return {
+      ok: false,
+      status: null,
+      headers: {},
+      body: null,
+      url: current,
+      error: err?.message ?? String(err),
+      redirected,
+    };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -325,14 +398,14 @@ function isIpOrLocal(domain) {
 }
 
 async function safeFetch(url, timeout = 8000) {
-  try {
-    const res = await fetchWithTimeout(url, { timeout });
-    if (res.status !== 200) return { found: false };
-    const body = await res.text().catch(() => "");
-    return { found: true, body, contentType: res.headers.get("content-type") ?? "" };
-  } catch (err) {
-    return { found: false, error: err?.message ?? String(err) };
+  const res = await fetchWithTimeout(url, { timeout });
+  if (res.error) return { found: false, error: res.error };
+  if (res.status === null) return { found: false, error: "no response" };
+  if (res.status === 404) return { found: false };
+  if (res.status !== 200) {
+    return { found: false, error: `HTTP ${res.status}` };
   }
+  return { found: true, body: res.body ?? "", contentType: res.headers["content-type"] ?? "" };
 }
 
 async function checkExposedFilesInner(domain) {
@@ -340,20 +413,20 @@ async function checkExposedFilesInner(domain) {
   const errors = [];
   await Promise.all(
     EXPOSED_FILES.map(async (file) => {
-      try {
-        const res = await fetchWithTimeout(`https://${domain}${file.path}`, { timeout: 8000 });
-        if (res.status !== 200) return;
-        const body = await res.text().catch(() => "");
-        if (!file.matches(body)) return;
-        findings.push(
-          finding(file.check, file.title, file.severity, file.detail, {
-            url: `https://${domain}${file.path}`,
-            evidence: `${res.status} ${res.headers.get("content-type") ?? "unknown"} · ${body.length} bytes`,
-          }),
-        );
-      } catch (err) {
-        errors.push(`${file.path}: ${err?.message ?? String(err)}`);
+      const res = await fetchWithTimeout(`https://${domain}${file.path}`, { timeout: 8000 });
+      if (res.error) {
+        errors.push(`${file.path}: ${res.error}`);
+        return;
       }
+      if (res.status === null || res.status !== 200) return;
+      const body = res.body ?? "";
+      if (!file.matches(body)) return;
+      findings.push(
+        finding(file.check, file.title, file.severity, file.detail, {
+          url: `https://${domain}${file.path}`,
+          evidence: `${res.status} ${res.headers["content-type"] ?? "unknown"} · ${body.length} bytes`,
+        }),
+      );
     }),
   );
   return { findings, error: errors.length ? errors.join("; ") : null };
@@ -362,11 +435,11 @@ async function checkExposedFilesInner(domain) {
 function checkHeaders(headers) {
   const out = [];
   for (const h of SECURITY_HEADERS) {
-    if (!headers.get(h.key)) {
+    if (!headers[h.key]) {
       out.push(finding(h.check, h.title, h.severity, h.detail));
     }
   }
-  const server = headers.get("server") ?? "";
+  const server = headers["server"] ?? "";
   if (/\d/.test(server)) {
     out.push(
       finding(
@@ -382,7 +455,7 @@ function checkHeaders(headers) {
 }
 
 function checkCspQuality(headers) {
-  const csp = headers.get("content-security-policy");
+  const csp = headers["content-security-policy"];
   if (!csp) return [];
   const out = [];
   const lower = csp.toLowerCase();
@@ -429,8 +502,10 @@ async function checkCorsInner(domain) {
     timeout: 10000,
     headers: { origin: probeOrigin },
   });
-  const allow = res.headers.get("access-control-allow-origin");
-  const credentials = (res.headers.get("access-control-allow-credentials") ?? "").toLowerCase();
+  if (res.error) return { findings, error: res.error };
+  if (res.status === null) return { findings, error: "no response from CORS probe" };
+  const allow = res.headers["access-control-allow-origin"];
+  const credentials = (res.headers["access-control-allow-credentials"] ?? "").toLowerCase();
   if (!allow) return { findings, error: null };
   if (allow === "*" && credentials === "true") {
     findings.push(
@@ -467,7 +542,11 @@ async function checkCorsInner(domain) {
 }
 
 function checkCookies(headers) {
-  const raw = typeof headers.getSetCookie === "function" ? headers.getSetCookie() : [];
+  const raw = Array.isArray(headers["set-cookie"])
+    ? headers["set-cookie"]
+    : headers["set-cookie"]
+    ? [headers["set-cookie"]]
+    : [];
   if (!raw.length) return [];
   const problems = [];
   for (const cookie of raw) {
@@ -698,6 +777,7 @@ function collectScriptUrls(html, pageUrl) {
 
 async function checkLeakedSecretsInner(domain, page) {
   const findings = [];
+  const errors = [];
   const seen = new Set();
   const add = (items) => {
     for (const item of items) {
@@ -719,35 +799,55 @@ async function checkLeakedSecretsInner(domain, page) {
     })
     .slice(0, 6);
 
-  const bundles = await Promise.all(
+  const bundleResults = await Promise.all(
     candidates.map(async (url) => {
       const res = await safeFetch(url, 12000);
-      if (!res.found || res.error) return null;
+      if (res.error) {
+        errors.push(`${url}: ${res.error}`);
+        return null;
+      }
+      if (!res.found) return null;
       if (!res.body || res.body.length > 4_000_000) return null;
       return { url, body: res.body };
     }),
   );
 
-  for (const bundle of bundles) {
+  for (const bundle of bundleResults) {
     if (!bundle) continue;
     add(scanTextForSecrets(bundle.body, bundle.url));
   }
 
-  return { findings, error: null };
+  return { findings, error: errors.length ? errors.join("; ") : null };
 }
 
-let rdapBootstrapCache = null;
+let rdapBootstrapCache = { cached: false, error: null, services: [] };
 
 async function rdapBaseUrl(tld) {
-  if (!rdapBootstrapCache) {
+  if (!rdapBootstrapCache.cached) {
     try {
       const res = await fetchWithTimeout("https://data.iana.org/rdap/dns.json", { timeout: 12000 });
-      if (res.ok) rdapBootstrapCache = await res.json();
-    } catch {
-      rdapBootstrapCache = { services: [] };
+      if (res.error) {
+        rdapBootstrapCache = { cached: true, error: res.error, services: [] };
+      } else if (res.status === null || res.status !== 200) {
+        rdapBootstrapCache = {
+          cached: true,
+          error: res.status === null ? "no response" : `HTTP ${res.status}`,
+          services: [],
+        };
+      } else {
+        rdapBootstrapCache = await res.json();
+        rdapBootstrapCache.cached = true;
+      }
+    } catch (err) {
+      rdapBootstrapCache = {
+        cached: true,
+        error: err?.message ?? String(err),
+        services: [],
+      };
     }
   }
-  const services = rdapBootstrapCache?.services ?? [];
+  if (rdapBootstrapCache.error) return null;
+  const services = rdapBootstrapCache.services ?? [];
   for (const entry of services) {
     const [tlds, urls] = entry;
     if (Array.isArray(tlds) && tlds.includes(tld) && urls?.length) return urls[0];
@@ -757,6 +857,7 @@ async function rdapBaseUrl(tld) {
 
 async function checkDomainExpiryInner(domain) {
   const findings = [];
+  const errors = [];
   if (isIpOrLocal(domain)) return { findings, error: null };
   const registrable = registrableDomain(domain);
   const tld = registrable.split(".").pop();
@@ -767,22 +868,36 @@ async function checkDomainExpiryInner(domain) {
   if (iana) bases.push(iana);
   if (tld === "com" || tld === "net") bases.push(`https://rdap.verisign.com/${tld}/v1/`);
 
+  let rdapError = null;
   for (const base of bases) {
     try {
       const res = await fetchWithTimeout(
         `${base.replace(/\/$/, "")}/domain/${registrable}`,
         { timeout: 12000, headers: { accept: "application/rdap+json" } },
       );
-      if (!res.ok) continue;
+      if (res.error) {
+        rdapError = res.error;
+        continue;
+      }
+      if (res.status === null || !res.ok) {
+        rdapError = res.status === null ? "no response" : `HTTP ${res.status}`;
+        continue;
+      }
       const json = await res.json();
       expiration = (json.events ?? []).find((e) => e.eventAction === "expiration")?.eventDate;
       if (expiration) break;
-    } catch {
+    } catch (err) {
+      rdapError = err?.message ?? String(err);
       continue;
     }
   }
 
-  if (!expiration) return { findings, error: null };
+  if (!expiration) {
+    if (rdapError || rdapBootstrapCache.error) {
+      errors.push(rdapError ?? rdapBootstrapCache.error);
+    }
+    return { findings, error: errors.length ? errors.join("; ") : null };
+  }
   const days = Math.round((new Date(expiration).getTime() - Date.now()) / 86_400_000);
 
   if (days < 0) {
@@ -820,28 +935,32 @@ async function checkDomainExpiryInner(domain) {
 }
 
 async function dohQuery(name, type) {
-  try {
-    const res = await fetchWithTimeout(
-      `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=${type}`,
-      { timeout: 9000, headers: { accept: "application/dns-json" } },
-    );
-    if (!res.ok) return null;
-    const json = await res.json();
-    if (json.Status !== 0) return null;
-    return json.Answer ?? [];
-  } catch {
-    return null;
+  const res = await fetchWithTimeout(
+    `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=${type}`,
+    { timeout: 9000, headers: { accept: "application/dns-json" } },
+  );
+  if (res.error) return { records: null, error: res.error };
+  if (res.status === null || !res.ok) {
+    return { records: null, error: res.status === null ? "no response" : `HTTP ${res.status}` };
   }
+  const json = await res.json();
+  if (json.Status !== 0) return { records: [], error: null };
+  return { records: json.Answer ?? [], error: null };
 }
 
 async function checkDnsInner(domain) {
   const findings = [];
+  const errors = [];
   if (isIpOrLocal(domain)) return { findings, error: null };
   const registrable = registrableDomain(domain);
 
-  const [ns, mx] = await Promise.all([dohQuery(registrable, "NS"), dohQuery(registrable, "MX")]);
+  const [nsResult, mxResult] = await Promise.all([
+    dohQuery(registrable, "NS"),
+    dohQuery(registrable, "MX"),
+  ]);
 
-  if (ns && ns.length === 0) {
+  if (nsResult.error) errors.push(`DNS NS lookup: ${nsResult.error}`);
+  else if (nsResult.records && nsResult.records.length === 0) {
     findings.push(
       finding(
         "dns_no_ns",
@@ -852,7 +971,8 @@ async function checkDnsInner(domain) {
       ),
     );
   }
-  if (mx && mx.length === 0) {
+  if (mxResult.error) errors.push(`DNS MX lookup: ${mxResult.error}`);
+  else if (mxResult.records && mxResult.records.length === 0) {
     findings.push(
       finding(
         "dns_no_mx",
@@ -863,7 +983,7 @@ async function checkDnsInner(domain) {
       ),
     );
   }
-  return { findings, error: null };
+  return { findings, error: errors.length ? errors.join("; ") : null };
 }
 
 function visibleText(html) {
@@ -959,48 +1079,67 @@ export async function fetchPageSample(domain) {
 
 export async function checkUptime(domain) {
   const start = Date.now();
-  try {
-    const res = await fetchWithTimeout(`https://${domain}/`);
-    const responseMs = Date.now() - start;
-    const body = await res.text().catch(() => "");
-    return { ok: true, status: res.status, responseMs, body, headers: res.headers, finalUrl: res.url };
-  } catch (err) {
-    return { ok: false, error: err?.message ?? String(err), responseMs: Date.now() - start };
+  const res = await fetchWithTimeout(`https://${domain}/`);
+  const responseMs = Date.now() - start;
+  if (res.error) {
+    return { ok: false, error: res.error, responseMs };
   }
+  if (res.status === null) {
+    return { ok: false, error: "no response", responseMs };
+  }
+  return {
+    ok: true,
+    status: res.status,
+    responseMs,
+    body: res.body ?? "",
+    headers: res.headers,
+    finalUrl: res.url ?? `https://${domain}/`,
+  };
 }
 
 export function checkTls(domain) {
   return new Promise((resolve) => {
-    if (isBlockedOutboundHost(domain)) {
-      return resolve({ error: `Blocked TLS target: ${domain}` });
+    const normalized = String(domain ?? "").trim().toLowerCase().replace(/\.$/, "");
+    if (isBlockedOutboundHost(normalized)) {
+      return resolve({ error: `Blocked TLS target: ${normalized}` });
     }
+    // Pre-resolve and validate addresses before opening the socket so the
+    // connection cannot be redirected to a blocked address via DNS changes.
     let done = false;
     const finish = (value) => {
       if (done) return;
       done = true;
       resolve(value);
     };
-    const socket = connect(
-      { host: domain, port: 443, servername: domain, timeout: 10000 },
-      () => {
-        const cert = socket.getPeerCertificate();
-        socket.end();
-        if (!cert?.valid_to) return finish(null);
-        const expires = new Date(cert.valid_to);
-        const days = Math.round((expires.getTime() - Date.now()) / 86_400_000);
-        finish({
-          days,
-          validTo: cert.valid_to,
-          issuer: cert.issuer?.O ?? cert.issuer?.CN ?? "unknown",
-          subject: cert.subject?.CN ?? domain,
+    lookup(normalized, { all: true })
+      .then((results) => {
+        const blocked = results.some((entry) => isBlockedIpAddress(entry.address));
+        if (blocked) {
+          return finish({ error: `Blocked TLS target: ${normalized}` });
+        }
+        const socket = connect(
+          { host: normalized, port: 443, servername: normalized, timeout: 10000 },
+          () => {
+            const cert = socket.getPeerCertificate();
+            socket.end();
+            if (!cert?.valid_to) return finish(null);
+            const expires = new Date(cert.valid_to);
+            const days = Math.round((expires.getTime() - Date.now()) / 86_400_000);
+            finish({
+              days,
+              validTo: cert.valid_to,
+              issuer: cert.issuer?.O ?? cert.issuer?.CN ?? "unknown",
+              subject: cert.subject?.CN ?? domain,
+            });
+          },
+        );
+        socket.on("error", () => finish(null));
+        socket.on("timeout", () => {
+          socket.destroy();
+          finish(null);
         });
-      },
-    );
-    socket.on("error", () => finish(null));
-    socket.on("timeout", () => {
-      socket.destroy();
-      finish(null);
-    });
+      })
+      .catch(() => finish({ error: `DNS resolution failed for: ${normalized}` }));
   });
 }
 

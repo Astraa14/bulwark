@@ -18,7 +18,7 @@ test("failed site scans stay failed and do not look clean", async () => {
   };
 
   try {
-    const result = await runChecks("localhost");
+    const result = await runChecks("example.com");
     assert.equal(result.status, "failed");
     assert.equal(result.checksErrored, 1);
     assert.equal(result.checksPassed, 0);
