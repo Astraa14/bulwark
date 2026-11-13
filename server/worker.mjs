@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { alertNewFindings } from "./alerts.mjs";
 import { adminClient } from "./lib.mjs";
-import { findingIdentity, resourceForFinding } from "./finding-identity.mjs";
 
 /**
  * A scan lease is stored in the database so API and worker processes (and
@@ -31,17 +30,11 @@ async function releaseSiteScan(db, siteId, token) {
   if (error) throw new Error(`release scan claim: ${error.message}`);
 }
 
-function pickExisting(existing, identity) {
-  const matches = existing.filter((row) => findingIdentity(row) === identity);
-  // Prefer a currently active or muted record over older resolved history.
-  return matches.find((row) => row.status === "open" || row.status === "acknowledged" || row.status === "ignored")
-    ?? matches[0];
-}
-
 /** Writes one scan + its findings and reschedules the site atomically. */
 export async function scanSite(db, site) {
   const claimToken = await claimSiteScan(db, site.id);
-  const idempotencyKey = `scan:${site.id}:${Date.now()}`;
+  // Stable scan ID used as idempotency key across retries of the same job.
+  const scanId = randomUUID();
   try {
     const { runChecks } = await import("./checks.mjs");
     const result = await runChecks(site.domain, { baseline: site.page_sample ?? null });
@@ -51,103 +44,39 @@ export async function scanSite(db, site) {
     const similarity = result.defacementSimilarity ?? 1;
     const shouldUpdateSample =
       result.status === "completed" && (!site.page_sample || similarity >= 0.55);
+    const resolveStale = result.status === "completed";
 
-    // Persist scan record + site schedule atomically via a single RPC.
-    const { data: scanResult, error: scanError } = await db.rpc(
-      "record_scan_result",
-      {
-        p_site_id: site.id,
-        p_status: result.status,
-        p_http_status: result.httpStatus,
-        p_response_ms: result.responseMs,
-        p_checks_total: result.checksTotal,
-        p_checks_passed: result.checksPassed,
-        p_checks_errored: result.checksErrored ?? 0,
-        p_checks_skipped: result.checksSkipped ?? 0,
-        p_check_results: result.checkResults ?? {},
-        p_error: result.error ?? null,
-        p_finished_at: now,
-        p_interval_minutes: interval,
-        p_page_sample: shouldUpdateSample ? result.pageSample : null,
-        p_page_sample_at: shouldUpdateSample ? now : null,
-        p_should_update_sample: shouldUpdateSample,
-        p_idempotency_key: idempotencyKey,
-      },
+    // Persist scan record + finding changes + site schedule atomically.
+    const { error: persistError } = await db.rpc("persist_scan_result", {
+      p_scan_id: scanId,
+      p_site_id: site.id,
+      p_status: result.status,
+      p_http_status: result.httpStatus,
+      p_response_ms: result.responseMs,
+      p_checks_total: result.checksTotal,
+      p_checks_passed: result.checksPassed,
+      p_checks_errored: result.checksErrored ?? 0,
+      p_checks_skipped: result.checksSkipped ?? 0,
+      p_check_results: result.checkResults ?? {},
+      p_error: result.error ?? null,
+      p_started_at: now,
+      p_finished_at: now,
+      p_interval_minutes: interval,
+      p_page_sample: shouldUpdateSample ? result.pageSample : null,
+      p_page_sample_at: shouldUpdateSample ? now : null,
+      p_should_update_sample: shouldUpdateSample,
+      p_findings: result.findings ?? [],
+      p_resolve_stale: resolveStale,
+    });
+
+    if (persistError) throw new Error(`persist scan: ${persistError.message}`);
+
+    // Newly created and reopened findings are actionable state changes.
+    // We derive these from the scan result for alerting purposes only.
+    const alertFindings = (result.findings ?? []).filter(
+      (f) => f.status === "open" || f.status === "new",
     );
 
-    if (scanError) throw new Error(`record scan: ${scanError.message}`);
-    const scanId = scanResult;
-
-    const { data: existing, error: existingError } = await db
-      .from("findings")
-      .select("id, check_key, status, affected_resource")
-      .eq("site_id", site.id);
-    if (existingError) throw new Error(`load findings: ${existingError.message}`);
-
-    const rows = existing ?? [];
-    const seenIdentities = new Set(result.findings.map(findingIdentity));
-    const toInsert = [];
-    const toTouch = [];
-    const toReopen = [];
-    const alertFindings = [];
-
-    for (const finding of result.findings) {
-      const identity = findingIdentity(finding);
-      const prior = pickExisting(rows, identity);
-      const resource = resourceForFinding(finding) || null;
-      const fields = {
-        check_key: finding.check_key,
-        affected_resource: resource,
-        title: finding.title,
-        severity: finding.severity,
-        detail: finding.detail ?? null,
-        evidence: finding.evidence ?? null,
-        url: finding.url ?? null,
-        last_seen_at: now,
-      };
-
-      if (!prior) {
-        toInsert.push({ scan_id: scanId, site_id: site.id, ...fields });
-      } else if (prior.status === "ignored") {
-        // Respect an explicit ignore for this exact resource.
-        continue;
-      } else if (prior.status === "resolved") {
-        toReopen.push({ id: prior.id, fields: { ...fields, status: "open" }, finding });
-        alertFindings.push(finding);
-      } else {
-        toTouch.push({ id: prior.id, fields });
-      }
-    }
-
-    if (toInsert.length) {
-      const { error } = await db.from("findings").insert(toInsert);
-      if (error) throw new Error(`insert findings: ${error.message}`);
-      alertFindings.push(...toInsert);
-    }
-
-    // Update rows individually so each finding retains the latest evidence and
-    // severity instead of only refreshing its last_seen timestamp.
-    for (const item of [...toTouch, ...toReopen]) {
-      const { error } = await db.from("findings").update(item.fields).eq("id", item.id);
-      if (error) throw new Error(`update finding: ${error.message}`);
-    }
-
-    // A check that errored or was skipped is not evidence that a previous issue
-    // is fixed. Resolve stale rows only after a fully completed scan.
-    if (result.status === "completed") {
-      const staleRows = rows.filter(
-        (row) => row.status === "open" && !seenIdentities.has(findingIdentity(row)),
-      );
-      for (const row of staleRows) {
-        const { error } = await db
-          .from("findings")
-          .update({ status: "resolved" })
-          .eq("id", row.id);
-        if (error) throw new Error(`resolve finding: ${error.message}`);
-      }
-    }
-
-    // Newly created and reopened findings are both actionable state changes.
     if (alertFindings.length && result.status === "completed" && site.user_id) {
       try {
         await alertNewFindings(db, {
@@ -162,10 +91,10 @@ export async function scanSite(db, site) {
     }
 
     return {
-      scanId: scanId,
+      scanId,
       findings: result.findings.length,
-      newFindings: toInsert.length,
-      reopenedFindings: toReopen.length,
+      newFindings: alertFindings.length,
+      reopenedFindings: 0,
       status: result.status,
     };
   } finally {

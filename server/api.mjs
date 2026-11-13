@@ -533,6 +533,25 @@ app.post(
   }),
 );
 
+// ---------------------------------------------------------------------------
+// Platform findings (GitHub / Supabase scans, site_id = null)
+// ---------------------------------------------------------------------------
+
+app.get(
+  "/api/findings/platform",
+  requireUser,
+  wrap(async (req, res) => {
+    const { data, error } = await db
+      .from("findings")
+      .select("*")
+      .is("site_id", null)
+      .order("last_seen_at", { ascending: false })
+      .limit(200);
+    if (error) throw new Error(`load platform findings: ${error.message}`);
+    res.json({ findings: data ?? [] });
+  }),
+);
+
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
 
 app.listen(PORT, "0.0.0.0", () => {

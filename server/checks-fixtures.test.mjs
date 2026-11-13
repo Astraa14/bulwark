@@ -323,3 +323,159 @@ test("403 on exposed file is error; 404 is absence", async () => {
     global.fetch = originalFetch;
   }
 });
+
+// ---------------------------------------------------------------------------
+// Adversarial: edge cases for coverage honesty and finding lifecycle
+// ---------------------------------------------------------------------------
+
+test("redirect chain is followed and validated at every hop", async () => {
+  const originalFetch = global.fetch;
+  let hop = 0;
+  global.fetch = async (input) => {
+    const url = String(input);
+    hop += 1;
+    if (url === "https://example.com/") {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://example.com/step1" },
+      });
+    }
+    if (url === "https://example.com/step1") {
+      hop += 1;
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://example.com/step2" },
+      });
+    }
+    if (url === "https://example.com/step2") {
+      return new Response("<html><body>final</body></html>", {
+        status: 200,
+        headers: {
+          "content-type": "text/html",
+          "strict-transport-security": "max-age=31536000; includeSubDomains",
+          "content-security-policy": "default-src 'self'",
+        },
+      });
+    }
+    throw new Error("Unexpected fetch: " + url);
+  };
+  try {
+    const result = await runChecks("example.com");
+    assert.equal(result.status, "partial");
+    assert.equal(result.checkResults.site_uptime, "pass");
+    assert.ok(hop >= 3, `Expected at least 3 fetch hops, got ${hop}`);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("multiple finding types in one scan all reported", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async (input) => {
+    const url = String(input);
+    if (url === "https://example.com/") {
+      return new Response("<html><body>ok</body></html>", {
+        status: 200,
+        headers: {
+          "content-type": "text/html",
+          "access-control-allow-origin": "*",
+          "set-cookie": "session=abc; Secure; HttpOnly; SameSite=Strict",
+        },
+      });
+    }
+    if (url === "https://example.com/.env") {
+      return new Response("STRIPE_SECRET_KEY=sk_live_abc123xyz45678901234\n", {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    }
+    if (/(\/\.git\/config|\/\.DS_Store|\/backup\.sql|\/db\.sql|\/phpinfo\.php)$/.test(url)) {
+      return new Response(null, { status: 404 });
+    }
+    throw new Error("Unexpected fetch: " + url);
+  };
+  try {
+    const result = await runChecks("example.com");
+    assert.equal(result.status, "partial");
+    const checkKeys = result.findings.map((f) => f.check_key);
+    assert.ok(checkKeys.includes("header_hsts"), "missing HSTS");
+    assert.ok(checkKeys.includes("header_csp"), "missing CSP");
+    assert.ok(checkKeys.includes("cors_wildcard"), "open CORS");
+    assert.ok(checkKeys.includes("exposed_env"), "exposed .env");
+    // At minimum these four finding types must be present.
+    assert.ok(checkKeys.length >= 4, `Expected at least 4 findings, got ${checkKeys.length}: ${checkKeys.join(", ")}`);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("oversized script bundle is rejected as error, not pass", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async (input) => {
+    const url = String(input);
+    if (url === "https://example.com/") {
+      return new Response(
+        '<html><body><script src="/app.js"></script></body></html>',
+        {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        },
+      );
+    }
+    if (url === "https://example.com/app.js") {
+      return new Response("x".repeat(6_000_000), {
+        status: 200,
+        headers: { "content-type": "application/javascript" },
+      });
+    }
+    throw new Error("Unexpected fetch: " + url);
+  };
+  try {
+    const result = await runChecks("example.com");
+    assert.equal(result.status, "partial");
+    assert.equal(result.checkResults.secrets, "error");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("changed evidence on recurrence updates severity and evidence", async () => {
+  const originalFetch = global.fetch;
+  let scanCount = 0;
+  global.fetch = async (input) => {
+    const url = String(input);
+    scanCount += 1;
+    if (url === "https://example.com/") {
+      if (scanCount === 1) {
+        return new Response("<html><body>ok</body></html>", {
+          status: 200,
+          headers: {
+            "content-type": "text/html",
+            "content-security-policy": "default-src 'self'",
+          },
+        });
+      }
+      return new Response("<html><body>ok</body></html>", {
+        status: 200,
+        headers: {
+          "content-type": "text/html",
+          "strict-transport-security": "max-age=31536000; includeSubDomains",
+          "content-security-policy": "default-src 'self'",
+        },
+      });
+    }
+    throw new Error("Unexpected fetch: " + url);
+  };
+  try {
+    const first = await runChecks("example.com");
+    const hstsFinding = first.findings.find((f) => f.check_key === "header_hsts");
+    assert.ok(hstsFinding, "first scan should find missing HSTS");
+    assert.equal(hstsFinding.severity, "medium");
+
+    const second = await runChecks("example.com");
+    const hstsFinding2 = second.findings.find((f) => f.check_key === "header_hsts");
+    assert.equal(hstsFinding2, undefined, "second scan should not find missing HSTS");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

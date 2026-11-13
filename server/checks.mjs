@@ -1335,4 +1335,4 @@ export async function runChecks(rawDomain, { baseline = null } = {}) {
   };
 }
 
-export { normalizeDomain, ensureSafeFetchUrl };
+export { normalizeDomain, ensureSafeFetchUrl, fetchWithTimeout };

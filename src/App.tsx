@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import AuthScreen from "@/screens/AuthScreen";
 import { apiPost } from "@/lib/api";
@@ -9,6 +9,7 @@ import {
   deleteSite,
   explainFinding,
   listConnections,
+  listPlatformFindings,
   removeConnection,
   relTime,
   scanConnection,
@@ -2328,6 +2329,127 @@ function ConnectionsSection({
   );
 }
 
+function PlatformFindingsSection({
+  findings,
+  loading,
+  onSetStatus,
+}: {
+  findings: FindingRow[];
+  loading: boolean;
+  onSetStatus: (id: string, status: FindingStatus) => Promise<void>;
+}) {
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+
+  const githubFindings = findings.filter((f) =>
+    (f.check_key ?? "").startsWith("secret_") ||
+    (f.check_key ?? "").startsWith("dep_") ||
+    (f.check_key ?? "").startsWith("exposed_") ||
+    (f.check_key ?? "").startsWith("dockerfile_") ||
+    (f.check_key ?? "").startsWith("compose_") ||
+    (f.check_key ?? "").startsWith("workflow_"),
+  );
+  const supabaseFindings = findings.filter(
+    (f) => !githubFindings.some((g) => g.id === f.id),
+  );
+
+  const setStatus = async (id: string, status: FindingStatus) => {
+    setBusyIds((prev) => new Set([...prev, id]));
+    try {
+      await onSetStatus(id, status);
+    } finally {
+      setBusyIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  const renderFinding = (f: FindingRow) => (
+    <div className="key-row" key={f.id}>
+      <div className="key-body">
+        <div className="provider-name">
+          <div>
+            <h3>{f.title}</h3>
+            <p>
+              {f.check_key} · {f.severity}{" "}
+              <span>
+                <Dot tone={f.severity === "critical" || f.severity === "high" ? "critical" : "healthy"} />
+                {f.status}
+              </span>
+            </p>
+          </div>
+          <div className="key-field">
+            <code>{f.evidence ?? "—"}</code>
+            <span className="muted">{f.detail ?? ""}</span>
+          </div>
+        </div>
+      </div>
+      <div className="key-actions">
+        <select
+          value={f.status}
+          onChange={(e) => setStatus(f.id, e.target.value as FindingStatus)}
+          disabled={busyIds.has(f.id)}
+          className="status-select"
+        >
+          <option value="open">Open</option>
+          <option value="acknowledged">Acknowledged</option>
+          <option value="resolved">Resolved</option>
+          <option value="ignored">Ignored</option>
+        </select>
+        {f.url && (
+          <a href={f.url} target="_blank" rel="noopener noreferrer" className="button dark" style={{ fontSize: "0.85rem", padding: "4px 10px" }}>
+            View
+          </a>
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <>
+      <section className="card setting-list">
+        <div className="setting-title">
+          <h3>Platform findings</h3>
+          <p>
+            Findings from connected GitHub repositories and Supabase projects.
+            These are separate from website scan findings.
+          </p>
+        </div>
+        {loading ? (
+          <p className="muted pad">Loading platform findings…</p>
+        ) : findings.length === 0 ? (
+          <div className="key-empty">
+            <p>No platform findings yet.</p>
+            <span className="key-empty-hint">Connect and scan a GitHub repo or Supabase project to see findings here.</span>
+          </div>
+        ) : (
+          <>
+            {githubFindings.length > 0 && (
+              <>
+                <div className="setting-title" style={{ marginTop: "1rem" }}>
+                  <h3>GitHub</h3>
+                  <p>Repository scan findings (secrets, dependencies, configuration).</p>
+                </div>
+                {githubFindings.map(renderFinding)}
+              </>
+            )}
+            {supabaseFindings.length > 0 && (
+              <>
+                <div className="setting-title" style={{ marginTop: "1rem" }}>
+                  <h3>Supabase</h3>
+                  <p>Project scan findings (public storage, RLS coverage).</p>
+                </div>
+                {supabaseFindings.map(renderFinding)}
+              </>
+            )}
+          </>
+        )}
+      </section>
+    </>
+  );
+}
+
 function Integrations({
   settings,
   onSave,
@@ -2339,6 +2461,9 @@ function Integrations({
   onAddConnection,
   onRemoveConnection,
   onScanConnection,
+  platformFindings,
+  platformFindingsLoading,
+  onSetPlatformFindingStatus,
 }: {
   settings: Settings | null;
   onSave: (patch: Partial<Settings>) => Promise<Settings>;
@@ -2350,6 +2475,9 @@ function Integrations({
   onAddConnection: (input: Parameters<typeof addConnection>[0]) => Promise<void>;
   onRemoveConnection: (id: string, type: ConnectionType) => Promise<void>;
   onScanConnection: (id: string, type: ConnectionType, repo?: { owner: string; repo: string }) => Promise<void>;
+  platformFindings: FindingRow[];
+  platformFindingsLoading: boolean;
+  onSetPlatformFindingStatus: (id: string, status: FindingStatus) => Promise<void>;
 }) {
   const [webhook, setWebhook] = useState(settings?.slackWebhookUrl ?? "");
   const [showWebhook, setShowWebhook] = useState(false);
@@ -2517,6 +2645,12 @@ _Open Bulwark for the fix_`}</pre>
         onAdd={onAddConnection}
         onRemove={onRemoveConnection}
         onScan={onScanConnection}
+      />
+
+      <PlatformFindingsSection
+        findings={platformFindings}
+        loading={platformFindingsLoading}
+        onSetStatus={onSetPlatformFindingStatus}
       />
     </>
   );
@@ -2914,6 +3048,38 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
   const settingsState = useSettings();
   const keysState = useApiKeys();
   const connectionsState = useConnections();
+  const [platformFindings, setPlatformFindings] = useState<FindingRow[]>([]);
+  const [platformFindingsLoading, setPlatformFindingsLoading] = useState(false);
+
+  const reloadPlatformFindings = useCallback(async () => {
+    setPlatformFindingsLoading(true);
+    try {
+      const data = await listPlatformFindings();
+      setPlatformFindings(data);
+    } catch {
+      setPlatformFindings([]);
+    } finally {
+      setPlatformFindingsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      setPlatformFindingsLoading(true);
+      try {
+        const data = await listPlatformFindings();
+        if (mounted) setPlatformFindings(data);
+      } catch {
+        if (mounted) setPlatformFindings([]);
+      } finally {
+        if (mounted) setPlatformFindingsLoading(false);
+      }
+    };
+    void load();
+    return () => { mounted = false; };
+  }, []);
+
   const [page, setPage] = useState<Page>("Overview");
   const [activeFindingId, setActiveFindingId] = useState<string | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
@@ -3005,6 +3171,9 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
       onAddConnection={(input) => connectionsState.add(input).then(() => {})}
       onRemoveConnection={connectionsState.remove}
       onScanConnection={(id, type, repo) => connectionsState.scan(id, type, repo).then(() => {})}
+      platformFindings={platformFindings}
+      platformFindingsLoading={platformFindingsLoading}
+      onSetPlatformFindingStatus={(id, status) => setFindingStatus(id, status).then(() => void reloadPlatformFindings())}
     />
   ) : page === "AI Copilot" ? (
     <AiCopilot

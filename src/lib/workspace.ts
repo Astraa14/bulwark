@@ -394,6 +394,11 @@ export async function scanConnection(
   );
 }
 
+export async function listPlatformFindings(): Promise<FindingRow[]> {
+  const res = await apiGet<{ findings: FindingRow[] }>("/api/findings/platform");
+  return res.findings;
+}
+
 export function useConnections() {
   const [connections, setConnections] = useState<ConnectionRow[]>([]);
   const [loading, setLoading] = useState(true);

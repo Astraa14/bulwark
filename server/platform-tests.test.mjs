@@ -120,6 +120,126 @@ test("scanGitHubRepo detects unpinned dependencies", async () => {
   }
 });
 
+test("scanGitHubRepo detects vulnerable dependency in lockfile", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async (input) => {
+    const url = String(input);
+    if (url === "https://api.github.com/repos/octocat/Hello-World/contents/") {
+      return new Response(
+        JSON.stringify([
+          { type: "file", path: "package-lock.json", size: 5000, encoding: "base64", content: Buffer.from(JSON.stringify({ packages: { "node_modules/lodash": { version: "4.17.20" } } })).toString("base64") },
+        ]),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url === "https://api.github.com/repos/octocat/Hello-World/contents/package-lock.json") {
+      return new Response(
+        JSON.stringify({ type: "file", path: "package-lock.json", size: 5000, encoding: "base64", content: Buffer.from(JSON.stringify({ packages: { "node_modules/lodash": { version: "4.17.20" } } })).toString("base64") }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    throw new Error("Unexpected fetch: " + url);
+  };
+  try {
+    const result = await scanGitHubRepo("ghp_faketoken1234567890", "octocat", "Hello-World");
+    const vulnFinding = result.findings.find((f) => f.check_key === "dep_vuln_lodash");
+    assert.ok(vulnFinding, "should flag vulnerable lodash");
+    assert.equal(vulnFinding.severity, "high");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("scanGitHubRepo flags Dockerfile running as root", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async (input) => {
+    const url = String(input);
+    if (url === "https://api.github.com/repos/octocat/Hello-World/contents/") {
+      return new Response(
+        JSON.stringify([
+          { type: "file", path: "Dockerfile", size: 300, encoding: "base64", content: Buffer.from("FROM node:18\nRUN npm install\nCMD [\"node\", \"index.js\"]").toString("base64") },
+        ]),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url === "https://api.github.com/repos/octocat/Hello-World/contents/Dockerfile") {
+      return new Response(
+        JSON.stringify({ type: "file", path: "Dockerfile", size: 300, encoding: "base64", content: Buffer.from("FROM node:18\nRUN npm install\nCMD [\"node\", \"index.js\"]").toString("base64") }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    throw new Error("Unexpected fetch: " + url);
+  };
+  try {
+    const result = await scanGitHubRepo("ghp_faketoken1234567890", "octocat", "Hello-World");
+    const dockerFinding = result.findings.find((f) => f.check_key === "dockerfile_root_user");
+    assert.ok(dockerFinding, "should flag Dockerfile running as root");
+    assert.equal(dockerFinding.severity, "medium");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("scanGitHubRepo flags pull_request_target workflow", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async (input) => {
+    const url = String(input);
+    if (url === "https://api.github.com/repos/octocat/Hello-World/contents/") {
+      return new Response(
+        JSON.stringify([
+          { type: "file", path: ".github/workflows/ci.yml", size: 300, encoding: "base64", content: Buffer.from("on: pull_request_target\njobs: test:\n  runs-on: ubuntu-latest").toString("base64") },
+        ]),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url === "https://api.github.com/repos/octocat/Hello-World/contents/.github/workflows/ci.yml") {
+      return new Response(
+        JSON.stringify({ type: "file", path: ".github/workflows/ci.yml", size: 300, encoding: "base64", content: Buffer.from("on: pull_request_target\njobs: test:\n  runs-on: ubuntu-latest").toString("base64") }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    throw new Error("Unexpected fetch: " + url);
+  };
+  try {
+    const result = await scanGitHubRepo("ghp_faketoken1234567890", "octocat", "Hello-World");
+    const wfFinding = result.findings.find((f) => f.check_key === "workflow_pull_request_target");
+    assert.ok(wfFinding, "should flag pull_request_target workflow");
+    assert.equal(wfFinding.severity, "high");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("scanGitHubRepo reports coverage information", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async (input) => {
+    const url = String(input);
+    if (url === "https://api.github.com/repos/octocat/Hello-World/contents/") {
+      return new Response(
+        JSON.stringify([
+          { type: "file", path: "readme.md", size: 100, encoding: "base64", content: Buffer.from("# Hello World").toString("base64") },
+        ]),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    throw new Error("Unexpected fetch: " + url);
+  };
+  try {
+    const result = await scanGitHubRepo("ghp_faketoken1234567890", "octocat", "Hello-World");
+    assert.ok(result.coverage, "should report coverage");
+    assert.equal(result.coverage.filesScanned, 1);
+    assert.equal(result.coverage.totalFiles, 1);
+    assert.equal(result.coverage.scanTruncated, false);
+    assert.equal(result.coverage.scannedPercent, 100);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+// ============================================================================
+// Supabase scanner tests
+// ============================================================================
+
 // ============================================================================
 // Supabase scanner tests
 // ============================================================================

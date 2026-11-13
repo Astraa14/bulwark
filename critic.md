@@ -1,172 +1,55 @@
-I reviewed the scanner and worker code. This is a \*\*source-level critique, not a live penetration test\*\*. My main conclusion: Bulwark has a useful start for \*\*external website posture monitoring\*\*, but it currently risks presenting uncertain observations as definitive security findings—and in one case may incorrectly close real findings. I’d address reliability and safety before adding more checks or AI.
+Agreed. Bulwark should be a **continuous, evidence-based security monitor that tells a non-expert what to fix**—not a homepage checker that hands out a “secure” badge.
 
+One important issue before adding features: **the current repository code doesn’t match the claims in `critique.md`.** In the latest source I can inspect, `verify.mjs` imports `isUnsafeIp`, `hasUnsafeDns`, `ensureSafeFetchUrl`, and `fetchWithTimeout` from `checks.mjs`, but the checked-in `checks.mjs` doesn’t export those functions. That can stop the API from starting. The checked-in scanner also appears to lack the newer outcome and guarded-fetch behavior the critique says is implemented. So I would **not treat the reported passing tests or “critical issues fixed” as verified** until the actual branch source and CI agree. [Current `verify.mjs`](https://github.com/Astraa14/bulwark/blob/6020c53a7f9a69cfd444eaabece523dc4837a4dc/server/verify.mjs) · [Current `checks.mjs`](https://github.com/Astraa14/bulwark/blob/6020c53a7f9a69cfd444eaabece523dc4837a4dc/server/checks.mjs) · [Current `critique.md`](https://github.com/Astraa14/bulwark/blob/6020c53a7f9a69cfd444eaabece523dc4837a4dc/critique.md)
 
+## What I recommend, in order
 
-\## Highest-priority issues
+### 1. Establish a trustworthy baseline
 
+Before broadening coverage, make the shipped code match the documented claims.
 
+- Fix the missing-export/runtime mismatch.
+- Run the exact CI workflow from a clean checkout and confirm `npm test` and the build pass.
+- Test API and worker startup, and test the Supabase migrations against a disposable project.
+- Treat the critique as a set of claims to verify against source and tests—not as evidence by itself.
 
-\### 1. A failed scan can automatically resolve real findings
+**Completion bar:** clean install, CI green, API and worker start, migrations apply, and a controlled test scan produces a result.
 
+### 2. Make scan results and finding changes one reliable operation
 
+The worker calls `record_scan_result`, then makes separate database calls to insert, update, and resolve findings. That means scan metadata may commit while finding reconciliation fails. The `Date.now()` idempotency key is also generated anew for each attempt, so it won’t necessarily make a retry of the same job idempotent. [Worker persistence flow](https://github.com/Astraa14/bulwark/blob/6020c53a7f9a69cfd444eaabece523dc4837a4dc/server/worker.mjs#L41-L174)
 
-The worker treats any previously open finding not seen in the latest result as resolved. But many checks quietly return no findings when a request fails, times out, or returns an unexpected response. A temporary outage can therefore look like “the issue is fixed.” Worse, a failed homepage scan only reports `site\_unreachable`, after which other open findings are absent and can be marked resolved.
+Move the scan, check outcomes, finding changes, and site schedule update into **one database transaction**. Use a stable job/scan ID across retries. Put alerts in an outbox and deliver them after commit, so a failed alert can be retried without losing findings or duplicating user notifications.
 
+### 3. Measure coverage honestly, check by check
 
+Keep `pass`, `finding`, `error`, and `not checked` distinct all the way from scanner through storage to the UI. A timeout, forbidden response, unsupported check, or incomplete crawl must not become “clean.” Never resolve a finding merely because it wasn’t returned; resolve it only when the specific check/resource was successfully rechecked.
 
-That’s a trust-breaking failure mode: the dashboard can look healthier precisely because the scanner couldn’t check the site. \*\*Do not infer remediation from a missing result unless that check completed successfully.\*\* Store an outcome per check—such as `pass`, `finding`, or `error`—and only auto-resolve after a successful, sufficiently repeated clean result.  
+This is particularly important for repository and platform scans: a 40-file scan is not a full-repository scan, and an unavailable RLS-inspection function is “not checked,” not “RLS is okay.”
 
-\[Worker finding reconciliation](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/worker.mjs#L26-L87) · \[Unreachable-site path](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/checks.mjs#L918-L935)
+### 4. Build useful coverage for vibe-coded apps
 
+The existing GitHub integration is a good direction, but it’s currently bounded: it scans up to 40 files, checks a short list of secret patterns and sensitive filenames, and only warns about unpinned dependencies. That can find some real mistakes, but it won’t detect known vulnerable package versions or adequately assess the whole repository. [GitHub scanning limits and checks](https://github.com/Astraa14/bulwark/blob/6020c53a7f9a69cfd444eaabece523dc4837a4dc/server/github.mjs#L1-L5) · [Dependency scan](https://github.com/Astraa14/bulwark/blob/6020c53a7f9a69cfd444eaabece523dc4837a4dc/server/github.mjs#L228-L276)
 
+I’d prioritize these read-only checks:
 
-\### 2. Scanning creates an outbound-request safety risk
+1. **Secrets:** scan the complete repository tree, clearly report files/commit scanned, avoid storing secret values, and explain revocation and rotation.
+2. **Dependencies:** parse lockfiles and match exact direct/transitive versions against a maintained vulnerability advisory source. “Unpinned” is not a substitute for vulnerability detection.
+3. **Deployment/config:** flag common dangerous settings in supported hosting and infrastructure configs, with evidence and platform-specific remediation.
+4. **Supabase:** make RLS and storage checks genuinely verifiable. The current RLS check depends on the customer installing a custom RPC, so absent that function, actual table-policy coverage is unavailable. Don’t imply otherwise. [Supabase checks and RLS limitation](https://github.com/Astraa14/bulwark/blob/6020c53a7f9a69cfd444eaabece523dc4837a4dc/server/supabase.mjs#L71-L130)
 
+Use least-privilege, read-only integrations. Never ask a user to hand over a service-role key just to simplify inspection.
 
+### 5. Turn detection into continuous monitoring
 
-The scanner follows redirects and makes requests to paths and script URLs on a site. Domain ownership verification is valuable, but it does not make every later destination safe: redirects or changing DNS can point requests somewhere other than the verified public site. That creates a \*\*server-side request forgery (SSRF) and network-boundary risk\*\* for the service running Bulwark.
+A monitor needs to notice change, not just offer a button to scan once. Track repository commits, dependency changes, deployment/config changes, domain/TLS/DNS changes, and recurring external checks. Store what revision and asset each result applies to, and alert on meaningful new or reopened risk—not every scan.
 
+### 6. Define the product honestly
 
+Bulwark can credibly say: **“We monitor these assets and report risks we could verify.”** It should not say “your app is secure.” External scans cannot prove authorization is correct or review private application logic. If you later add authenticated tests, require a dedicated test account, explicit scope, and safe, non-destructive test behavior.
 
-Before expanding scans, enforce outbound network protections: reject loopback, private, link-local, and reserved IP ranges for both IPv4 and IPv6; validate every redirect and DNS resolution; cap redirects; and add network-level egress rules. Apply the same controls to verification and all optional lookups.  
+## The next implementation I’d choose
 
-\[Redirect-following fetch helper](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/checks.mjs#L194-L207) · \[Script URL collection and fetching](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/checks.mjs#L607-L670) · \[Ownership verification fetch](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/verify.mjs#L23-L36)
+**First, reconcile source and tests so the current branch really builds and runs as documented.** Then I’d implement transactional finding persistence and stable retry IDs. Until those are done, adding more checks risks increasing the number of results without making them more trustworthy.
 
-
-
-\### 3. Fetch timeouts don’t cover reading response bodies
-
-
-
-`fetchWithTimeout` clears its timer once `fetch()` returns the response headers. Several callers then read the body afterward. So the timeout may protect connection setup, but not a slow or endless response body. There’s also no consistent response-size cap: the homepage, probe responses, and scripts can consume substantial memory.
-
-
-
-Use a single deadline that covers the \*entire\* operation, including body consumption, and enforce byte limits while streaming. Give each check an explicit maximum response size and concurrency budget.  
-
-\[Timeout helper](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/checks.mjs#L194-L207) · \[Homepage body read](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/checks.mjs#L209-L218) · \[Exposed-file body reads](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/checks.mjs#L255-L273)
-
-
-
-\### 4. Overlapping scans can race
-
-
-
-A manual scan runs directly in the API, while the worker independently starts due scans on an interval. There’s no visible claim/lock preventing the same site from being scanned concurrently. The worker’s `setInterval` can also start another tick while a slow prior tick is still running. Concurrent runs can produce duplicate scan records, competing finding updates, and confusing results.
-
-
-
-Add per-site scan claims or a queue with idempotency, and ensure the worker never starts a second tick before the first finishes. Put manual scans through the same controlled path, with per-user and per-site rate limits.  
-
-\[Manual scan endpoint](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/api.mjs#L153-L165) · \[Worker scheduling loop](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/worker.mjs#L128-L190)
-
-
-
-\## Where the findings can mislead users
-
-
-
-\### 5. The scanner is mostly checking a homepage, not the application
-
-
-
-Most checks inspect `https://domain/`; secret scanning samples the homepage and up to six same-host JavaScript files. That can catch some useful problems, but it won’t represent an app with multiple routes, API endpoints, admin areas, or authenticated functionality. The current product should be described as \*\*external posture monitoring\*\*, not a comprehensive vulnerability assessment.
-
-
-
-A stronger roadmap is a safe, explicitly scoped crawl of public pages and assets, followed by opt-in integrations for code, dependency, and configuration findings. Keep authenticated testing out of scope unless you build a clear authorization model and safe test mode.
-
-
-
-\### 6. Several checks need better context and confidence
-
-
-
-\- \*\*CORS:\*\* reflecting an `Origin` is not, by itself, proof that private data is exposed. The check should account for credential support and the sensitivity of the affected response before assigning meaningful severity.  
-
-&#x20; \[CORS checks](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/checks.mjs#L338-L386)
-
-
-
-\- \*\*Cookie flags:\*\* checking whether the raw `Set-Cookie` string contains words like `secure` or `samesite` can confuse cookie values with actual attributes. Parse cookie attributes structurally; assess session cookies separately from harmless preference cookies.  
-
-&#x20; \[Cookie checks](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/checks.mjs#L388-L415)
-
-
-
-\- \*\*Missing headers:\*\* a missing CSP or HSTS header can be worth reporting, but impact depends on the site and deployment. Treat these as configuration guidance with context, not automatic evidence of a concrete exploit.
-
-
-
-\- \*\*`robots.txt`, sitemap, and `security.txt`:\*\* missing these is often normal and should not compete with actual exposures or compromise indicators in the main threat queue.  
-
-&#x20; \[Discovery checks](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/checks.mjs#L460-L545)
-
-
-
-Give every finding a confidence level, the exact observation, what it does \*not\* prove, and a prioritized remediation. Make severity reflect impact and evidence—not just the check’s fixed default.
-
-
-
-\### 7. “Checks passed” is not a reliable measure
-
-
-
-`checksPassed` is calculated as `checksTotal - number of findings`. But findings are not a one-to-one representation of checks: a check may produce multiple findings, some checks may be skipped or fail silently, and some findings are informational. That makes the scan summary potentially misleading.
-
-
-
-Persist a result for each check, including skipped and errored checks, and calculate completion from those results.  
-
-\[Check counting and result calculation](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/checks.mjs#L895-L916) · \[Final result](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/checks.mjs#L1005-L1027)
-
-
-
-\### 8. Finding identity and lifecycle are too coarse
-
-
-
-Findings are reconciled by `check\_key` alone. That can merge distinct affected resources into one finding—for example, more than one exposed path—and existing rows are mainly “touched” by updating `last\_seen\_at`, not their evidence or severity. Ignored findings are also permanently suppressed by key, even if the underlying issue later changes.
-
-
-
-Use a stable identity that includes the affected resource where appropriate. Update evidence, severity, and metadata on recurrence; preserve status history; and let users mute a finding with an optional expiry or scope rather than hiding that check forever.  
-
-\[Finding matching and updates](https://github.com/Astraa14/bulwark/blob/c3168fc4041f4731cf1b1b31a5553a93564f9e2f/server/worker.mjs#L26-L87)
-
-
-
-\## Make it more intelligent—without pretending AI is the scanner
-
-
-
-Today the AI is an \*\*explanation layer\*\*, not the detection engine: deterministic checks produce the finding, then the model explains it. That’s a sensible boundary. Keep detection evidence-based and reproducible. Improve the explanation layer by marking scan evidence as untrusted input, requiring the model to stay grounded in the observed facts, and presenting the output as advice—not verification.
-
-
-
-The strongest “intelligence” improvements are likely to come first from \*\*better check outcomes, deduplication, confidence, asset context, and useful remediation\*\*, not from adding a model to decide whether something is vulnerable.
-
-
-
-\## Suggested order of work
-
-
-
-1\. \*\*Prevent unsafe outbound requests and bound every fetch.\*\*
-
-2\. \*\*Represent per-check pass/fail/error; never resolve findings on scan failure.\*\*
-
-3\. \*\*Prevent overlapping and unbounded scans.\*\*
-
-4\. \*\*Fix noisy or overconfident checks—especially CORS, cookies, and informational discovery checks.\*\*
-
-5\. \*\*Improve finding identity, evidence updates, and mute/reopen lifecycle.\*\*
-
-6\. \*\*Add fixture-based tests for clean sites, vulnerable examples, transient failures, redirects, oversized bodies, and changed evidence.\*\*
-
-7\. Then expand coverage in a clearly stated product scope.
-
-
-
-The most important product principle: \*\*when Bulwark can’t verify a check, it should say “not checked,” never imply “secure.”\*\*
-
+This isn’t flawless yet, and no scanner can guarantee an application is secure. But that order would make Bulwark more credible, more useful in practice, and much less likely to give a vibe coder false reassurance.
