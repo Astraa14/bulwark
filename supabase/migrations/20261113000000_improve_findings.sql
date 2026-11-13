@@ -30,7 +30,7 @@ set search_path = public
 as $$
 begin
   if old.status is distinct from new.status then
-    new.status_history = old.status_history ||
+    new.status_history = coalesce(old.status_history, '[]'::jsonb) ||
       jsonb_build_object(
         'status', new.status,
         'at', now()

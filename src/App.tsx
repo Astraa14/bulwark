@@ -27,6 +27,8 @@ import {
   type SiteRow,
 } from "@/lib/workspace";
 
+type Theme = "dark" | "light";
+
 type Page =
   | "Overview"
   | "Sites"
@@ -99,14 +101,23 @@ function Button({
   dark = false,
   onClick,
   className = "",
+  download = false,
+  disabled = false,
 }: {
   children: React.ReactNode;
   dark?: boolean;
   onClick?: () => void;
   className?: string;
+  download?: boolean;
+  disabled?: boolean;
 }) {
   return (
-    <button className={`button ${dark ? "dark" : ""} ${className}`} onClick={onClick}>
+    <button className={`button ${dark ? "dark" : ""} ${className}`} onClick={onClick} disabled={disabled}>
+      {download && (
+        <svg className="button-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M10 2.75v9.5m0 0 3.5-3.5M10 12.25l-3.5-3.5M4 14.75v2.5h12v-2.5" />
+        </svg>
+      )}
       {children}
     </button>
   );
@@ -118,12 +129,22 @@ function Header({
   email,
   onSignOut,
   onGoKeys,
+  monitoringState,
+  monitoringLabel,
+  onGoSites,
+  theme,
+  onToggleTheme,
 }: {
   page: Page;
   onMenu: () => void;
   email?: string | null;
   onSignOut?: () => void;
   onGoKeys?: () => void;
+  monitoringState: "active" | "setup" | "paused";
+  monitoringLabel: string;
+  onGoSites: () => void;
+  theme: Theme;
+  onToggleTheme: () => void;
 }) {
   const [userMenu, setUserMenu] = useState(false);
   const label = email ?? "you@bulwark.app";
@@ -146,9 +167,36 @@ function Header({
           </svg>
           AI: BYOK
         </button>
-        <div className="system-pill">
-          <Dot /> Monitoring active
-        </div>
+        <button
+          type="button"
+          className="theme-toggle"
+          onClick={onToggleTheme}
+          aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          {theme === "dark" ? (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="4" />
+              <path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M20.5 14.2A8.4 8.4 0 0 1 9.8 3.5 8.7 8.7 0 1 0 20.5 14.2Z" />
+            </svg>
+          )}
+          <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
+        </button>
+        <button
+          type="button"
+          className={`system-pill monitoring-status ${monitoringState}`}
+          onClick={onGoSites}
+          title="View site monitoring status"
+          aria-label={`${monitoringLabel}. Open Sites`}
+        >
+          <Dot tone={monitoringState === "active" ? "healthy" : monitoringState === "setup" ? "medium" : "low"} />
+          {monitoringLabel}
+          <span className="status-hint">View sites</span>
+        </button>
         <div className="user-menu">
           <button
             className="avatar"
@@ -231,11 +279,12 @@ function Sidebar({
       {open && <button className="scrim" onClick={close} aria-label="Close navigation" />}
       <aside className={`sidebar ${open ? "open" : ""}`}>
         <div className="brand">
-          <img src="/logo-full.jpg" alt="Bulwark" className="brand-logo" />
+          <img src="/bulwark-icon.svg" alt="Bulwark" className="brand-logo" />
+          <span className="sr-only">Bulwark</span>
         </div>
-        <button className="workspace">
-          Indie workspace <span>⌄</span>
-        </button>
+        <div className="workspace" aria-label="Current workspace">
+          Indie workspace
+        </div>
         <nav>
           {nav.map((item) => (
             <button
@@ -312,7 +361,7 @@ function siteHealth(site: SiteRow, findings: FindingRow[]) {
     return { label: "At risk", tone: "critical" };
   }
   if (open.length) return { label: "Needs attention", tone: "high" };
-  return { label: "No open findings", tone: "healthy" };
+  return { label: "Healthy", tone: "healthy" };
 }
 
 type CheckOutcome = "passed" | "finding" | "not_checked" | "error";
@@ -432,7 +481,26 @@ function Overview({
   const critical = openFindings.filter((f) => f.severity === "critical").length;
   const high = openFindings.filter((f) => f.severity === "high").length;
   const medium = openFindings.filter((f) => f.severity === "medium").length;
-  const verified = sites.filter((s) => s.status === "verified").length;
+  const low = openFindings.filter((f) => f.severity === "low").length;
+  const info = openFindings.filter((f) => f.severity === "info").length;
+  const activeSites = sites.filter((site) => site.status === "verified").length;
+  const pausedSites = sites.filter((site) => site.status === "paused").length;
+  const pendingSites = sites.filter((site) => site.status === "pending").length;
+  const priorityFindings = [...openFindings].sort(
+    (a, b) =>
+      SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) ||
+      new Date(b.last_seen_at).getTime() - new Date(a.last_seen_at).getTime(),
+  );
+  const isSetupRequired = sites.length === 0 || pendingSites > 0;
+  const isAllPaused = activeSites === 0 && pausedSites > 0;
+  const briefingState =
+    openFindings.length > 0 ? "has-findings" :
+    isSetupRequired ? "needs-setup" :
+    isAllPaused ? "is-paused" : "is-clear";
+  const briefingTone =
+    openFindings.length > 0
+      ? critical > 0 ? "critical" : high > 0 ? "high" : "medium"
+      : isSetupRequired ? "medium" : isAllPaused ? "low" : "healthy";
 
   const buckets = Array.from({ length: 10 }, () => ({ d: 0, r: 0 }));
   for (const f of findings) {
@@ -460,76 +528,91 @@ function Overview({
     <>
       <PageTitle
         title="Overview"
-        subtitle="A clearer view of your public website posture."
-        action={
-          <div className="title-actions">
-            <Button>Last 30 days⌄</Button>
-            <Button dark onClick={openModal}>
-              + Add site
-            </Button>
-          </div>
-        }
+        subtitle="A quieter way to keep your code safe."
       />
-      <section className="stats">
-        <Stat
-          label="Sites monitored"
-          value={String(sites.length)}
-          note={verified === sites.length ? "All sites verified" : `${verified} of ${sites.length} verified`}
-        />
-        <Stat
-          label="Open findings"
-          value={String(openFindings.length)}
-          note={`${critical} critical · ${high} high · ${medium} medium`}
-        />
-        <Stat label="Scans completed" value={scanCount.toLocaleString()} note="Across all your sites" />
-        <Stat
-          label="Monitoring status"
-          value={verified ? "Active" : "—"}
-          note={verified ? "Scheduled external checks are running" : "Add and verify a site to begin"}
-        />
-      </section>
-      <section className="briefing card">
+      <section className={`briefing card ${briefingState}`}>
         <div className="eyebrow-row">
-          <span>POSTURE BRIEFING</span>
+          <span className="briefing-kicker">
+            <Dot tone={briefingTone} />
+            {openFindings.length > 0 ? "ACTION REQUIRED" : isSetupRequired ? "SETUP REQUIRED" : isAllPaused ? "MONITORING PAUSED" : "SECURITY STATUS"}
+          </span>
           <code>
             {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" })} ·{" "}
             {new Date().toUTCString().slice(17, 22)} UTC
           </code>
         </div>
-        <h2>
-          {openFindings.length === 0
-            ? "No open findings need review"
-            : `${openFindings.length} finding${openFindings.length === 1 ? "" : "s"} need attention`}
-        </h2>
-        {openFindings.length === 0 ? (
-          <p className="briefing-empty">
-            {sites.length === 0
-              ? "Add your first site to start watching it around the clock."
-              : "No open findings are recorded right now. Bulwark keeps checking the public surface."}
-          </p>
-        ) : (
-          <div className="attention-grid">
-            {openFindings.slice(0, 3).map((f) => (
+        <div className="briefing-main">
+          <div className="briefing-copy">
+            <h2>
+              {openFindings.length === 0
+                ? "Nothing needs attention"
+                : `${openFindings.length} thing${openFindings.length === 1 ? "" : "s"} need attention`}
+            </h2>
+            <p className="briefing-summary">
+              {openFindings.length > 0
+                ? `${critical} critical · ${high} high · ${medium} medium · ${low} low${info > 0 ? ` · ${info} info` : ""} across your monitored sites. Start with the highest severity.`
+                : sites.length === 0
+                  ? "Connect your first site to begin continuous security checks."
+                  : activeSites === 0 && pausedSites > 0
+                    ? "Your connected sites are paused. Resume monitoring whenever you are ready."
+                    : pendingSites > 0
+                      ? "Verify your pending site to start monitoring it."
+                      : "Your monitored sites are clear at the latest check. Bulwark keeps watching."}
+            </p>
+          </div>
+          {openFindings.length > 0 ? (
+            <Button dark onClick={() => go("Threats")}>Review threats</Button>
+          ) : sites.length === 0 ? (
+            <Button dark onClick={openModal}>+ Add site</Button>
+          ) : pendingSites > 0 || activeSites === 0 ? (
+            <Button onClick={() => go("Sites")}>{pendingSites > 0 ? "Verify site" : "Manage sites"}</Button>
+          ) : null}
+        </div>
+        {openFindings.length > 0 && (
+          <>
+            <div className="attention-caption">Highest-priority findings</div>
+            <div className="attention-grid">
+            {priorityFindings.slice(0, 3).map((f) => (
               <div className="attention" key={f.id}>
                 <div>
                   <span className="severity">
                     <Dot tone={f.severity} />
                     {f.severity}
                   </span>
-                  <strong>{f.title}</strong>
-                  <code>{sites.find((s) => s.id === f.site_id)?.domain ?? ""}</code>
+                  <strong title={f.title}>{f.title}</strong>
+                  <code title={sites.find((s) => s.id === f.site_id)?.domain ?? ""}>
+                    {sites.find((s) => s.id === f.site_id)?.domain ?? ""}
+                  </code>
                 </div>
-                <Button onClick={() => go("Threats")}>Review →</Button>
               </div>
             ))}
-          </div>
+            </div>
+          </>
         )}
+      </section>
+      <section className="stats" aria-label="Workspace metrics">
+        <Stat
+          label="Connected sites"
+          value={String(sites.length)}
+          note={sites.length === 0 ? "No sites connected yet" : `${activeSites} active · ${pausedSites} paused · ${pendingSites} awaiting setup`}
+        />
+        <Stat
+          label="Open threats"
+          value={String(openFindings.length)}
+          note={`${critical} critical · ${high} high · ${medium} medium · ${low} low${info > 0 ? ` · ${info} info` : ""}`}
+        />
+        <Stat label="Scans completed" value={scanCount.toLocaleString()} note="Across all your sites" />
+        <Stat
+          label="Active monitors"
+          value={String(activeSites)}
+          note={activeSites > 0 ? "Verified sites currently scanning" : pausedSites > 0 ? "All verified sites are paused" : "Verify a site to start monitoring"}
+        />
       </section>
       <section className="overview-grid">
         <div className="card chart-card">
           <div className="card-heading">
-            <h3>Finding activity</h3>
-            <span>30 days</span>
+            <h3>Threat activity</h3>
+            <span className="chart-range" aria-label="Threat activity for the last 30 days">Last 30 days</span>
           </div>
           <div className="chart-count">
             <strong>{findings.length}</strong>
@@ -562,31 +645,32 @@ function Overview({
         </div>
         <div className="card feed">
           <div className="card-heading">
-            <h3>Latest observations</h3>
+            <h3>Live threat feed</h3>
             <span>
               <Dot /> Live
             </span>
           </div>
-          {findings.slice(0, 3).map((f) => (
+          {priorityFindings.slice(0, 3).map((f) => (
             <div className="feed-row" key={f.id}>
               <span>
                 <Dot tone={f.severity} />
                 {f.severity}
               </span>
               <div>
-                <strong>{f.title}</strong>
+                <strong title={f.title}>{f.title}</strong>
                 <code>
                   {sites.find((s) => s.id === f.site_id)?.domain ?? ""} · {relTime(f.last_seen_at)}
                 </code>
               </div>
             </div>
           ))}
-          {findings.length === 0 && <p className="feed-empty">No findings recorded yet.</p>}
+          {priorityFindings.length === 0 && <p className="feed-empty">No open threats. New findings will appear here.</p>}
         </div>
       </section>
+      {sites.length > 0 && (
       <section className="card sites-health">
         <div className="card-heading">
-          <h3>Public site posture</h3>
+          <h3>Sites health</h3>
           <button onClick={() => go("Sites")}>View all sites →</button>
         </div>
         <div className="table">
@@ -594,29 +678,27 @@ function Overview({
             <span>Domain</span>
             <span>Health</span>
             <span>Last scan</span>
-            <span>Open findings</span>
+            <span>Open threats</span>
+            <span>Autonomy</span>
           </div>
           {sites.map((s) => {
             const health = siteHealth(s, findings);
             return (
               <div className="tr" key={s.id}>
-                <code>{s.domain}</code>
+                <code className="table-domain" title={s.domain}>{s.domain}</code>
                 <span>
                   <Dot tone={health.tone} />
                   {health.label}
                 </span>
                 <code>{relTime(s.last_scan_at)}</code>
                 <span>{findings.filter((f) => f.site_id === s.id && f.status === "open").length}</span>
+                <span>{s.autonomy === "auto_fix" ? "Auto-fix" : "Suggest only"}</span>
               </div>
             );
           })}
-          {sites.length === 0 && (
-            <div className="tr empty-row">
-              <span>No sites yet — add your first one.</span>
-            </div>
-          )}
         </div>
       </section>
+      )}
     </>
   );
 }
@@ -633,20 +715,29 @@ function Sites({
   onVerify: (site: SiteRow) => void;
   sites: SiteRow[];
   findings: FindingRow[];
-  onScan: (id: string) => Promise<void>;
+  onScan: (id: string) => void;
   onChanged: () => void;
 }) {
   const [search, setSearch] = useState("");
   const [healthFilter, setHealthFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [autonomyFilter, setAutonomyFilter] = useState("all");
   const [busy, setBusy] = useState<string | null>(null);
-  const filtered = sites.filter((s) => {
-    const health = siteHealth(s, findings);
-    if (!s.domain.includes(search.toLowerCase())) return false;
-    if (statusFilter !== "all" && s.status !== statusFilter) return false;
-    if (healthFilter === "attention" && !["critical", "high"].includes(health.tone)) return false;
-    if (healthFilter === "no_open_findings" && health.label !== "No open findings") return false;
-    return true;
+  const filtered = sites.filter((site) => {
+    const matchesSearch = site.domain.includes(search.trim().toLowerCase());
+    const openFindings = findings.filter((finding) => finding.site_id === site.id && finding.status === "open");
+    const healthKey =
+      site.status === "pending"
+        ? "pending"
+        : site.status === "paused"
+          ? "paused"
+          : openFindings.some((finding) => finding.severity === "critical" || finding.severity === "high")
+            ? "at-risk"
+            : openFindings.length > 0
+              ? "attention"
+              : "healthy";
+    const matchesHealth = healthFilter === "all" || healthKey === healthFilter;
+    const matchesAutonomy = autonomyFilter === "all" || site.autonomy === autonomyFilter;
+    return matchesSearch && matchesHealth && matchesAutonomy;
   });
 
   const act = async (id: string, fn: () => Promise<unknown>) => {
@@ -672,134 +763,134 @@ function Sites({
     <>
       <PageTitle
         title="Sites"
-        subtitle="External posture checks for the public sites you own."
+        subtitle="Your projects, protected around the clock."
         action={
-          <Button dark onClick={openModal}>
-            + Add site
-          </Button>
+          sites.length > 0 ? (
+            <Button dark onClick={openModal}>+ Add site</Button>
+          ) : undefined
         }
       />
-      <div className="filters">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search domains..."
-        />
-        <select value={healthFilter} onChange={(e) => setHealthFilter(e.target.value)} aria-label="Finding state">
-          <option value="all">Findings: all</option>
-          <option value="attention">Needs attention</option>
-          <option value="no_open_findings">No open findings</option>
-        </select>
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Monitoring status">
-          <option value="all">Monitoring: all</option>
-          <option value="verified">Active</option>
-          <option value="pending">Awaiting verification</option>
-          <option value="paused">Paused</option>
-        </select>
-        <span>
-          {filtered.length} of {sites.length} site{sites.length === 1 ? "" : "s"} shown ·{" "}
-          {findings.filter((f) => f.status === "open").length} open finding
-          {findings.filter((f) => f.status === "open").length === 1 ? "" : "s"}
-        </span>
-      </div>
-      <div className="card data-table sites-table">
-        <div className="site-row table-head">
-          <span>Domain</span>
-          <span>Health</span>
-          <span>Last scan</span>
-          <span>Findings</span>
-          <span>Actions</span>
-        </div>
-        {filtered.map((s) => {
-          const health = siteHealth(s, findings);
-          return (
-            <div className="site-row" key={s.id}>
-              <code>{s.domain}</code>
-              <span>
-                <Dot tone={health.tone} />
-                {health.label}
-              </span>
-              <code>{relTime(s.last_scan_at)}</code>
-              <span>{findings.filter((f) => f.site_id === s.id && f.status === "open").length}</span>
-              <span className="site-actions">
-                {s.status === "verified" && (
-                  <button disabled={busy === s.id} onClick={() => void act(s.id, () => onScan(s.id))}>
-                    {busy === s.id ? "Scanning…" : "Scan now"}
-                  </button>
-                )}
-                {s.status === "verified" && (
-                  <button disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "pause"))}>
-                    Pause
-                  </button>
-                )}
-                {s.status === "paused" && (
-                  <button disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "resume"))}>
-                    Resume
-                  </button>
-                )}
-                {s.status === "pending" && (
-                  <button disabled={busy === s.id} onClick={() => onVerify(s)}>
-                    Verify
-                  </button>
-                )}
-                <button className="danger" disabled={busy === s.id} onClick={() => remove(s)}>
-                  Delete
-                </button>
-              </span>
-            </div>
-          );
-        })}
-        {filtered.length === 0 && (
-          <div className="site-row empty-row">
-            <span>{sites.length ? "No sites match these filters." : "No sites yet. Add one to start monitoring."}</span>
-          </div>
-        )}
-        <div className="table-footer">
-          <span>
-            {sites.length} of {PLAN_SITE_LIMIT} site slots used
-          </span>
-          <span>{filtered.length} shown</span>
-        </div>
-      </div>
       {sites.length === 0 ? (
-        <div className="card empty-state">
+        <div className="card empty-state sites-empty-state">
           <div className="empty-icon">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
             </svg>
           </div>
-          <h2>No sites monitored yet</h2>
-          <p>
-            Add a domain, prove you own it with a DNS record, and Bulwark starts scanning it within a
-            minute.
-          </p>
-          <Button dark onClick={openModal}>
-            + Add site
-          </Button>
+          <h2>Protect your first site</h2>
+          <p>Add a domain you control, verify ownership with a DNS record or meta tag, and Bulwark will begin monitoring it.</p>
+          <Button dark onClick={openModal}>+ Add your first site</Button>
+          <span className="empty-state-note">Only domains you own or are authorized to manage can be monitored.</span>
         </div>
       ) : (
-        <section className="card activity">
-          <h3>Latest scans</h3>
-          {sites.map((s) => (
-            <div key={s.id}>
-              <code>{relTime(s.last_scan_at)}</code>
-              <span>
-                <strong>{s.domain}</strong>
-                <code>
-                  {s.status === "verified"
-                    ? `${intervalLabel(s.scan_interval_minutes)} · next ${relTime(s.next_scan_at)}`
-                    : s.status === "paused"
-                      ? "paused"
-                      : "awaiting verification"}
-                </code>
-              </span>
+        <>
+          <div className="filters">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search domains..."
+              aria-label="Search domains"
+            />
+            <select className="filter-select" value={healthFilter} onChange={(e) => setHealthFilter(e.target.value)} aria-label="Filter sites by health">
+              <option value="all">Health: all</option>
+              <option value="healthy">Healthy</option>
+              <option value="attention">Needs attention</option>
+              <option value="at-risk">At risk</option>
+              <option value="pending">Awaiting verification</option>
+              <option value="paused">Paused</option>
+            </select>
+            <select className="filter-select" value={autonomyFilter} onChange={(e) => setAutonomyFilter(e.target.value)} aria-label="Filter sites by autonomy">
+              <option value="all">Autonomy: all</option>
+              <option value="suggest">Suggest only</option>
+              <option value="auto_fix">Auto-fix</option>
+            </select>
+            <span>
+              {sites.length} site{sites.length === 1 ? "" : "s"} ·{" "}
+              {findings.filter((f) => f.status === "open").length} open threat
+              {findings.filter((f) => f.status === "open").length === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div className="card data-table sites-table">
+            <div className="site-row table-head">
+              <span>Domain</span>
+              <span>Health</span>
+              <span>Last scan</span>
+              <span>Threats</span>
+              <span>Autonomy</span>
+              <span>Actions</span>
             </div>
-          ))}
-        </section>
+            {filtered.map((s) => {
+              const health = siteHealth(s, findings);
+              return (
+                <div className="site-row" key={s.id}>
+                  <code className="table-domain" title={s.domain}>{s.domain}</code>
+                  <span>
+                    <Dot tone={health.tone} />
+                    {health.label}
+                  </span>
+                  <code>{relTime(s.last_scan_at)}</code>
+                  <span>{findings.filter((f) => f.site_id === s.id && f.status === "open").length}</span>
+                  <span className="tag">{s.autonomy === "auto_fix" ? "Auto-fix" : "Suggest only"}</span>
+                  <span className="site-actions">
+                    {s.status === "verified" && (
+                      <button disabled={busy === s.id} onClick={() => onScan(s.id)}>
+                        {busy === s.id ? "Working…" : "Scan"}
+                      </button>
+                    )}
+                    {s.status === "verified" && (
+                      <button disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "pause"))}>
+                        Pause
+                      </button>
+                    )}
+                    {s.status === "paused" && (
+                      <button disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "resume"))}>
+                        Resume
+                      </button>
+                    )}
+                    {s.status === "pending" && (
+                      <button disabled={busy === s.id} onClick={() => onVerify(s)}>
+                        Verify
+                      </button>
+                    )}
+                    <button className="danger" disabled={busy === s.id} onClick={() => remove(s)}>
+                      Delete
+                    </button>
+                  </span>
+                </div>
+              );
+            })}
+            {filtered.length === 0 && (
+              <div className="site-row empty-row">
+                <span>No sites match these filters. Adjust the search or clear a filter.</span>
+              </div>
+            )}
+            <div className="table-footer">
+              <span>{sites.length} of {PLAN_SITE_LIMIT} site slots used</span>
+              <span>{filtered.length} shown</span>
+            </div>
+          </div>
+          <section className="card activity">
+            <h3>Latest scans</h3>
+            {sites.map((s) => (
+              <div key={s.id}>
+                <code>{relTime(s.last_scan_at)}</code>
+                <span>
+                  <strong title={s.domain}>{s.domain}</strong>
+                  <code>
+                    {s.status === "verified"
+                      ? `${intervalLabel(s.scan_interval_minutes)} · next ${relTime(s.next_scan_at)}`
+                      : s.status === "paused"
+                        ? "paused"
+                        : "awaiting verification"}
+                  </code>
+                </span>
+              </div>
+            ))}
+          </section>
+        </>
       )}
       <p className="page-note">
-        Bulwark monitors the public website surface. It does not test private routes, authenticated
-        flows, or your full codebase. Explanations use your connected AI key.
+        Monitoring runs independently of your AI provider. Explanations use your connected key.
       </p>
     </>
   );
@@ -866,7 +957,7 @@ function Threats({
       <PageTitle
         title="Threats"
         subtitle="Know what matters. Understand what to do next."
-        action={<Button onClick={exportCsv}>Export CSV ↗</Button>}
+        action={<Button onClick={exportCsv} download>Export CSV</Button>}
       />
       <div className="tabs">
         {(["All threats", "Open", "Acknowledged", "Resolved", "Ignored"] as const).map((label) => (
@@ -914,13 +1005,13 @@ function Threats({
         </div>
         {filtered.map((f) => (
           <button className="threat-row" key={f.id} onClick={() => onOpen(f)}>
-            <strong>{f.title}</strong>
-            <code>{sites.find((s) => s.id === f.site_id)?.domain ?? "—"}</code>
+            <strong className="table-title" title={f.title}>{f.title}</strong>
+            <code className="table-domain" title={sites.find((s) => s.id === f.site_id)?.domain ?? "—"}>{sites.find((s) => s.id === f.site_id)?.domain ?? "—"}</code>
             <span>
               <Dot tone={f.severity} />
               {f.severity}
             </span>
-            <span className="tag">{f.status}</span>
+            <span className={`tag status-tag status-${f.status}`}>{f.status}</span>
             <code>{relTime(f.last_seen_at)}</code>
             <span>View threat →</span>
           </button>
@@ -957,7 +1048,7 @@ function Threats({
               if (worst) onOpen(worst);
             }}
           >
-            Review critical threat →
+            Review highest-priority threat →
           </Button>
         </div>
       )}
@@ -1049,6 +1140,26 @@ function ThreatDetail({
           )}
         </section>
 
+        {(finding.what_it_does_not_prove || finding.remediation) && (
+          <section className="card meaning">
+            <small>READ THIS CAREFULLY</small>
+            <div className="finding-context">
+              {finding.what_it_does_not_prove && (
+                <div>
+                  <h3>What this does not prove</h3>
+                  <p>{finding.what_it_does_not_prove}</p>
+                </div>
+              )}
+              {finding.remediation && (
+                <div>
+                  <h3>Suggested remediation</h3>
+                  <p>{finding.remediation}</p>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
         {finding.evidence && (
           <CodeCard
             title="Evidence"
@@ -1134,6 +1245,14 @@ function ThreatDetail({
           <dd>{site?.domain ?? "—"}</dd>
           <dt>Status</dt>
           <dd>{finding.status}</dd>
+          <dt>Confidence</dt>
+          <dd>{finding.confidence ?? "—"}</dd>
+          {finding.affected_resource && (
+            <>
+              <dt>Affected</dt>
+              <dd>{finding.affected_resource}</dd>
+            </>
+          )}
           <dt>First seen</dt>
           <dd>{shortDate(finding.first_seen_at)}</dd>
           <dt>Last seen</dt>
@@ -1245,9 +1364,7 @@ function ApiKeys({
                 <p>
                   No AI key yet. Add an OpenAI or Anthropic key to unlock plain-English explanations.
                 </p>
-                <Button dark onClick={openModal}>
-                  + Add API key
-                </Button>
+                <span className="key-empty-hint">Add a key using the button above to unlock explanations.</span>
               </div>
             ) : (
               keys.map((k) => (
@@ -1339,18 +1456,26 @@ function Toggle({
   initial = false,
   checked,
   onChange,
+  disabled = false,
+  title,
 }: {
   initial?: boolean;
   checked?: boolean;
   onChange?: (next: boolean) => void;
+  disabled?: boolean;
+  title?: string;
 }) {
   const [on, setOn] = useState(initial);
   const value = checked ?? on;
   return (
     <button
-      aria-label={value ? "Disable" : "Enable"}
+      aria-label={disabled ? "Add a Slack webhook to enable alerts" : value ? "Disable" : "Enable"}
+      aria-pressed={value}
+      disabled={disabled}
+      title={title}
       className={`toggle ${value ? "on" : ""}`}
       onClick={() => {
+        if (disabled) return;
         if (onChange) onChange(!value);
         else setOn(!value);
       }}
@@ -1376,6 +1501,7 @@ function Settings({
   goIntegrations: () => void;
 }) {
   const [interval, setIntervalMinutes] = useState(settings?.scanIntervalMinutes ?? 60);
+  const [autonomy, setAutonomy] = useState<Settings["autonomy"]>(settings?.autonomy ?? "suggest");
   const [applyAll, setApplyAll] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -1384,6 +1510,7 @@ function Settings({
   useEffect(() => {
     if (!settings) return;
     setIntervalMinutes(settings.scanIntervalMinutes);
+    setAutonomy(settings.autonomy);
   }, [settings]);
 
   const save = async () => {
@@ -1391,12 +1518,12 @@ function Settings({
     setError(null);
     setMessage(null);
     try {
-      await onSave({ scanIntervalMinutes: interval });
+      await onSave({ scanIntervalMinutes: interval, autonomy });
       if (applyAll && sites.length) {
         await Promise.all(sites.map((s) => setSiteInterval(s.id, interval)));
         onChanged();
       }
-      setMessage("Saved. Scheduled scans pick this up on the next cycle.");
+      setMessage("Saved. New scans pick this up on the next cycle.");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -1410,7 +1537,7 @@ function Settings({
         title="Settings"
         subtitle="Set boundaries. Let Bulwark handle the watching."
         action={
-          <Button dark onClick={save}>
+          <Button dark onClick={save} disabled={busy}>
             {busy ? "Saving…" : "Save changes"}
           </Button>
         }
@@ -1448,16 +1575,20 @@ function Settings({
             </div>
             <div className="setting-row">
               <span>
-                <strong>Monitoring scope</strong>
-                <small>
-                  Bulwark observes public website signals. It does not change your site or test
-                  authenticated paths.
-                </small>
+                <strong>Autonomy</strong>
+                <small>Bulwark only makes production changes when Auto-fix is selected. Suggest only keeps every change under your control.</small>
               </span>
-              <code>Observe only</code>
+              <select
+                className="inline-select"
+                value={autonomy}
+                onChange={(e) => setAutonomy(e.target.value as Settings["autonomy"])}
+              >
+                <option value="suggest">Suggest only</option>
+                <option value="auto_fix">Auto-fix</option>
+              </select>
             </div>
-            {error && <p className="modal-error">{error}</p>}
-            {message && <p className="save-note">{message}</p>}
+            {error && <p className="modal-error" role="alert">{error}</p>}
+            {message && <p className="save-note" role="status" aria-live="polite">{message}</p>}
           </section>
 
           <section className="card setting-list alerts">
@@ -1471,7 +1602,7 @@ function Settings({
                 <code>{settings?.slackWebhookUrl ? "Webhook configured" : "Not configured"}</code>
               </span>
               <button onClick={goIntegrations}>Edit →</button>
-              <code>Managed in integrations</code>
+              <Toggle checked={Boolean(settings?.slackWebhookUrl && settings?.alertsEnabled)} />
             </div>
             <div className="setting-row">
               <span>
@@ -1483,9 +1614,9 @@ function Settings({
             <div className="setting-row">
               <span>
                 <strong>Email</strong>
-                <small>Not enabled in this build.</small>
+                <small>Email alerts are not available yet.</small>
               </span>
-              <span className="tag">Off</span>
+              <span className="tag">Coming later</span>
             </div>
           </section>
         </div>
@@ -1505,8 +1636,8 @@ function Settings({
             <p>Billing and team seats are not part of this build yet.</p>
           </section>
           <section className="card side-setting">
-            <h3>Monitoring scope</h3>
-            <label>Checks may include</label>
+            <h3>Scan coverage</h3>
+            <label>Every scan checks</label>
             <ul className="coverage-list">
               <li>Uptime, HTTP status and TLS expiry</li>
               <li>Security headers, weak CSP, CORS and cookie flags</li>
@@ -1515,11 +1646,7 @@ function Settings({
               <li>Domain expiry, nameservers and mail records</li>
               <li>Defacement, robots.txt, sitemap and security.txt</li>
             </ul>
-            <p>
-              {sites.filter((s) => s.status === "verified").length} site(s) actively scanning.
-              Coverage is limited to public pages and selected assets, not a comprehensive
-              vulnerability assessment.
-            </p>
+            <p>{sites.filter((s) => s.status === "verified").length} site(s) actively scanning.</p>
           </section>
         </div>
       </div>
@@ -1579,7 +1706,9 @@ function Scans({
           summary.detailed ? summary.finding : "",
           summary.detailed ? summary.not_checked : "",
           summary.detailed ? summary.error : "",
-          summary.detailed ? `${summary.completed}/${summary.total} checks completed` : "Not recorded for this scan",
+          summary.detailed
+            ? `${summary.completed}/${summary.total} checks completed`
+            : "Not recorded for this scan",
           s.error ?? "",
         ];
       }),
@@ -1591,7 +1720,7 @@ function Scans({
       <PageTitle
         title="Scans"
         subtitle="What each external posture scan completed, observed, or could not check."
-        action={<Button onClick={exportCsv}>Export CSV ↗</Button>}
+        action={<Button onClick={exportCsv} download>Export CSV</Button>}
       />
       <div className="filters">
         <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} aria-label="Site">
@@ -1611,8 +1740,8 @@ function Scans({
         <span>
           {filtered.length} scan{filtered.length === 1 ? "" : "s"} shown
         </span>
-        <button className="link-button" onClick={onChanged}>
-          Refresh
+        <button className="link-button refresh-button" onClick={onChanged}>
+          ↻ Refresh
         </button>
       </div>
       <div className="card data-table scans-table">
@@ -1679,7 +1808,7 @@ function Scans({
         })}
         {filtered.length === 0 && (
           <div className="scan-row empty-row">
-            <span>No scans yet. Verified sites are scheduled for external posture checks.</span>
+            <span>No scans yet. Verified sites are scanned automatically.</span>
           </div>
         )}
         <div className="table-footer">
@@ -1737,7 +1866,7 @@ function printReport({
 <html>
 <head>
 <meta charset="utf-8" />
-<title>Bulwark external posture report</title>
+<title>Bulwark security report</title>
 <style>
   * { box-sizing: border-box; }
   body { font-family: Inter, -apple-system, Segoe UI, sans-serif; color: #171717; margin: 40px; font-size: 12px; }
@@ -1759,7 +1888,7 @@ function printReport({
 <body>
   <div class="head">
     <div>
-      <h1>Bulwark external posture report</h1>
+      <h1>Bulwark security report</h1>
       <div class="muted">${escapeHtml(rangeLabel)} · generated ${escapeHtml(new Date().toLocaleString())}</div>
     </div>
     <strong>bulwark</strong>
@@ -1836,12 +1965,12 @@ function Reports({
     <>
       <PageTitle
         title="Reports"
-        subtitle="A clear record of external website posture observations."
+        subtitle="A clean record you can hand to a client or a reviewer."
         action={
           <div className="title-actions">
-            <Button onClick={exportCsv}>Export CSV ↗</Button>
+            <Button onClick={exportCsv} download>Export CSV</Button>
             <Button dark onClick={() => printReport({ sites, findings: inRange, scans, rangeLabel })}>
-              Download PDF
+              Print / Save PDF
             </Button>
           </div>
         }
@@ -1879,7 +2008,7 @@ function Reports({
               <Dot tone={f.severity} />
               {f.severity}
             </span>
-            <span className="tag">{f.status}</span>
+            <span className={`tag status-tag status-${f.status}`}>{f.status}</span>
             <code>{shortDate(f.first_seen_at)}</code>
             <span>{f.explanation ? "Yes" : "—"}</span>
           </div>
@@ -1913,8 +2042,9 @@ function Integrations({
   email?: string | null;
 }) {
   const [webhook, setWebhook] = useState(settings?.slackWebhookUrl ?? "");
+  const [showWebhook, setShowWebhook] = useState(false);
   const [severity, setSeverity] = useState<Severity>(settings?.slackMinSeverity ?? "high");
-  const [enabled, setEnabled] = useState(settings?.alertsEnabled ?? true);
+  const [enabled, setEnabled] = useState(Boolean(settings?.slackWebhookUrl && settings?.alertsEnabled));
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1923,7 +2053,7 @@ function Integrations({
     if (!settings) return;
     setWebhook(settings.slackWebhookUrl ?? "");
     setSeverity(settings.slackMinSeverity);
-    setEnabled(settings.alertsEnabled);
+    setEnabled(Boolean(settings.slackWebhookUrl && settings.alertsEnabled));
   }, [settings]);
 
   const save = async (label: string) => {
@@ -1934,7 +2064,7 @@ function Integrations({
       await onSave({
         slackWebhookUrl: webhook,
         slackMinSeverity: severity,
-        alertsEnabled: enabled,
+        alertsEnabled: enabled && Boolean(webhook.trim()),
       });
       onChanged();
       setMessage("Saved.");
@@ -1950,13 +2080,9 @@ function Integrations({
     setError(null);
     setMessage(null);
     try {
-      await onSave({
-        slackWebhookUrl: webhook,
-        slackMinSeverity: severity,
-        alertsEnabled: enabled,
-      });
+      if (!webhook.trim()) throw new Error("Add a Slack webhook URL before sending a test message.");
       await apiPost("/api/alerts/test", { webhookUrl: webhook });
-      setMessage("Test message sent. Check your Slack channel.");
+      setMessage("Test message sent. Save changes separately to keep this configuration.");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -1964,7 +2090,7 @@ function Integrations({
     }
   };
 
-  const configured = Boolean(settings?.slackWebhookUrl);
+  const configured = Boolean(webhook.trim());
 
   return (
     <>
@@ -1972,7 +2098,7 @@ function Integrations({
         title="Integrations"
         subtitle="Send the signal where you already work."
         action={
-          <Button dark onClick={() => save("save")}>
+          <Button dark onClick={() => save("save")} disabled={busy !== null}>
             {busy === "save" ? "Saving…" : "Save changes"}
           </Button>
         }
@@ -1989,18 +2115,38 @@ function Integrations({
             </div>
             <div className="field-block">
               <label>Incoming webhook URL</label>
-              <input
-                value={webhook}
-                onChange={(e) => setWebhook(e.target.value)}
-                placeholder="https://hooks.slack.com/services/T000/B000/xxxx"
-              />
+              <div className="webhook-input-row">
+                <input
+                  type={showWebhook ? "text" : "password"}
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={webhook}
+                  onChange={(e) => setWebhook(e.target.value)}
+                  placeholder="https://hooks.slack.com/services/T000/B000/xxxx"
+                  aria-label="Slack incoming webhook URL"
+                />
+                <button
+                  type="button"
+                  className="field-reveal"
+                  onClick={() => setShowWebhook((visible) => !visible)}
+                  aria-pressed={showWebhook}
+                >
+                  {showWebhook ? "Hide" : "Show"}
+                </button>
+              </div>
+              <small className="field-help">The webhook is hidden while you are not editing it.</small>
             </div>
             <div className="setting-row">
               <span>
                 <strong>Send alerts</strong>
                 <small>Off pauses delivery without deleting the webhook.</small>
               </span>
-              <Toggle checked={enabled} onChange={setEnabled} />
+              <Toggle
+                checked={enabled && configured}
+                onChange={setEnabled}
+                disabled={!configured}
+                title={configured ? "Enable or pause Slack alert delivery" : "Add a webhook URL before enabling alerts"}
+              />
             </div>
             <div className="setting-row">
               <span>
@@ -2020,11 +2166,10 @@ function Integrations({
               </select>
             </div>
             <div className="modal-actions">
-              <Button onClick={test}>{busy === "test" ? "Sending…" : "Send test message"}</Button>
-              <Button onClick={() => save("save")}>{busy === "save" ? "Saving…" : "Save"}</Button>
+              <Button onClick={test} disabled={!configured || busy !== null}>{busy === "test" ? "Sending…" : "Send test message"}</Button>
             </div>
-            {error && <p className="modal-error">{error}</p>}
-            {message && <p className="save-note">{message}</p>}
+            {error && <p className="modal-error" role="alert">{error}</p>}
+            {message && <p className="save-note" role="status" aria-live="polite">{message}</p>}
           </section>
         </div>
         <div>
@@ -2036,7 +2181,7 @@ function Integrations({
             </div>
             <div>
               <span>Alerts</span>
-              <code>{enabled ? "Enabled" : "Paused"}</code>
+              <code>{configured ? (enabled ? "Enabled" : "Paused") : "Waiting for webhook"}</code>
             </div>
             <div>
               <span>Threshold</span>
@@ -2096,8 +2241,8 @@ function AiCopilot({
       </div>
       <section className="stats">
         <Stat label="Explained findings" value={String(explained)} note="Cached on each finding" />
-        <Stat label="Open findings" value={String(open.length)} note="Ready to explain" />
-        <Stat label="Provider" value={ready ? keys[0].providerLabel : "—"} note={ready ? keys[0].model ?? "" : "BYOK required"} />
+        <Stat label="Open findings" value={String(open.length)} note={ready ? "Ready to explain" : "Add a key to explain"} />
+        <Stat label="Provider" value={ready ? keys[0].providerLabel : "Not set"} note={ready ? keys[0].model ?? "" : "Connect an API key"} />
         <Stat label="Token markup" value="$0" note="You pay your provider directly" />
       </section>
       <div className="split-content">
@@ -2117,7 +2262,18 @@ function AiCopilot({
                   {f.explanation ? "explained" : "not explained"}
                 </small>
               </span>
-              <button onClick={() => onOpen(f)}>{f.explanation ? "View →" : "Explain →"}</button>
+              <button
+                onClick={() => onOpen(f)}
+                disabled={!ready && !f.explanation}
+                title={!ready && !f.explanation ? "Connect an AI API key to explain this finding." : undefined}
+                aria-label={
+                  !ready && !f.explanation
+                    ? `Connect an AI API key to explain ${f.title}`
+                    : f.explanation ? `View explanation for ${f.title}` : `Explain ${f.title}`
+                }
+              >
+                {f.explanation ? "View →" : ready ? "Explain →" : "Add key to explain"}
+              </button>
             </div>
           ))}
           {open.length === 0 && <p className="muted pad">No open findings. Nothing to explain.</p>}
@@ -2399,17 +2555,43 @@ function Modal({
 
 export default function App() {
   const { configured, loading, session } = useAuth();
+  const [theme, setTheme] = useState<Theme>(() => {
+    try {
+      return window.localStorage.getItem("bulwark-theme") === "light" ? "light" : "dark";
+    } catch {
+      return "dark";
+    }
+  });
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      window.localStorage.setItem("bulwark-theme", theme);
+    } catch {
+      // Theme still works for this session when storage is unavailable.
+    }
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((current) => current === "dark" ? "light" : "dark");
+  const shellProps = { theme, onToggleTheme: toggleTheme };
 
   // Demo mode: no Supabase env configured, keep the original mock UI.
-  if (!configured) return <AppShell />;
+  if (!configured) return <AppShell {...shellProps} />;
   if (loading) return <div className="boot">Loading Bulwark…</div>;
   if (!session) return <AuthScreen />;
-  return <AppShell />;
+  return <AppShell {...shellProps} />;
 }
 
-function AppShell() {
+function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
   const { user, signOut } = useAuth();
   const { sites, findings, scans, scanCount, refresh } = useWorkspace();
+  const activeSiteCount = sites.filter((site) => site.status === "verified").length;
+  const pendingSiteCount = sites.filter((site) => site.status === "pending").length;
+  const monitoringState: "active" | "setup" | "paused" =
+    activeSiteCount > 0 ? "active" : pendingSiteCount > 0 || sites.length === 0 ? "setup" : "paused";
+  const monitoringLabel =
+    monitoringState === "active" ? "Monitoring active" :
+    monitoringState === "paused" ? "Monitoring paused" : "Setup required";
   const settingsState = useSettings();
   const keysState = useApiKeys();
   const [page, setPage] = useState<Page>("Overview");
@@ -2547,6 +2729,11 @@ function AppShell() {
           email={user?.email}
           onSignOut={signOut}
           onGoKeys={() => go("API Keys")}
+          monitoringState={monitoringState}
+          monitoringLabel={monitoringLabel}
+          onGoSites={() => go("Sites")}
+          theme={theme}
+          onToggleTheme={onToggleTheme}
         />
         <main className={activeFinding ? "detail-main" : ""}>{content}</main>
       </div>

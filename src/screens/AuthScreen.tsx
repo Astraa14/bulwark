@@ -37,7 +37,7 @@ export default function AuthScreen() {
     <div className="auth-page">
       <div className="auth-card">
         <div className="auth-brand">
-          <img src="/logo-full.jpg" alt="Bulwark" className="auth-logo" />
+          <img src="/bulwark-logo.svg" alt="Bulwark" className="auth-logo" />
         </div>
         <p className="auth-sub">External website posture monitoring for people who ship.</p>
 

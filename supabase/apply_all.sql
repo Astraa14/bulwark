@@ -1,8 +1,207 @@
 -- ===========================================================================
 -- Bulwark: run this once in Supabase -> SQL Editor -> New query.
--- It combines (in order) the v1.1 features migration and the ownership
--- verification hardening migration. Both are idempotent and safe to re-run.
+-- Combines every migration in order. All statements are idempotent, so it is
+-- safe to re-run this file after updating the app.
 -- ===========================================================================
+
+-- >>> supabase/migrations/20261111000000_init.sql
+-- Bulwark v1 schema
+-- Run this in Supabase Dashboard -> SQL Editor (or `supabase db push`).
+
+create extension if not exists pgcrypto;
+
+-- ---------------------------------------------------------------------------
+-- profiles
+-- ---------------------------------------------------------------------------
+create table if not exists public.profiles (
+  id uuid primary key references auth.users (id) on delete cascade,
+  email text,
+  full_name text,
+  plan text not null default 'free',
+  created_at timestamptz not null default now()
+);
+
+alter table public.profiles enable row level security;
+
+drop policy if exists "profiles_select_own" on public.profiles;
+create policy "profiles_select_own" on public.profiles
+  for select using (auth.uid() = id);
+
+drop policy if exists "profiles_update_own" on public.profiles;
+create policy "profiles_update_own" on public.profiles
+  for update using (auth.uid() = id)
+  with check (auth.uid() = id);
+
+drop policy if exists "profiles_insert_own" on public.profiles;
+create policy "profiles_insert_own" on public.profiles
+  for insert with check (auth.uid() = id);
+
+-- ---------------------------------------------------------------------------
+-- sites
+-- ---------------------------------------------------------------------------
+create table if not exists public.sites (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  domain text not null,
+  display_name text,
+  -- pending: awaiting ownership proof | verified: being scanned | paused
+  status text not null default 'pending'
+    check (status in ('pending', 'verified', 'paused')),
+  verify_token text not null default encode(gen_random_bytes(16), 'hex'),
+  scan_interval_minutes integer not null default 360,
+  autonomy text not null default 'suggest'
+    check (autonomy in ('suggest', 'auto_fix')),
+  last_scan_at timestamptz,
+  next_scan_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  unique (user_id, domain)
+);
+
+create index if not exists sites_due_idx on public.sites (next_scan_at)
+  where status = 'verified';
+create index if not exists sites_user_idx on public.sites (user_id);
+
+alter table public.sites enable row level security;
+
+drop policy if exists "sites_own" on public.sites;
+create policy "sites_own" on public.sites
+  for all using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+-- ---------------------------------------------------------------------------
+-- scans
+-- ---------------------------------------------------------------------------
+create table if not exists public.scans (
+  id uuid primary key default gen_random_uuid(),
+  site_id uuid not null references public.sites (id) on delete cascade,
+  started_at timestamptz not null default now(),
+  finished_at timestamptz,
+  status text not null default 'running'
+    check (status in ('running', 'completed', 'failed')),
+  http_status integer,
+  response_ms integer,
+  checks_total integer not null default 0,
+  checks_passed integer not null default 0,
+  error text
+);
+
+create index if not exists scans_site_idx on public.scans (site_id, started_at desc);
+
+alter table public.scans enable row level security;
+
+drop policy if exists "scans_select_own" on public.scans;
+create policy "scans_select_own" on public.scans
+  for select using (
+    exists (
+      select 1 from public.sites s
+      where s.id = scans.site_id and s.user_id = auth.uid()
+    )
+  );
+
+-- ---------------------------------------------------------------------------
+-- findings
+-- ---------------------------------------------------------------------------
+create table if not exists public.findings (
+  id uuid primary key default gen_random_uuid(),
+  scan_id uuid not null references public.scans (id) on delete cascade,
+  site_id uuid not null references public.sites (id) on delete cascade,
+  check_key text not null,
+  title text not null,
+  severity text not null
+    check (severity in ('critical', 'high', 'medium', 'low', 'info')),
+  status text not null default 'open'
+    check (status in ('open', 'acknowledged', 'resolved', 'ignored')),
+  detail text,
+  evidence text,
+  url text,
+  first_seen_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now()
+);
+
+create index if not exists findings_site_status_idx
+  on public.findings (site_id, status, severity);
+create index if not exists findings_scan_idx on public.findings (scan_id);
+
+alter table public.findings enable row level security;
+
+drop policy if exists "findings_select_own" on public.findings;
+create policy "findings_select_own" on public.findings
+  for select using (
+    exists (
+      select 1 from public.sites s
+      where s.id = findings.site_id and s.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "findings_update_own" on public.findings;
+create policy "findings_update_own" on public.findings
+  for update using (
+    exists (
+      select 1 from public.sites s
+      where s.id = findings.site_id and s.user_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1 from public.sites s
+      where s.id = findings.site_id and s.user_id = auth.uid()
+    )
+  );
+
+-- ---------------------------------------------------------------------------
+-- api_keys (BYOK, encrypted server-side; never readable from the browser)
+-- ---------------------------------------------------------------------------
+create table if not exists public.api_keys (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  provider text not null
+    check (provider in ('openai', 'anthropic', 'gemini', 'openrouter')),
+  label text,
+  -- value is encrypted by the scanner/server with BULWARK_ENCRYPTION_KEY
+  key_encrypted text not null,
+  model text,
+  monthly_limit_usd numeric(10, 2) not null default 5,
+  last_used_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+alter table public.api_keys enable row level security;
+
+drop policy if exists "api_keys_select_own" on public.api_keys;
+create policy "api_keys_select_own" on public.api_keys
+  for select using (auth.uid() = user_id);
+
+drop policy if exists "api_keys_delete_own" on public.api_keys;
+create policy "api_keys_delete_own" on public.api_keys
+  for delete using (auth.uid() = user_id);
+
+-- no insert/update policy on purpose: keys are written only by the server
+-- (service role) so plaintext never passes through the browser.
+
+-- ---------------------------------------------------------------------------
+-- profile bootstrap on signup
+-- ---------------------------------------------------------------------------
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, email)
+  values (new.id, new.email)
+  on conflict (id) do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute procedure public.handle_new_user();
+
+
+-- >>> supabase/migrations/20261111010000_features.sql
 -- Bulwark v1.1: AI explanations, alert channels, settings, defacement baseline
 -- Fully idempotent: safe to paste into the Supabase SQL editor more than once.
 
@@ -45,6 +244,8 @@ create policy "user_settings_own" on public.user_settings
   for all using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
+
+-- >>> supabase/migrations/20261112000000_harden_sites.sql
 -- ---------------------------------------------------------------------------
 -- Harden ownership verification.
 --
@@ -118,3 +319,75 @@ for each row execute function public.guard_site_writes();
 revoke update on public.sites from anon, authenticated;
 grant update (display_name, autonomy, scan_interval_minutes)
   on public.sites to authenticated;
+
+
+-- >>> supabase/migrations/20261113000000_improve_findings.sql
+-- Improve finding identity and lifecycle
+-- Add columns for better tracking of findings with affected resources and status history
+
+-- Add new columns to findings table
+alter table public.findings
+  add column if not exists affected_resource text,
+  add column if not exists confidence text default 'medium'
+    check (confidence in ('high', 'medium', 'low')),
+  add column if not exists what_it_does_not_prove text,
+  add column if not exists remediation text,
+  add column if not exists status_history jsonb default '[]'::jsonb,
+  add column if not exists muted_until timestamptz;
+
+-- Create index on affected_resource for better lookups
+create index if not exists findings_affected_resource_idx
+  on public.findings (site_id, affected_resource);
+
+-- Create a composite unique constraint for findings by check_key and affected_resource
+-- This allows multiple findings for the same check_key if they affect different resources
+create unique index if not exists findings_composite_key_idx
+  on public.findings (site_id, check_key, coalesce(affected_resource, ''))
+  where status in ('open', 'acknowledged');
+
+-- Function to update status history on status change
+create or replace function public.update_finding_status_history()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if old.status is distinct from new.status then
+    new.status_history = coalesce(old.status_history, '[]'::jsonb) ||
+      jsonb_build_object(
+        'status', new.status,
+        'at', now()
+      );
+  end if;
+  return new;
+end;
+$$;
+
+-- Trigger to automatically update status history
+drop trigger if exists on_finding_status_update on public.findings;
+create trigger on_finding_status_update
+  before update of status on public.findings
+  for each row execute procedure public.update_finding_status_history();
+
+
+-- >>> supabase/migrations/20261113010000_scan_outcomes.sql
+-- Scan outcome tracking.
+--
+-- The scanner reports one outcome per check (`passed`, `finding`, `error`,
+-- `not_checked`). Persisting those outcomes lets the Scans page distinguish
+-- "checked and clean" from "could not check", and stops a partial scan from
+-- looking like a fully clean one.
+--
+-- Idempotent: safe to run more than once.
+
+alter table public.scans
+  add column if not exists check_results jsonb,
+  add column if not exists checks_errored integer,
+  add column if not exists checks_skipped integer;
+
+-- Allow `partial` scans (some checks errored or were skipped).
+alter table public.scans drop constraint if exists scans_status_check;
+alter table public.scans
+  add constraint scans_status_check
+  check (status in ('running', 'completed', 'partial', 'failed'));

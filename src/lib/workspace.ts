@@ -33,6 +33,13 @@ export type FindingRow = {
   detail: string | null;
   evidence: string | null;
   url: string | null;
+  /** Scanner confidence in the observation: high, medium, or low. */
+  confidence?: "high" | "medium" | "low" | null;
+  /** What this observation does not prove, so it is not over-read. */
+  what_it_does_not_prove?: string | null;
+  /** Concrete, safe step to remediate the observation. */
+  remediation?: string | null;
+  affected_resource?: string | null;
   explanation: string | null;
   explanation_model: string | null;
   explained_at: string | null;

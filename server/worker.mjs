@@ -62,6 +62,53 @@ function recordScan(userId, siteId) {
   if (siteId) siteLastScan.set(siteId, now);
 }
 
+const CHECK_STATUS_MAP = {
+  pass: "passed",
+  passed: "passed",
+  finding: "finding",
+  error: "error",
+  skipped: "not_checked",
+  not_checked: "not_checked",
+  unavailable: "not_checked",
+};
+
+function humanizeCheckKey(key) {
+  return String(key ?? "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Turns the scanner's `checkOutcomes` map into the row shape the UI reads.
+ * Returns null when the scanner did not report check-level outcomes.
+ */
+export function buildCheckResults(result) {
+  const outcomes = result?.checkOutcomes;
+  if (!outcomes || typeof outcomes !== "object") return null;
+
+  return Object.entries(outcomes).map(([key, outcome]) => {
+    const raw = typeof outcome === "string" ? outcome : outcome?.status;
+    const status = CHECK_STATUS_MAP[String(raw ?? "").toLowerCase()] ?? "not_checked";
+    return {
+      key: outcome?.checkKey ?? key,
+      label: humanizeCheckKey(outcome?.checkKey ?? key),
+      status,
+      complete: status === "passed" || status === "finding" ? true : status === "error" ? false : null,
+      ...(status === "error" && result?.error ? { error: result.error } : {}),
+    };
+  });
+}
+
+function scanStatusFor(result, checkResults) {
+  if (result.status === "failed") return "failed";
+  if (result.status === "running") return "running";
+  if (result.status === "partial") return "partial";
+  const incomplete = (checkResults ?? []).some(
+    (r) => r.status === "error" || r.status === "not_checked",
+  );
+  return incomplete ? "partial" : "completed";
+}
+
 /** Writes one scan + its findings and reschedules the site. */
 export async function scanSite(db, site, { userId = null, manual = false } = {}) {
   // Check rate limits for manual scans
@@ -89,20 +136,46 @@ export async function scanSite(db, site, { userId = null, manual = false } = {})
     const { runChecks } = await import("./checks.mjs");
     const result = await runChecks(site.domain, { baseline: site.page_sample ?? null });
 
-    const { data: scan, error: scanError } = await db
+    const checkResults = buildCheckResults(result);
+    const checksErrored = checkResults
+      ? checkResults.filter((r) => r.status === "error").length
+      : null;
+    const checksSkipped = checkResults
+      ? checkResults.filter((r) => r.status === "not_checked").length
+      : null;
+
+    const scanRow = {
+      site_id: site.id,
+      status: scanStatusFor(result, checkResults),
+      http_status: result.httpStatus,
+      response_ms: result.responseMs,
+      checks_total: result.checksTotal,
+      checks_passed: result.checksPassed,
+      check_results: checkResults,
+      checks_errored: checksErrored,
+      checks_skipped: checksSkipped,
+      error: result.error ?? null,
+      finished_at: new Date().toISOString(),
+    };
+
+    let { data: scan, error: scanError } = await db
       .from("scans")
-      .insert({
-        site_id: site.id,
-        status: result.status,
-        http_status: result.httpStatus,
-        response_ms: result.responseMs,
-        checks_total: result.checksTotal,
-        checks_passed: result.checksPassed,
-        error: result.error ?? null,
-        finished_at: new Date().toISOString(),
-      })
+      .insert(scanRow)
       .select("id")
       .single();
+
+    // Pre-migration fallback: the outcome columns and the "partial" status do
+    // not exist until the scan-outcomes migration is applied.
+    if (scanError?.message?.match(/check_results|checks_errored|checks_skipped|scans_status_check/)) {
+      const fallback = { ...scanRow };
+      delete fallback.check_results;
+      delete fallback.checks_errored;
+      delete fallback.checks_skipped;
+      if (fallback.status === "partial") fallback.status = "completed";
+      const retry = await db.from("scans").insert(fallback).select("id").single();
+      scan = retry.data;
+      scanError = retry.error;
+    }
 
     if (scanError) throw new Error(`insert scan: ${scanError.message}`);
 
@@ -119,6 +192,20 @@ export async function scanSite(db, site, { userId = null, manual = false } = {})
     const toTouch = [];
     const toReopen = [];
 
+    // Keep the rich finding context current on later scans, so findings created
+    // before this metadata existed pick it up without being re-created.
+    const contextPatch = (f) => ({
+      title: f.title,
+      severity: f.severity,
+      detail: f.detail ?? null,
+      evidence: f.evidence ?? null,
+      url: f.url ?? null,
+      confidence: f.confidence ?? "medium",
+      what_it_does_not_prove: f.what_it_does_not_prove ?? null,
+      remediation: f.remediation ?? null,
+      affected_resource: f.affected_resource ?? null,
+    });
+
     for (const f of result.findings) {
       const prior = byKey.get(f.check_key);
       if (!prior) {
@@ -126,34 +213,34 @@ export async function scanSite(db, site, { userId = null, manual = false } = {})
           scan_id: scan.id,
           site_id: site.id,
           check_key: f.check_key,
-          title: f.title,
-          severity: f.severity,
-          detail: f.detail ?? null,
-          evidence: f.evidence ?? null,
-          url: f.url ?? null,
+          ...contextPatch(f),
         });
         continue;
       }
       // Respect an explicit ignore: do not resurrect it on every scan.
       if (prior.status === "ignored") continue;
       // A manually resolved issue that is still present reopens the same row.
-      if (prior.status === "resolved") {
-        toReopen.push(prior.id);
-        continue;
-      }
-      toTouch.push(prior.id);
+      if (prior.status === "resolved") toReopen.push(prior.id);
+      toTouch.push({ id: prior.id, patch: contextPatch(f) });
     }
 
     if (toInsert.length) {
       const { error } = await db.from("findings").insert(toInsert);
-      if (error) throw new Error(`insert findings: ${error.message}`);
-    }
-
-    if (toTouch.length) {
-      await db
-        .from("findings")
-        .update({ last_seen_at: new Date().toISOString() })
-        .in("id", toTouch);
+      if (error?.message?.match(/confidence|what_it_does_not_prove|remediation|affected_resource/)) {
+        // Pre-migration fallback: keep recording findings without the new context.
+        const minimal = toInsert.map((f) => {
+          const row = { ...f };
+          delete row.confidence;
+          delete row.what_it_does_not_prove;
+          delete row.remediation;
+          delete row.affected_resource;
+          return row;
+        });
+        const retry = await db.from("findings").insert(minimal);
+        if (retry.error) throw new Error(`insert findings: ${retry.error.message}`);
+      } else if (error) {
+        throw new Error(`insert findings: ${error.message}`);
+      }
     }
 
     if (toReopen.length) {
@@ -161,6 +248,28 @@ export async function scanSite(db, site, { userId = null, manual = false } = {})
         .from("findings")
         .update({ status: "open", last_seen_at: new Date().toISOString() })
         .in("id", toReopen);
+    }
+
+    if (toTouch.length) {
+      const seenAt = new Date().toISOString();
+      const updates = await Promise.all(
+        toTouch.map(({ id, patch }) =>
+          db
+            .from("findings")
+            .update({ ...patch, last_seen_at: seenAt })
+            .eq("id", id)
+            .then(({ error }) => error?.message ?? null),
+        ),
+      );
+
+      // Pre-migration fallback: record at least the last-seen time when the
+      // context columns do not exist yet.
+      if (updates.some((message) => /confidence|what_it_does_not_prove|remediation|affected_resource/.test(message ?? ""))) {
+        await db
+          .from("findings")
+          .update({ last_seen_at: seenAt })
+          .in("id", toTouch.map((f) => f.id));
+      }
     }
 
     // Only auto-resolve findings when the check completed successfully (status: 'pass')
