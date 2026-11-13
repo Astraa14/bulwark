@@ -1,6 +1,90 @@
 import { connect } from "node:tls";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 
 const UA = "BulwarkBot/0.2 (+https://bulwark.app/bot)";
+
+const BLOCKED_PRIVATE_PREFIXES = [
+  "10.",
+  "127.",
+  "169.254.",
+  "172.16.",
+  "172.17.",
+  "172.18.",
+  "172.19.",
+  "172.20.",
+  "172.21.",
+  "172.22.",
+  "172.23.",
+  "172.24.",
+  "172.25.",
+  "172.26.",
+  "172.27.",
+  "172.28.",
+  "172.29.",
+  "172.30.",
+  "172.31.",
+  "192.168.",
+  "::1",
+  "fc",
+  "fd",
+  "fe80:",
+  "fe9",
+  "fea",
+  "feb",
+  "::ffff:",
+];
+
+function isBlockedIpAddress(ip) {
+  const value = String(ip ?? "").trim().toLowerCase();
+  if (!value) return false;
+  if (value === "localhost") return true;
+  if (value.startsWith("::ffff:")) return true;
+  if (value.startsWith("127.") || value === "::1") return true;
+  if (value.startsWith("10.") || value.startsWith("192.168.")) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(value)) return true;
+  if (value.startsWith("169.254.") || value.startsWith("fc") || value.startsWith("fd")) return true;
+  if (value.startsWith("fe8") || value.startsWith("fe9") || value.startsWith("fea") || value.startsWith("feb")) return true;
+  return false;
+}
+
+export function isBlockedOutboundHost(hostname) {
+  const value = String(hostname ?? "").trim().toLowerCase().replace(/\.$/, "");
+  if (!value) return true;
+  if (value === "localhost" || value.endsWith(".localhost") || value.endsWith(".local")) return true;
+  if (isIP(value)) return isBlockedIpAddress(value);
+  return false;
+}
+
+async function resolvePublicAddresses(hostname) {
+  const value = String(hostname ?? "").trim().toLowerCase().replace(/\.$/, "");
+  if (!value || isBlockedOutboundHost(value)) return [];
+  try {
+    const results = await lookup(value, { all: true });
+    return results.map((entry) => entry.address);
+  } catch {
+    return [];
+  }
+}
+
+export async function ensureSafeFetchUrl(urlString) {
+  const parsed = new URL(urlString);
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error(`Blocked outbound target: unsupported protocol ${parsed.protocol}`);
+  }
+
+  const host = parsed.hostname.replace(/\.$/, "").toLowerCase();
+  if (isBlockedOutboundHost(host)) {
+    throw new Error(`Blocked outbound target: ${host}`);
+  }
+
+  const resolved = await resolvePublicAddresses(host);
+  if (resolved.some((addr) => isBlockedIpAddress(addr))) {
+    throw new Error(`Blocked outbound target: ${host}`);
+  }
+
+  return parsed.toString();
+}
 
 const SECURITY_HEADERS = [
   {
@@ -10,9 +94,6 @@ const SECURITY_HEADERS = [
     severity: "medium",
     detail:
       "Strict-Transport-Security is not set, so browsers may fall back to plain HTTP on the first visit.",
-    confidence: "medium",
-    what_it_does_not_prove: "Does not prove the site serves content over HTTP; may be behind a proxy that handles TLS.",
-    remediation: "Add 'Strict-Transport-Security: max-age=31536000; includeSubDomains' header.",
   },
   {
     key: "content-security-policy",
@@ -21,9 +102,6 @@ const SECURITY_HEADERS = [
     severity: "medium",
     detail:
       "No CSP means injected scripts run freely. It is the strongest single defence against XSS.",
-    confidence: "medium",
-    what_it_does_not_prove: "Does not prove XSS vulnerabilities exist; CSP is a defense-in-depth measure.",
-    remediation: "Implement a Content-Security-Policy header starting with 'default-src' restrictions.",
   },
   {
     key: "x-content-type-options",
@@ -31,9 +109,6 @@ const SECURITY_HEADERS = [
     title: "Missing X-Content-Type-Options",
     severity: "low",
     detail: "Without 'nosniff', browsers may MIME-sniff responses and execute unexpected content.",
-    confidence: "low",
-    what_it_does_not_prove: "Does not prove content sniffing is being exploited; modern browsers have improved protections.",
-    remediation: "Add 'X-Content-Type-Options: nosniff' header.",
   },
   {
     key: "referrer-policy",
@@ -41,9 +116,6 @@ const SECURITY_HEADERS = [
     title: "Missing Referrer-Policy",
     severity: "low",
     detail: "URLs can leak to third parties through the Referer header.",
-    confidence: "low",
-    what_it_does_not_prove: "Does not prove sensitive data is being leaked; depends on URL structure.",
-    remediation: "Add 'Referrer-Policy: strict-origin-when-cross-origin' header.",
   },
 ];
 
@@ -179,16 +251,7 @@ const MULTI_PART_SUFFIXES = new Set([
 ]);
 
 function finding(check_key, title, severity, detail, extra = {}) {
-  return {
-    check_key,
-    title,
-    severity,
-    detail,
-    confidence: extra.confidence ?? "medium", // high, medium, low
-    what_it_does_not_prove: extra.what_it_does_not_prove ?? null,
-    remediation: extra.remediation ?? null,
-    ...extra,
-  };
+  return { check_key, title, severity, detail, ...extra };
 }
 
 function normalizeDomain(input) {
@@ -209,193 +272,39 @@ function registrableDomain(domain) {
 }
 
 function isIpOrLocal(domain) {
-  return /^(\d{1,3}\.){3}\d{1,3}$/.test(domain) || domain === "localhost" || domain.endsWith(".local");
+  return /^((\d{1,3}\.){3}\d{1,3}|[0-9a-f:]+)$/.test(domain) || domain === "localhost" || domain.endsWith(".local");
 }
 
-/**
- * Checks if an IP address is in a private, loopback, link-local, or reserved range.
- * Returns true if the IP should be blocked.
- */
-function isUnsafeIp(ip) {
-  // IPv4 private ranges
-  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
-  if (ipv4) {
-    const [, a, b, c, d] = ipv4.map(Number);
-    // Loopback: 127.0.0.0/8
-    if (a === 127) return true;
-    // Private: 10.0.0.0/8
-    if (a === 10) return true;
-    // Private: 172.16.0.0/12
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    // Private: 192.168.0.0/16
-    if (a === 192 && b === 168) return true;
-    // Link-local: 169.254.0.0/16
-    if (a === 169 && b === 254) return true;
-    // Reserved for benchmarking: 198.18.0.0/15
-    if (a === 198 && (b === 18 || b === 19)) return true;
-    // Reserved for documentation: 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24
-    if (a === 192 && b === 0 && c === 2) return true;
-    if (a === 198 && b === 51 && c === 100) return true;
-    if (a === 203 && b === 0 && c === 113) return true;
-    // Broadcast: 255.255.255.255
-    if (a === 255 && b === 255 && c === 255 && d === 255) return true;
-  }
+async function fetchWithTimeout(url, { timeout = 15000, method = "GET", headers = {}, maxRedirects = 3 } = {}) {
+  let current = url;
+  let redirectCount = 0;
 
-  // IPv6 private ranges
-  if (ip.includes(':')) {
-    // Loopback: ::1
-    if (ip === '::1' || ip.startsWith('::1')) return true;
-    // Link-local: fe80::/10
-    if (ip.startsWith('fe80:') || ip.startsWith('fe81:') || ip.startsWith('fe82:') || ip.startsWith('fe83:') ||
-        ip.startsWith('fe84:') || ip.startsWith('fe85:') || ip.startsWith('fe86:') || ip.startsWith('fe87:') ||
-        ip.startsWith('fe88:') || ip.startsWith('fe89:') || ip.startsWith('fe8a:') || ip.startsWith('fe8b:') ||
-        ip.startsWith('fe8c:') || ip.startsWith('fe8d:') || ip.startsWith('fe8e:') || ip.startsWith('fe8f:')) return true;
-    // Unique local: fc00::/7
-    if (ip.startsWith('fc') || ip.startsWith('fd')) return true;
-    // Documentation: 2001:db8::/32
-    if (ip.startsWith('2001:db8:')) return true;
-  }
+  while (true) {
+    current = await ensureSafeFetchUrl(current);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      const res = await fetch(current, {
+        method,
+        redirect: "manual",
+        signal: controller.signal,
+        headers: { "user-agent": UA, accept: "*/*", ...headers },
+      });
 
-  return false;
-}
-
-/**
- * Resolves a hostname to IPs and checks if any are unsafe.
- * Returns true if the hostname resolves to an unsafe IP.
- */
-async function hasUnsafeDns(hostname) {
-  try {
-    const { resolve } = await import('node:dns/promises');
-    const ips = await resolve(hostname);
-    return ips.some(ip => isUnsafeIp(ip));
-  } catch {
-    // If DNS resolution fails, assume safe (will fail at fetch time anyway)
-    return false;
-  }
-}
-
-async function fetchWithTimeout(url, { timeout = 15000, method = "GET", headers = {}, maxRedirects = 5, maxSize = 5_000_000 } = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-
-  // Validate initial URL hostname for unsafe IPs
-  try {
-    const initialUrl = new URL(url);
-    if (initialUrl.hostname && await hasUnsafeDns(initialUrl.hostname)) {
-      clearTimeout(timer);
-      throw new Error(`Blocked request to unsafe IP range: ${initialUrl.hostname}`);
-    }
-  } catch (err) {
-    if (err.message.includes('unsafe IP')) {
-      clearTimeout(timer);
-      throw err;
-    }
-    // If URL parsing fails, continue (will fail at fetch time)
-  }
-
-  try {
-    const response = await fetch(url, {
-      method,
-      redirect: "manual", // We'll handle redirects manually to validate each one
-      signal: controller.signal,
-      headers: { "user-agent": UA, accept: "*/*", ...headers },
-    });
-
-    // Handle redirects manually with validation
-    if (response.status >= 300 && response.status < 400 && response.headers.get('location')) {
-      let redirectCount = 0;
-      let currentUrl = url;
-      let currentResponse = response;
-
-      while (currentResponse.status >= 300 && currentResponse.status < 400 && redirectCount < maxRedirects) {
-        const location = currentResponse.headers.get('location');
-        if (!location) break;
-
-        const nextUrl = new URL(location, currentUrl);
-
-        // Validate redirect target for unsafe IPs
-        if (nextUrl.hostname && await hasUnsafeDns(nextUrl.hostname)) {
-          clearTimeout(timer);
-          throw new Error(`Blocked redirect to unsafe IP range: ${nextUrl.hostname}`);
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get("location");
+        if (location && redirectCount < maxRedirects) {
+          redirectCount += 1;
+          current = new URL(location, current).toString();
+          continue;
         }
-
-        redirectCount++;
-        currentUrl = nextUrl.toString();
-
-        currentResponse = await fetch(currentUrl, {
-          method,
-          redirect: "manual",
-          signal: controller.signal,
-          headers: { "user-agent": UA, accept: "*/*", ...headers },
-        });
       }
 
-      if (redirectCount >= maxRedirects) {
-        clearTimeout(timer);
-        throw new Error(`Too many redirects (${maxRedirects} max)`);
-      }
-
-      // Wrap the final response to enforce size limits on body reads
-      return wrapResponseWithSizeLimit(currentResponse, timer, maxSize);
+      return res;
+    } finally {
+      clearTimeout(timer);
     }
-
-    // No redirects, wrap response to enforce size limits
-    return wrapResponseWithSizeLimit(response, timer, maxSize);
-  } finally {
-    // Don't clear timeout here - it's cleared when body reading completes or errors
   }
-}
-
-/**
- * Wraps a Response object to enforce size limits on body reads.
- * The timeout is cleared when body reading completes.
- */
-function wrapResponseWithSizeLimit(response, timer, maxSize) {
-  return new Proxy(response, {
-    get(target, prop) {
-      if (prop === 'text' || prop === 'json' || prop === 'arrayBuffer' || prop === 'blob') {
-        return async () => {
-          const reader = target.body.getReader();
-          let receivedLength = 0;
-          const chunks = [];
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            receivedLength += value.length;
-            if (receivedLength > maxSize) {
-              reader.cancel();
-              clearTimeout(timer);
-              throw new Error(`Response body exceeds maximum size of ${maxSize} bytes`);
-            }
-
-            chunks.push(value);
-          }
-
-          clearTimeout(timer);
-
-          const body = new Uint8Array(receivedLength);
-          let position = 0;
-          for (const chunk of chunks) {
-            body.set(chunk, position);
-            position += chunk.length;
-          }
-
-          const decoder = new TextDecoder();
-          const text = decoder.decode(body);
-
-          if (prop === 'text') return text;
-          if (prop === 'json') return JSON.parse(text);
-          if (prop === 'arrayBuffer') return body.buffer;
-          if (prop === 'blob') return new Blob([body]);
-
-          return text;
-        };
-      }
-      return target[prop];
-    }
-  });
 }
 
 export async function checkUptime(domain) {
@@ -447,7 +356,7 @@ export function checkTls(domain) {
 async function checkExposedFiles(domain) {
   const probes = EXPOSED_FILES.map(async (file) => {
     try {
-      const res = await fetchWithTimeout(`https://${domain}${file.path}`, { timeout: 8000, maxSize: 1_000_000 });
+      const res = await fetchWithTimeout(`https://${domain}${file.path}`, { timeout: 8000 });
       if (res.status !== 200) return null;
       const body = await res.text().catch(() => "");
       if (!file.matches(body)) return null;
@@ -468,11 +377,7 @@ function checkHeaders(headers) {
   const out = [];
   for (const h of SECURITY_HEADERS) {
     if (!headers.get(h.key)) {
-      out.push(finding(h.check, h.title, h.severity, h.detail, {
-        confidence: h.confidence,
-        what_it_does_not_prove: h.what_it_does_not_prove,
-        remediation: h.remediation,
-      }));
+      out.push(finding(h.check, h.title, h.severity, h.detail));
     }
   }
   const server = headers.get("server") ?? "";
@@ -483,12 +388,7 @@ function checkHeaders(headers) {
         "Server version disclosed",
         "low",
         "The Server header reveals software and version, which helps attackers target known CVEs.",
-        {
-          evidence: server,
-          confidence: "low",
-          what_it_does_not_prove: "Does not prove the server has unpatched vulnerabilities; version may be outdated but patched.",
-          remediation: "Configure server to omit version number or use a generic Server header.",
-        },
+        { evidence: server },
       ),
     );
   }
@@ -547,7 +447,6 @@ async function checkCors(domain) {
     const credentials = (res.headers.get("access-control-allow-credentials") ?? "").toLowerCase();
     if (!allow) return [];
 
-    // High severity: wildcard with credentials is always dangerous
     if (allow === "*" && credentials === "true") {
       return [
         finding(
@@ -559,55 +458,29 @@ async function checkCors(domain) {
         ),
       ];
     }
-
-    // Reflecting origin is only high risk if credentials are supported
     if (allow === probeOrigin) {
-      if (credentials === "true") {
-        return [
-          finding(
-            "cors_reflects_origin_credentials",
-            "CORS reflects any origin with credentials",
-            "high",
-            "The server echoes back whatever Origin it receives with credentials. Any site can read your users' data.",
-            { evidence: `access-control-allow-origin: ${allow} · allow-credentials: true` },
-          ),
-        ];
-      }
-      // Without credentials, medium severity - still reflective but less dangerous
       return [
         finding(
           "cors_reflects_origin",
-          "CORS reflects any origin without credentials",
+          "CORS reflects any origin",
           "medium",
-          "The server echoes back whatever Origin it receives. Risk depends on whether the response contains sensitive data.",
+          "The server echoes back whatever Origin it receives. Combined with cookies, any site can read your users' data.",
           { evidence: `access-control-allow-origin: ${allow}` },
         ),
       ];
     }
-
-    // Wildcard without credentials is generally low risk unless serving private data
     if (allow === "*") {
       return [
         finding(
           "cors_wildcard",
           "CORS is open to every origin",
           "low",
-          "Public cross-origin reads are allowed. Only a concern if responses contain private data.",
+          "Public cross-origin reads are allowed. Fine for a public API, risky if any response contains private data.",
           { evidence: "access-control-allow-origin: *" },
         ),
       ];
     }
-
-    // Specific origin without credentials is informational
-    return [
-      finding(
-        "cors_specific_origin",
-        "CORS allows specific origin",
-        "info",
-        `CORS is restricted to ${allow}. This is a safe configuration for cross-origin requests.`,
-        { evidence: `access-control-allow-origin: ${allow}` },
-      ),
-    ];
+    return [];
   } catch {
     return [];
   }
@@ -618,47 +491,13 @@ function checkCookies(headers) {
   if (!raw.length) return [];
 
   const problems = [];
-  for (const cookieStr of raw) {
-    // Parse cookie attributes structurally
-    const parts = cookieStr.split(';').map(p => p.trim());
-    const nameValue = parts[0].split('=');
-    const name = nameValue[0]?.trim() ?? "cookie";
-
-    // Check if this is a sensitive cookie
+  for (const cookie of raw) {
+    const name = cookie.split("=")[0]?.trim() ?? "cookie";
+    const lower = cookie.toLowerCase();
     const sensitive = /session|token|auth|sid|jwt|refresh/i.test(name);
-
-    // Parse attributes properly (after the first =)
-    const attributes = new Map();
-    for (let i = 1; i < parts.length; i++) {
-      const attr = parts[i].toLowerCase();
-      if (attr.includes('=')) {
-        const [key, value] = attr.split('=');
-        attributes.set(key.trim(), value.trim());
-      } else {
-        attributes.set(attr, true);
-      }
-    }
-
-    // Check Secure attribute
-    if (!attributes.has('secure')) {
-      problems.push(`${name} missing Secure`);
-    }
-
-    // Check HttpOnly for sensitive cookies
-    if (sensitive && !attributes.has('httponly')) {
-      problems.push(`${name} missing HttpOnly`);
-    }
-
-    // Check SameSite attribute
-    if (!attributes.has('samesite')) {
-      problems.push(`${name} missing SameSite`);
-    } else {
-      const sameSite = attributes.get('samesite');
-      // SameSite=None without Secure is problematic
-      if (sameSite === 'none' && !attributes.has('secure')) {
-        problems.push(`${name} SameSite=None without Secure`);
-      }
-    }
+    if (!lower.includes("secure")) problems.push(`${name} missing Secure`);
+    if (sensitive && !lower.includes("httponly")) problems.push(`${name} missing HttpOnly`);
+    if (!lower.includes("samesite")) problems.push(`${name} missing SameSite`);
   }
 
   if (!problems.length) return [];
@@ -735,12 +574,7 @@ async function checkDiscovery(domain) {
         "No robots.txt",
         "info",
         "Search engines and bots have no guidance. Not a vulnerability on its own.",
-        {
-          url: `https://${domain}/robots.txt`,
-          confidence: "low",
-          what_it_does_not_prove: "Does not indicate a security issue; many sites intentionally omit robots.txt.",
-          remediation: "Create robots.txt if you want to guide search engine crawling behavior.",
-        },
+        { url: `https://${domain}/robots.txt` },
       ),
     );
   } else {
@@ -754,13 +588,7 @@ async function checkDiscovery(domain) {
           "robots.txt points at sensitive paths",
           "low",
           "robots.txt publicly lists internal-looking paths, which acts as a map for attackers. Do not rely on it to hide anything.",
-          {
-            url: `https://${domain}/robots.txt`,
-            evidence: paths.slice(0, 6).join(", "),
-            confidence: "medium",
-            what_it_does_not_prove: "Does not prove the paths are accessible or contain sensitive data.",
-            remediation: "Remove sensitive paths from robots.txt; rely on authentication and authorization instead.",
-          },
+          { url: `https://${domain}/robots.txt`, evidence: paths.slice(0, 6).join(", ") },
         ),
       );
     }
@@ -773,12 +601,7 @@ async function checkDiscovery(domain) {
         "No sitemap.xml",
         "info",
         "A sitemap helps search engines find your pages. Missing is normal for apps.",
-        {
-          url: `https://${domain}/sitemap.xml`,
-          confidence: "low",
-          what_it_does_not_prove: "Does not indicate a security issue; many single-page apps intentionally omit sitemaps.",
-          remediation: "Create sitemap.xml if you want to improve SEO for content pages.",
-        },
+        { url: `https://${domain}/sitemap.xml` },
       ),
     );
   } else if (!/<(urlset|sitemapindex)[\s>]/i.test(sitemap.body)) {
@@ -788,12 +611,7 @@ async function checkDiscovery(domain) {
         "sitemap.xml is not a sitemap",
         "low",
         "The sitemap URL returns something that is not a sitemap document, which confuses crawlers and may expose a fallback page.",
-        {
-          url: `https://${domain}/sitemap.xml`,
-          confidence: "medium",
-          what_it_does_not_prove: "Does not prove a security issue; may be a misconfiguration.",
-          remediation: "Ensure sitemap.xml returns valid XML or remove the endpoint.",
-        },
+        { url: `https://${domain}/sitemap.xml` },
       ),
     );
   }
@@ -809,12 +627,7 @@ async function checkDiscovery(domain) {
         "No security.txt",
         "low",
         "Researchers have no published way to report a vulnerability, so reports may go nowhere.",
-        {
-          url: `https://${domain}/.well-known/security.txt`,
-          confidence: "low",
-          what_it_does_not_prove: "Does not indicate a security issue; you may handle reports through other channels.",
-          remediation: "Create security.txt at /.well-known/security.txt with a Contact field.",
-        },
+        { url: `https://${domain}/.well-known/security.txt` },
       ),
     );
   } else if (!/^\s*contact\s*:/im.test(security.body)) {
@@ -824,12 +637,7 @@ async function checkDiscovery(domain) {
         "security.txt has no Contact field",
         "medium",
         "A security.txt without a Contact line cannot be used to report issues.",
-        {
-          url: securityUrl,
-          confidence: "high",
-          what_it_does_not_prove: "Does not prove researchers can't contact you through other means.",
-          remediation: "Add a 'Contact:' field to security.txt with an email or URL.",
-        },
+        { url: securityUrl },
       ),
     );
   }
@@ -944,10 +752,10 @@ async function checkLeakedSecrets(domain, page) {
   const bundles = await Promise.all(
     candidates.map(async (url) => {
       try {
-        const res = await fetchWithTimeout(url, { timeout: 12000, maxSize: 4_000_000 });
+        const res = await fetchWithTimeout(url, { timeout: 12000 });
         if (res.status !== 200) return null;
         const body = await res.text().catch(() => "");
-        if (!body) return null;
+        if (!body || body.length > 4_000_000) return null;
         return { url, body };
       } catch {
         return null;
@@ -1181,162 +989,131 @@ export async function fetchPageSample(domain) {
   return pageSampleFromHtml(page.body);
 }
 
-/**
- * Runs every check for one domain and returns a scan record.
- * Read-only against the target; the caller persists the result.
- */
+function registerCheckOutcome(map, key, status) {
+  map[key] = status;
+}
+
 export async function runChecks(rawDomain, { baseline = null } = {}) {
   const domain = normalizeDomain(rawDomain);
   const findings = [];
-  const checkOutcomes = new Map(); // check_key -> { status: 'pass'|'finding'|'error', checkKey: string }
   const start = Date.now();
-
-  const checksTotal =
-    1 + // uptime
-    1 + // http status
-    1 + // tls
-    SECURITY_HEADERS.length +
-    1 + // server banner
-    1 + // csp quality
-    1 + // cors
-    1 + // cookies
-    1 + // mixed content
-    1 + // directory listing
-    EXPOSED_FILES.length +
-    3 + // discovery
-    1 + // leaked secrets
-    1 + // domain expiry
-    2 + // dns
-    1; // defacement
+  const checkResults = {};
 
   const page = await checkUptime(domain);
 
   if (!page.ok) {
+    registerCheckOutcome(checkResults, "site_uptime", "error");
     findings.push(
       finding("site_unreachable", "Site unreachable", "critical", "The site did not respond over HTTPS within 15 seconds.", {
         evidence: page.error,
       }),
     );
-    checkOutcomes.set("site_unreachable", { status: "error", checkKey: "site_unreachable" });
+
+    const checksPassed = 0;
+    const checksErrored = 1;
+    const checksSkipped = 0;
+    const checksTotal = 1;
+
     return {
       domain,
       status: "failed",
       httpStatus: null,
       responseMs: page.responseMs,
-      checksTotal: 1,
-      checksPassed: 0,
+      checksTotal,
+      checksPassed,
+      checksErrored,
+      checksSkipped,
+      checkResults,
       findings,
-      checkOutcomes: Object.fromEntries(checkOutcomes),
       error: page.error,
     };
   }
 
+  registerCheckOutcome(checkResults, "site_uptime", "pass");
+
   if (page.status >= 500) {
+    registerCheckOutcome(checkResults, "http_status", "finding");
     findings.push(
       finding("http_5xx", "Server error on the homepage", "critical", "The homepage returned a 5xx error.", {
         evidence: `HTTP ${page.status}`,
       }),
     );
-    checkOutcomes.set("http_5xx", { status: "finding", checkKey: "http_5xx" });
   } else if (page.status >= 400) {
+    registerCheckOutcome(checkResults, "http_status", "finding");
     findings.push(
       finding("http_4xx", "Homepage returned an error status", "high", "The homepage is not serving successfully.", {
         evidence: `HTTP ${page.status}`,
       }),
     );
-    checkOutcomes.set("http_4xx", { status: "finding", checkKey: "http_4xx" });
   } else {
-    checkOutcomes.set("http_status", { status: "pass", checkKey: "http_status" });
+    registerCheckOutcome(checkResults, "http_status", "pass");
   }
 
   if (page.responseMs > 3000) {
+    registerCheckOutcome(checkResults, "response_time", "finding");
     findings.push(
       finding("slow_response", "Slow homepage response", "low", "The homepage took over 3 seconds to respond.", {
         evidence: `${page.responseMs} ms`,
       }),
     );
-    checkOutcomes.set("slow_response", { status: "finding", checkKey: "slow_response" });
   } else {
-    checkOutcomes.set("response_time", { status: "pass", checkKey: "response_time" });
+    registerCheckOutcome(checkResults, "response_time", "pass");
   }
 
   const tls = await checkTls(domain);
   if (!tls) {
+    registerCheckOutcome(checkResults, "tls", "error");
     findings.push(
       finding("tls_unavailable", "TLS certificate could not be read", "high", "Could not establish a TLS session to read the certificate."),
     );
-    checkOutcomes.set("tls_unavailable", { status: "error", checkKey: "tls_unavailable" });
   } else if (tls.days < 0) {
+    registerCheckOutcome(checkResults, "tls", "finding");
     findings.push(
       finding("tls_expired", "TLS certificate expired", "critical", "Browsers will show a full-page warning to every visitor.", {
         evidence: `Expired ${Math.abs(tls.days)} day(s) ago · ${tls.validTo}`,
       }),
     );
-    checkOutcomes.set("tls_expired", { status: "finding", checkKey: "tls_expired" });
   } else if (tls.days <= 14) {
+    registerCheckOutcome(checkResults, "tls", "finding");
     findings.push(
       finding("tls_expiring", "TLS certificate expires soon", "high", `Certificate expires in ${tls.days} day(s).`, {
         evidence: `${tls.validTo} · issued by ${tls.issuer}`,
       }),
     );
-    checkOutcomes.set("tls_expiring", { status: "finding", checkKey: "tls_expiring" });
   } else if (tls.days <= 30) {
+    registerCheckOutcome(checkResults, "tls", "finding");
     findings.push(
       finding("tls_expiring_soon", "TLS certificate expires within 30 days", "medium", `Certificate expires in ${tls.days} day(s).`, {
         evidence: `${tls.validTo} · issued by ${tls.issuer}`,
       }),
     );
-    checkOutcomes.set("tls_expiring_soon", { status: "finding", checkKey: "tls_expiring_soon" });
   } else {
-    checkOutcomes.set("tls", { status: "pass", checkKey: "tls" });
+    registerCheckOutcome(checkResults, "tls", "pass");
   }
 
-  const headerFindings = checkHeaders(page.headers);
-  findings.push(...headerFindings);
-  headerFindings.forEach(f => checkOutcomes.set(f.check_key, { status: "finding", checkKey: f.check_key }));
-  SECURITY_HEADERS.forEach(h => {
-    if (!checkOutcomes.has(h.check)) {
-      checkOutcomes.set(h.check, { status: "pass", checkKey: h.check });
-    }
-  });
-  if (!checkOutcomes.has("server_banner")) {
-    checkOutcomes.set("server_banner", { status: "pass", checkKey: "server_banner" });
-  }
+  const headersFindings = checkHeaders(page.headers);
+  findings.push(...headersFindings);
+  registerCheckOutcome(checkResults, "security_headers", headersFindings.length ? "finding" : "pass");
 
   const cspFindings = checkCspQuality(page.headers);
   findings.push(...cspFindings);
-  cspFindings.forEach(f => checkOutcomes.set(f.check_key, { status: "finding", checkKey: f.check_key }));
-  if (!cspFindings.some(f => f.check_key.startsWith("csp_"))) {
-    checkOutcomes.set("csp_quality", { status: "pass", checkKey: "csp_quality" });
-  }
+  registerCheckOutcome(checkResults, "csp_policy", cspFindings.length ? "finding" : "pass");
 
   const cookieFindings = checkCookies(page.headers);
   findings.push(...cookieFindings);
-  cookieFindings.forEach(f => checkOutcomes.set(f.check_key, { status: "finding", checkKey: f.check_key }));
-  if (!cookieFindings.length) {
-    checkOutcomes.set("cookie_flags", { status: "pass", checkKey: "cookie_flags" });
-  }
+  registerCheckOutcome(checkResults, "cookies", cookieFindings.length ? "finding" : "pass");
 
-  const mixedFindings = checkMixedContent(page.body, page.finalUrl);
-  findings.push(...mixedFindings);
-  mixedFindings.forEach(f => checkOutcomes.set(f.check_key, { status: "finding", checkKey: f.check_key }));
-  if (!mixedFindings.length) {
-    checkOutcomes.set("mixed_content", { status: "pass", checkKey: "mixed_content" });
-  }
+  const mixedContentFindings = checkMixedContent(page.body, page.finalUrl);
+  findings.push(...mixedContentFindings);
+  registerCheckOutcome(checkResults, "mixed_content", mixedContentFindings.length ? "finding" : "pass");
 
-  const dirFindings = checkDirectoryListing(page.body);
-  findings.push(...dirFindings);
-  dirFindings.forEach(f => checkOutcomes.set(f.check_key, { status: "finding", checkKey: f.check_key }));
-  if (!dirFindings.length) {
-    checkOutcomes.set("directory_listing", { status: "pass", checkKey: "directory_listing" });
-  }
+  const directoryFindings = checkDirectoryListing(page.body);
+  findings.push(...directoryFindings);
+  registerCheckOutcome(checkResults, "directory_listing", directoryFindings.length ? "finding" : "pass");
 
   const defacement = checkDefacement(page.body, baseline);
   findings.push(...defacement.findings);
-  defacement.findings.forEach(f => checkOutcomes.set(f.check_key, { status: "finding", checkKey: f.check_key }));
-  if (!defacement.findings.length) {
-    checkOutcomes.set("defacement", { status: "pass", checkKey: "defacement" });
-  }
+  registerCheckOutcome(checkResults, "defacement", defacement.findings.length ? "finding" : "pass");
 
   const [exposed, cors, discovery, secrets, domainExpiry, dns] = await Promise.all([
     checkExposedFiles(domain),
@@ -1348,50 +1125,13 @@ export async function runChecks(rawDomain, { baseline = null } = {}) {
   ]);
 
   findings.push(...exposed, ...cors, ...discovery, ...secrets, ...domainExpiry, ...dns);
+  registerCheckOutcome(checkResults, "exposed_files", exposed.length ? "finding" : "pass");
+  registerCheckOutcome(checkResults, "cors", cors.length ? "finding" : "pass");
+  registerCheckOutcome(checkResults, "public_discovery", discovery.length ? "finding" : "pass");
+  registerCheckOutcome(checkResults, "secrets", secrets.length ? "finding" : "pass");
+  registerCheckOutcome(checkResults, "domain_registration", domainExpiry.length ? "finding" : "pass");
+  registerCheckOutcome(checkResults, "dns", dns.length ? "finding" : "pass");
 
-  exposed.forEach(f => checkOutcomes.set(f.check_key, { status: "finding", checkKey: f.check_key }));
-  EXPOSED_FILES.forEach(f => {
-    if (!checkOutcomes.has(f.check)) {
-      checkOutcomes.set(f.check, { status: "pass", checkKey: f.check });
-    }
-  });
-
-  cors.forEach(f => checkOutcomes.set(f.check_key, { status: "finding", checkKey: f.check_key }));
-  if (!cors.length) {
-    checkOutcomes.set("cors", { status: "pass", checkKey: "cors" });
-  }
-
-  discovery.forEach(f => {
-    // Info findings still count as findings here. Their severity keeps them
-    // out of the way in the threat queue without making the scan summary lie.
-    checkOutcomes.set(f.check_key, { status: "finding", checkKey: f.check_key });
-  });
-  [
-    ["robots", "robots_missing"],
-    ["sitemap", "sitemap_missing"],
-    ["security_txt", "security_txt_missing"],
-  ].forEach(([prefix, passKey]) => {
-    const hasOutcome = Array.from(checkOutcomes.keys()).some((key) => key.startsWith(prefix));
-    if (!hasOutcome) checkOutcomes.set(passKey, { status: "pass", checkKey: passKey });
-  });
-
-  secrets.forEach(f => checkOutcomes.set(f.check_key, { status: "finding", checkKey: f.check_key }));
-  if (!secrets.length) {
-    checkOutcomes.set("leaked_secrets", { status: "pass", checkKey: "leaked_secrets" });
-  }
-
-  domainExpiry.forEach(f => checkOutcomes.set(f.check_key, { status: "finding", checkKey: f.check_key }));
-  if (!domainExpiry.length) {
-    checkOutcomes.set("domain_expiry", { status: "pass", checkKey: "domain_expiry" });
-  }
-
-  dns.forEach(f => checkOutcomes.set(f.check_key, { status: "finding", checkKey: f.check_key }));
-  if (!dns.length) {
-    checkOutcomes.set("dns_ns", { status: "pass", checkKey: "dns_ns" });
-    checkOutcomes.set("dns_mx", { status: "pass", checkKey: "dns_mx" });
-  }
-
-  // De-duplicate by check key, keeping the first (most severe) occurrence.
   const unique = [];
   const seen = new Set();
   for (const f of findings) {
@@ -1400,17 +1140,24 @@ export async function runChecks(rawDomain, { baseline = null } = {}) {
     unique.push(f);
   }
 
-  const passedCount = Array.from(checkOutcomes.values()).filter(o => o.status === 'pass').length;
+  const checksPassed = Object.values(checkResults).filter((value) => value === "pass").length;
+  const checksErrored = Object.values(checkResults).filter((value) => value === "error").length;
+  const checksSkipped = Object.values(checkResults).filter((value) => value === "not_checked").length;
+  const checksTotal = Object.keys(checkResults).length;
+
+  const status = checksErrored || checksSkipped ? "partial" : "completed";
 
   return {
     domain,
-    status: "completed",
+    status,
     httpStatus: page.status,
     responseMs: page.responseMs,
     checksTotal,
-    checksPassed: passedCount,
+    checksPassed,
+    checksErrored,
+    checksSkipped,
+    checkResults,
     findings: unique,
-    checkOutcomes: Object.fromEntries(checkOutcomes),
     tls,
     pageSample: defacement.sample,
     defacementSimilarity: defacement.similarity,
@@ -1418,4 +1165,6 @@ export async function runChecks(rawDomain, { baseline = null } = {}) {
   };
 }
 
-export { normalizeDomain, isUnsafeIp, hasUnsafeDns };
+export { normalizeDomain };
+
+
