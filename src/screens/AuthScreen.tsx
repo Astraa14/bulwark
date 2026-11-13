@@ -120,6 +120,22 @@ export default function AuthScreen() {
           className="button auth-github"
           onClick={signInWithGithub}
           disabled={githubBusy}
+          style={{
+            background: "#24292e",
+            color: "#fff",
+            border: "1px solid rgba(255,255,255,0.2)",
+            borderRadius: "6px",
+            width: "100%",
+            padding: "10px 16px",
+            fontSize: "14px",
+            fontWeight: "500",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "8px",
+            transition: "background 0.2s",
+          }}
         >
           {githubBusy ? "Redirecting…" : "Sign in with GitHub"}
         </button>
