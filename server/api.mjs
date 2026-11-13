@@ -1,5 +1,7 @@
 import express from "express";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { explainWithProvider } from "./ai.mjs";
 import { getSettings, saveSettings, sendSlack } from "./alerts.mjs";
 import { fetchPageSample } from "./checks.mjs";
@@ -19,6 +21,7 @@ import { scanSite } from "./worker.mjs";
 
 const PORT = Number(process.env.PORT ?? process.env.API_PORT ?? 8787);
 const app = express();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const allowedOrigins = new Set(
   [
@@ -49,6 +52,8 @@ app.use((req, res, next) => {
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
+
+app.use(express.static(path.join(__dirname, "../dist")));
 
 app.use(express.json({ limit: "64kb" }));
 
@@ -697,6 +702,10 @@ app.post(
     });
   }),
 );
+
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(__dirname, "../dist/index.html"));
+});
 
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
 
