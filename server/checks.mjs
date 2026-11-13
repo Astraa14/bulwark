@@ -1362,16 +1362,17 @@ export async function runChecks(rawDomain, { baseline = null } = {}) {
   }
 
   discovery.forEach(f => {
+    // Info findings still count as findings here. Their severity keeps them
+    // out of the way in the threat queue without making the scan summary lie.
     checkOutcomes.set(f.check_key, { status: "finding", checkKey: f.check_key });
-    // Don't mark info-level findings as competing with high-severity exposures
-    if (f.severity === 'info') {
-      checkOutcomes.set(f.check_key, { status: "pass", checkKey: f.check_key });
-    }
   });
-  ['robots_missing', 'sitemap_missing', 'security_txt_missing'].forEach(key => {
-    if (!checkOutcomes.has(key)) {
-      checkOutcomes.set(key, { status: "pass", checkKey: key });
-    }
+  [
+    ["robots", "robots_missing"],
+    ["sitemap", "sitemap_missing"],
+    ["security_txt", "security_txt_missing"],
+  ].forEach(([prefix, passKey]) => {
+    const hasOutcome = Array.from(checkOutcomes.keys()).some((key) => key.startsWith(prefix));
+    if (!hasOutcome) checkOutcomes.set(passKey, { status: "pass", checkKey: passKey });
   });
 
   secrets.forEach(f => checkOutcomes.set(f.check_key, { status: "finding", checkKey: f.check_key }));
