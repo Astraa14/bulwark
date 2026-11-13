@@ -88,7 +88,14 @@ async function ownedSite(userId, siteId) {
   return data;
 }
 
-app.get("/api/health", (_req, res) => res.json({ ok: true, service: "bulwark-api" }));
+app.get("/api/health", (_req, res) =>
+  res.json({
+    ok: true,
+    service: "bulwark-api",
+    // Render injects this so a deploy can be verified from the health check.
+    commit: process.env.RENDER_GIT_COMMIT ?? null,
+  }),
+);
 
 // ---------------------------------------------------------------------------
 // Ownership + scanning
