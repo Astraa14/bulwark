@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/lib/auth";
+import { supabase } from "@/lib/supabase";
 import AuthScreen from "@/screens/AuthScreen";
 import { apiPost } from "@/lib/api";
 import {
@@ -17,6 +18,7 @@ import {
   setFindingStatus,
   setSiteInterval,
   setSiteStatus,
+  setWebhookSecret,
   shortDate,
   useApiKeys,
   useConnections,
@@ -2054,6 +2056,7 @@ function ConnectionsSection({
   onAdd,
   onRemove,
   onScan,
+  onSetWebhookSecret,
 }: {
   connections: ConnectionRow[];
   loading: boolean;
@@ -2061,6 +2064,7 @@ function ConnectionsSection({
   onAdd: (input: Parameters<typeof addConnection>[0]) => Promise<void>;
   onRemove: (id: string, type: ConnectionType) => Promise<void>;
   onScan: (id: string, type: ConnectionType, repo?: { owner: string; repo: string }) => Promise<void>;
+  onSetWebhookSecret: (id: string, secret: string) => Promise<void>;
 }) {
   const [addType, setAddType] = useState<ConnectionType | null>(null);
   const [scanId, setScanId] = useState<string | null>(null);
@@ -2069,6 +2073,8 @@ function ConnectionsSection({
   const [githubRepo, setGithubRepo] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [webhookId, setWebhookId] = useState<string | null>(null);
+  const [webhookSecret, setWebhookSecretState] = useState("");
 
   const addConnection = async () => {
     setLocalError(null);
@@ -2127,6 +2133,17 @@ function ConnectionsSection({
     }
   };
 
+  const setWebhookSecret = async (id: string, secret: string) => {
+    setLocalError(null);
+    try {
+      await onSetWebhookSecret(id, secret);
+      setWebhookId(null);
+      setWebhookSecretState("");
+    } catch (err) {
+      setLocalError((err as Error).message);
+    }
+  };
+
   return (
     <>
       <section className="card setting-list">
@@ -2182,6 +2199,14 @@ function ConnectionsSection({
                 </div>
               </div>
               <div className="key-actions">
+                {c.type === "github" && (
+                  <div className="key-field">
+                    <span className="muted">Webhook URL:</span><br />
+                    <code style={{ fontSize: "0.75rem", wordBreak: "break-all" }}>
+                      {`${window.location.origin}/api/webhooks/github`}
+                    </code>
+                  </div>
+                )}
                 <button
                   className="button dark"
                   onClick={() => {
@@ -2194,6 +2219,18 @@ function ConnectionsSection({
                 >
                   {busy === c.id ? "Scanning…" : "Scan now"}
                 </button>
+                {c.type === "github" && (
+                  <button
+                    className="button"
+                    onClick={() => {
+                      setWebhookId(c.id);
+                      setWebhookSecretState("");
+                    }}
+                    disabled={busy !== null}
+                  >
+                    Webhook secret
+                  </button>
+                )}
                 <Button onClick={() => removeConnection(c.id, c.type)}>
                   {busy === c.id ? "Removing…" : "Remove"}
                 </Button>
@@ -2320,6 +2357,38 @@ function ConnectionsSection({
                 disabled={busy !== null || (!scanType && scanType !== "supabase" && (!githubOwner || !githubRepo))}
               >
                 {busy !== null ? "Scanning…" : "Run scan"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {webhookId && (
+        <div className="modal-overlay" onClick={() => setWebhookId(null)}>
+          <div className="modal card" onClick={(e) => e.stopPropagation()}>
+            <h3>GitHub Webhook Secret</h3>
+            <p>
+              Set a secret to validate incoming GitHub webhooks. Go to your repository settings →
+              Webhooks → Add webhook, use the URL above, and paste this secret.
+            </p>
+            <div className="field-block">
+              <label>Webhook secret</label>
+              <input
+                type="password"
+                autoComplete="off"
+                value={webhookSecret}
+                onChange={(e) => setWebhookSecretState(e.target.value)}
+                placeholder="Enter a random secret string"
+              />
+            </div>
+              <div className="modal-actions">
+              <button className="button" onClick={() => setWebhookId(null)}>Cancel</button>
+              <button
+                className="button dark"
+                onClick={() => onSetWebhookSecret(webhookId!, webhookSecret)}
+                disabled={busy !== null || !webhookSecret.trim()}
+              >
+                {busy !== null ? "Saving…" : "Save secret"}
               </button>
             </div>
           </div>
@@ -2464,6 +2533,7 @@ function Integrations({
   platformFindings,
   platformFindingsLoading,
   onSetPlatformFindingStatus,
+  onSetWebhookSecret,
 }: {
   settings: Settings | null;
   onSave: (patch: Partial<Settings>) => Promise<Settings>;
@@ -2478,6 +2548,7 @@ function Integrations({
   platformFindings: FindingRow[];
   platformFindingsLoading: boolean;
   onSetPlatformFindingStatus: (id: string, status: FindingStatus) => Promise<void>;
+  onSetWebhookSecret: (id: string, secret: string) => Promise<void>;
 }) {
   const [webhook, setWebhook] = useState(settings?.slackWebhookUrl ?? "");
   const [showWebhook, setShowWebhook] = useState(false);
@@ -2645,6 +2716,7 @@ _Open Bulwark for the fix_`}</pre>
         onAdd={onAddConnection}
         onRemove={onRemoveConnection}
         onScan={onScanConnection}
+        onSetWebhookSecret={(id, secret) => onSetWebhookSecret(id, secret)}
       />
 
       <PlatformFindingsSection
@@ -3025,6 +3097,28 @@ export default function App() {
     }
   }, [theme]);
 
+  useEffect(() => {
+    let active = true;
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    const error = params.get("error");
+    const errorDescription = params.get("error_description");
+
+    if (active && !session && code && supabase) {
+      void supabase.auth.exchangeCodeForSession(code).then(() => {
+        if (active) {
+          // Clean up the callback URL from the address bar.
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+      });
+    }
+    if (active && error) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    return () => { active = false; };
+  }, []);
+
   const toggleTheme = () => setTheme((current) => current === "dark" ? "light" : "dark");
   const shellProps = { theme, onToggleTheme: toggleTheme };
 
@@ -3174,6 +3268,7 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
       platformFindings={platformFindings}
       platformFindingsLoading={platformFindingsLoading}
       onSetPlatformFindingStatus={(id, status) => setFindingStatus(id, status).then(() => void reloadPlatformFindings())}
+      onSetWebhookSecret={(id, secret) => setWebhookSecret(id, secret)}
     />
   ) : page === "AI Copilot" ? (
     <AiCopilot

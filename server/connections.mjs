@@ -14,6 +14,7 @@ function publicConnection(row, type) {
     preview,
     lastCheckedAt: row.last_checked_at,
     createdAt: row.created_at,
+    lastScannedCommit: row.last_scanned_commit ?? null,
     ...(row.github_username ? { githubUsername: row.github_username } : {}),
     ...(row.project_ref ? { projectRef: row.project_ref, projectName: row.project_name } : {}),
   };
@@ -80,10 +81,31 @@ export async function resolveConnection(db, userId, id, table) {
       id: data.id,
       type: table.includes("github") ? "github" : "supabase",
       ...(table === "github_connections"
-        ? { token: decrypted, githubUsername: data.github_username }
+        ? { token: decrypted, githubUsername: data.github_username, lastScannedCommit: data.last_scanned_commit ?? null }
         : { apiKey: decrypted, projectUrl: decrypt(data.project_url_encrypted ?? ""), projectRef: data.project_ref, projectName: data.project_name }),
     };
   } catch {
     throw new Error("The stored connection could not be decrypted. Remove it and add it again.");
   }
+}
+
+export async function setWebhookSecret(db, userId, id, secret) {
+  const { data, error } = await db
+    .from("github_connections")
+    .select("*")
+    .eq("id", id)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw new Error(`load connection: ${error.message}`);
+  if (!data) throw new Error("GitHub connection not found.");
+
+  const encrypted = encrypt(secret);
+  const { error: updateError } = await db
+    .from("github_connections")
+    .update({ webhook_secret_encrypted: encrypted })
+    .eq("id", id);
+  if (updateError) throw new Error(`save webhook secret: ${updateError.message}`);
+
+  return { ok: true };
+}
 }

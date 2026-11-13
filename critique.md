@@ -45,11 +45,27 @@ All outbound requests go through `fetchWithTimeout` + `ensureSafeFetchUrl`:
 
 ### High: atomic scan persistence
 
-Migration `20261113070000_atomic_persist_scan.sql` adds `persist_scan_result` RPC that persists scan record + finding changes + site schedule in **one database transaction**. Uses a stable `scan_id` (UUID) as idempotency key — retries of the same job are safe. Replaces the previous non-atomic `record_scan_result` + separate finding calls.
+Migration `20261113070000_atomic_persist_scan.sql` adds `persist_scan_result` RPC that persists scan record + finding changes + site schedule in **one database transaction**. Uses a stable `scan_id` UUID as idempotency key — retries of the same job are safe. Replaces the previous non-atomic `record_scan_result` + separate finding calls.
 
 ### High: canonical finding identity + honest coverage
 
 `findingIdentity`/`resourceForFinding` from `finding-identity.mjs` used consistently. `pass`, `finding`, `error`, `not_checked` kept distinct from scanner through storage to UI. A 40-file scan is reported as truncated with `scannedPercent`; an unavailable RLS function is "not checked," not "RLS is okay."
+
+### Critical: GitHub OAuth login (not just manual PATs)
+
+- `signInWithGitHub()` added to auth context — uses `supabase.auth.signInWithOAuth({ provider: "github" })` with `repo read:user user:email` scopes
+- "Sign in with GitHub" button added to AuthScreen
+- OAuth callback handler in App.tsx exchanges the code via `supabase.auth.exchangeCodeForSession()`
+- Users no longer need to manually create PATs — GitHub OAuth handles repo access
+
+### Critical: continuous monitoring with GitHub webhooks + drift detection
+
+- Migration `20261113080000_github_continuous_monitoring.sql` adds `last_scanned_commit` and `webhook_secret_encrypted` to `github_connections`
+- `POST /api/webhooks/github` — HMAC-signed webhook endpoint (no bearer token, validated by signature)
+- On push events: scans the repo, compares findings against prior open findings, alerts only on **new** findings (drift detection)
+- Skips re-scans when the commit SHA hasn't changed (`last_scanned_commit === after`)
+- `POST /api/connections/github/:id/webhook-secret` — set the webhook secret per connection
+- Frontend: webhook URL display + secret input in ConnectionsSection
 
 ### New: product scope doc
 
@@ -58,7 +74,7 @@ Migration `20261113070000_atomic_persist_scan.sql` adds `persist_scan_result` RP
 ### New: read-only repo analysis (GitHub)
 
 - Migration `20261113040000_github_connections.sql` — encrypted `github_connections` table (RLS, service-role write only)
-- `server/github.mjs` — scans the **complete** repository tree (not capped at 40 files) for hardcoded secrets, sensitive filenames, unpinned dependencies, **lockfile vulnerability detection** (package-lock.json), and **deployment/config checks** (Dockerfile root user, Docker Compose root user, GitHub Actions `pull_request_target`)
+- `server/github.mjs` — scans the **complete** repository tree (no 40-file cap) for hardcoded secrets, sensitive filenames, unpinned dependencies, **lockfile vulnerability detection** (package-lock.json), and **deployment/config checks** (Dockerfile root user, Docker Compose root user, GitHub Actions `pull_request_target`)
 - Reports `coverage` (filesScanned, totalFiles, scanTruncated, scannedPercent) so coverage is honest
 - API: `GET/POST/DELETE /api/connections/github`, `POST /api/connections/github/:id/scan`
 - Tokens encrypted at rest with `BULWARK_ENCRYPTION_KEY`, never readable from browser
@@ -66,7 +82,7 @@ Migration `20261113070000_atomic_persist_scan.sql` adds `persist_scan_result` RP
 ### New: Supabase platform checks
 
 - Migration `20261113050000_supabase_connections.sql` — encrypted `supabase_connections` table (RLS, service-role write only)
-- `server/supabase.mjs` — checks storage buckets for public access, Supabase API connectivity, and RLS introspection via `bulwark_check_rls` RPC (reports "not checked" when RPC is unavailable — never implies RLS is okay)
+- `server/supabase.mjs` — checks storage buckets for public access, Supabase API connectivity, and RLS introspection via `bulwark_check_rls` RPC (reports "not checked" when RPC unavailable — never implies RLS is okay)
 - API: `GET/POST/DELETE /api/connections/supabase`, `POST /api/connections/supabase/:id/scan`
 - Credentials encrypted at rest, never readable from browser
 
@@ -76,7 +92,7 @@ Migration `20261113070000_atomic_persist_scan.sql` adds `persist_scan_result` RP
 
 ### New: frontend UI
 
-- `ConnectionsSection` in Integrations page — connect/scan/remove GitHub and Supabase connections
+- `ConnectionsSection` in Integrations page — connect/scan/remove GitHub & Supabase, set webhook secret, view webhook URL
 - `PlatformFindingsSection` in Integrations page — view findings from GitHub/Supabase scans (grouped by platform), update finding status (open/acknowledged/resolved/ignored)
 - API: `GET /api/findings/platform` — returns findings with `site_id = null`
 
@@ -92,9 +108,8 @@ Migration `20261113070000_atomic_persist_scan.sql` adds `persist_scan_result` RP
 
 ## Remaining work
 
-1. **Continuous monitoring** — Basic finding lifecycle (reopen on recurrence, new-finding alerts) is implemented. Future: track repository commits, dependency version changes, deployment/config drift; store revision/asset each result applies to; alert only on meaningful changes.
-2. **Supabase RLS without custom RPC** — Current RLS check requires the customer to deploy `bulwark_check_rls` in their project. An alternative that doesn't require customer-installed RPC would be preferable.
-3. **Network-level egress controls** — `render.yaml` documents recommendations; application-level SSRF protection is in place. Firewall/egress proxy rules recommended as defense in depth for Render deployment.
+1. **Supabase RLS without custom RPC** — Current RLS check requires the customer to deploy `bulwark_check_rls` in their project. An alternative that doesn't require customer-installed RPC would be preferable.
+2. **Network-level egress controls** — `render.yaml` documents recommendations; application-level SSRF protection is in place. Firewall/egress proxy rules recommended as defense in depth for Render deployment.
 
 ## Priority order going forward
 
@@ -103,8 +118,10 @@ Migration `20261113070000_atomic_persist_scan.sql` adds `persist_scan_result` RP
 3. ✅ Atomic scan persistence with stable retry IDs
 4. ✅ Align finding identity with the schema
 5. ✅ Add tests and repo-aware checks
-6. Continuous monitoring (commit/dependency drift tracking)
-7. Network-level egress restrictions on Render
+6. ✅ GitHub OAuth login (replaces manual PATs)
+7. ✅ Continuous monitoring with GitHub webhooks + drift detection
+8. Supabase RLS check without customer-installed RPC
+9. Network-level egress restrictions on Render
 
 ## Verification
 

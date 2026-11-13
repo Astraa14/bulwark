@@ -19,6 +19,7 @@ type AuthContextValue = {
   configured: boolean;
   signIn: (email: string, password: string) => Promise<AuthResult>;
   signUp: (email: string, password: string) => Promise<AuthResult & { needsConfirm: boolean }>;
+  signInWithGitHub: () => Promise<AuthResult>;
   signOut: () => Promise<void>;
 };
 
@@ -59,6 +60,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: error?.message ?? null };
   }, []);
 
+  const signInWithGitHub = useCallback(async () => {
+    if (!supabase) return { error: "Supabase is not configured." };
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "github",
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback`,
+        scopes: "repo read:user user:email",
+      },
+    });
+    return { error: error?.message ?? null };
+  }, []);
+
   const signUp = useCallback(async (email: string, password: string) => {
     if (!supabase) return { error: "Supabase is not configured.", needsConfirm: false };
     const { data, error } = await supabase.auth.signUp({ email, password });
@@ -79,9 +92,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       configured: isSupabaseConfigured,
       signIn,
       signUp,
+      signInWithGitHub,
       signOut,
     }),
-    [session, loading, signIn, signUp, signOut],
+    [session, loading, signIn, signUp, signInWithGitHub, signOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

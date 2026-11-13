@@ -1,9 +1,16 @@
 import express from "express";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { explainWithProvider } from "./ai.mjs";
 import { getSettings, saveSettings, sendSlack } from "./alerts.mjs";
 import { fetchPageSample } from "./checks.mjs";
 import { addKey, deleteKey, listKeys, markKeyUsed, resolveKey } from "./keys.mjs";
-import { addConnection, deleteConnection, listConnections, resolveConnection } from "./connections.mjs";
+import {
+  addConnection,
+  deleteConnection,
+  listConnections,
+  resolveConnection,
+  setWebhookSecret,
+} from "./connections.mjs";
 import { scanGitHubRepo } from "./github.mjs";
 import { scanSupabaseProject } from "./supabase.mjs";
 import { adminClient } from "./lib.mjs";
@@ -549,6 +556,145 @@ app.get(
       .limit(200);
     if (error) throw new Error(`load platform findings: ${error.message}`);
     res.json({ findings: data ?? [] });
+  }),
+);
+
+app.post(
+  "/api/connections/github/:id/webhook-secret",
+  requireUser,
+  wrap(async (req, res) => {
+    const conn = await resolveConnection(db, req.user.id, req.params.id, "github_connections");
+    if (!conn) return res.status(404).json({ error: "GitHub connection not found" });
+    const { secret } = req.body ?? {};
+    if (!secret || typeof secret !== "string") {
+      return res.status(400).json({ error: "Missing webhook secret." });
+    }
+    await setWebhookSecret(db, req.user.id, req.params.id, secret);
+    res.json({ ok: true });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// GitHub webhook (no bearer token — validated by HMAC signature)
+// ---------------------------------------------------------------------------
+
+app.post(
+  "/api/webhooks/github",
+  express.raw({ type: "*/*" }),
+  wrap(async (req, res) => {
+    const signature = req.headers["x-hub-signature-256"];
+    const event = req.headers["x-github-event"];
+    const deliveryId = req.headers["x-github-delivery"];
+
+    if (!signature || !event) {
+      return res.status(401).json({ error: "Missing GitHub webhook headers" });
+    }
+
+    // Find the connection by looking up the webhook secret.
+    // We try all connections since the webhook doesn't carry a user ID.
+    const { data: connections, error: connError } = await db
+      .from("github_connections")
+      .select("*")
+      .not("webhook_secret_encrypted", "is", null);
+    if (connError) throw new Error(`load connections: ${connError.message}`);
+
+    let matched = null;
+    for (const row of connections ?? []) {
+      try {
+        const secret = decrypt(row.webhook_secret_encrypted);
+        const expected = createHmac("sha256", secret).update(req.body).digest("hex");
+        if (timingSafeEqual(Buffer.from(`sha256=${expected}`), Buffer.from(signature))) {
+          matched = row;
+          break;
+        }
+      } catch {
+        // Skip connections whose secret can't be decrypted.
+      }
+    }
+
+    if (!matched) {
+      return res.status(401).json({ error: "No matching webhook secret" });
+    }
+
+    // Only handle push events for drift detection.
+    if (event !== "push") {
+      return res.json({ ok: true, ignored: true });
+    }
+
+    const payload = JSON.parse(req.body.toString("utf8"));
+    const { repository, ref, after, before } = payload;
+    if (!repository || !after) {
+      return res.status(400).json({ error: "Invalid push payload" });
+    }
+
+    const owner = repository.owner.login;
+    const repo = repository.name;
+    const conn = await resolveConnection(db, matched.user_id, matched.id, "github_connections");
+    if (!conn) {
+      return res.status(404).json({ error: "Connection not found" });
+    }
+
+    // Skip if the commit hasn't changed since last scan.
+    if (matched.last_scanned_commit === after) {
+      return res.json({ ok: true, skipped: true, reason: "already scanned" });
+    }
+
+    // Scan the repo.
+    const result = await scanGitHubRepo(conn.token, owner, repo);
+
+    // Update the last scanned commit.
+    await db
+      .from("github_connections")
+      .update({ last_scanned_commit: after, last_checked_at: new Date().toISOString() })
+      .eq("id", matched.id);
+
+    // Detect drift: new findings compared to previous open findings.
+    const { data: priorFindings, error: priorError } = await db
+      .from("findings")
+      .select("id, check_key, title, severity, status, affected_resource, evidence, detail, url")
+      .eq("site_id", null)
+      .eq("user_id", matched.user_id)
+      .eq("status", "open")
+      .order("last_seen_at", { ascending: false });
+    if (priorError) throw new Error(`load prior findings: ${priorError.message}`);
+
+    const priorKeys = new Set(
+      (priorFindings ?? []).map((f) => `${f.check_key}\0${f.affected_resource ?? ""}`),
+    );
+
+    const newFindings = (result.findings ?? []).filter(
+      (f) => !priorKeys.has(`${f.check_key}\0${f.affected_resource ?? ""}`),
+    );
+
+    if (newFindings.length > 0 && matched.user_id) {
+      const { data: site } = await db
+        .from("sites")
+        .select("id, domain, user_id")
+        .eq("user_id", matched.user_id)
+        .limit(1)
+        .maybeSingle();
+
+      try {
+        await alertNewFindings(db, {
+          site: site
+            ? { id: site.id, domain: site.domain, user_id: matched.user_id }
+            : { id: null, domain: `${owner}/${repo}`, user_id: matched.user_id },
+          findings: newFindings,
+          userId: matched.user_id,
+          appUrl: process.env.BULWARK_APP_URL ?? "http://localhost:8443",
+        });
+      } catch (err) {
+        console.error(`slack alert failed for ${owner}/${repo}: ${err.message}`);
+      }
+    }
+
+    res.json({
+      ok: true,
+      repository: `${owner}/${repo}`,
+      commit: after,
+      findings: result.findings.length,
+      newFindings: newFindings.length,
+    });
   }),
 );
 

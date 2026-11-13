@@ -805,3 +805,13 @@ grant execute on function public.persist_scan_result(
   jsonb, text, timestamptz, timestamptz, integer, text, timestamptz, boolean,
   jsonb, boolean
 ) to service_role;
+
+-- >>> supabase/migrations/20261113080000_github_continuous_monitoring.sql
+-- Track last scanned commit SHA per GitHub connection for drift detection.
+
+alter table public.github_connections
+  add column if not exists last_scanned_commit text;
+
+alter table public.github_connections
+  add column if not exists webhook_secret_encrypted text;
+

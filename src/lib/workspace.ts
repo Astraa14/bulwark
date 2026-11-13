@@ -399,6 +399,10 @@ export async function listPlatformFindings(): Promise<FindingRow[]> {
   return res.findings;
 }
 
+export async function setWebhookSecret(id: string, secret: string) {
+  await apiPost(`/api/connections/github/${id}/webhook-secret`, { secret });
+}
+
 export function useConnections() {
   const [connections, setConnections] = useState<ConnectionRow[]>([]);
   const [loading, setLoading] = useState(true);
