@@ -1,0 +1,203 @@
+{
+  "domain": "example.com",
+  "status": "completed",
+  "httpStatus": 200,
+  "responseMs": 233,
+  "checksTotal": 28,
+  "checksPassed": 23,
+  "findings": [
+    {
+      "check_key": "header_hsts",
+      "title": "Missing HSTS header",
+      "severity": "medium",
+      "detail": "Strict-Transport-Security is not set, so browsers may fall back to plain HTTP on the first visit.",
+      "confidence": "medium",
+      "what_it_does_not_prove": "Does not prove the site serves content over HTTP; may be behind a proxy that handles TLS.",
+      "remediation": "Add 'Strict-Transport-Security: max-age=31536000; includeSubDomains' header."
+    },
+    {
+      "check_key": "header_csp",
+      "title": "Missing Content-Security-Policy",
+      "severity": "medium",
+      "detail": "No CSP means injected scripts run freely. It is the strongest single defence against XSS.",
+      "confidence": "medium",
+      "what_it_does_not_prove": "Does not prove XSS vulnerabilities exist; CSP is a defense-in-depth measure.",
+      "remediation": "Implement a Content-Security-Policy header starting with 'default-src' restrictions."
+    },
+    {
+      "check_key": "header_nosniff",
+      "title": "Missing X-Content-Type-Options",
+      "severity": "low",
+      "detail": "Without 'nosniff', browsers may MIME-sniff responses and execute unexpected content.",
+      "confidence": "low",
+      "what_it_does_not_prove": "Does not prove content sniffing is being exploited; modern browsers have improved protections.",
+      "remediation": "Add 'X-Content-Type-Options: nosniff' header."
+    },
+    {
+      "check_key": "header_referrer",
+      "title": "Missing Referrer-Policy",
+      "severity": "low",
+      "detail": "URLs can leak to third parties through the Referer header.",
+      "confidence": "low",
+      "what_it_does_not_prove": "Does not prove sensitive data is being leaked; depends on URL structure.",
+      "remediation": "Add 'Referrer-Policy: strict-origin-when-cross-origin' header."
+    },
+    {
+      "check_key": "robots_missing",
+      "title": "No robots.txt",
+      "severity": "info",
+      "detail": "Search engines and bots have no guidance. Not a vulnerability on its own.",
+      "confidence": "low",
+      "what_it_does_not_prove": "Does not indicate a security issue; many sites intentionally omit robots.txt.",
+      "remediation": "Create robots.txt if you want to guide search engine crawling behavior.",
+      "url": "https://example.com/robots.txt"
+    },
+    {
+      "check_key": "sitemap_missing",
+      "title": "No sitemap.xml",
+      "severity": "info",
+      "detail": "A sitemap helps search engines find your pages. Missing is normal for apps.",
+      "confidence": "low",
+      "what_it_does_not_prove": "Does not indicate a security issue; many single-page apps intentionally omit sitemaps.",
+      "remediation": "Create sitemap.xml if you want to improve SEO for content pages.",
+      "url": "https://example.com/sitemap.xml"
+    },
+    {
+      "check_key": "security_txt_missing",
+      "title": "No security.txt",
+      "severity": "low",
+      "detail": "Researchers have no published way to report a vulnerability, so reports may go nowhere.",
+      "confidence": "low",
+      "what_it_does_not_prove": "Does not indicate a security issue; you may handle reports through other channels.",
+      "remediation": "Create security.txt at /.well-known/security.txt with a Contact field.",
+      "url": "https://example.com/.well-known/security.txt"
+    }
+  ],
+  "checkOutcomes": {
+    "http_status": {
+      "status": "pass",
+      "checkKey": "http_status"
+    },
+    "response_time": {
+      "status": "pass",
+      "checkKey": "response_time"
+    },
+    "tls": {
+      "status": "pass",
+      "checkKey": "tls"
+    },
+    "header_hsts": {
+      "status": "finding",
+      "checkKey": "header_hsts"
+    },
+    "header_csp": {
+      "status": "finding",
+      "checkKey": "header_csp"
+    },
+    "header_nosniff": {
+      "status": "finding",
+      "checkKey": "header_nosniff"
+    },
+    "header_referrer": {
+      "status": "finding",
+      "checkKey": "header_referrer"
+    },
+    "server_banner": {
+      "status": "pass",
+      "checkKey": "server_banner"
+    },
+    "csp_quality": {
+      "status": "pass",
+      "checkKey": "csp_quality"
+    },
+    "cookie_flags": {
+      "status": "pass",
+      "checkKey": "cookie_flags"
+    },
+    "mixed_content": {
+      "status": "pass",
+      "checkKey": "mixed_content"
+    },
+    "directory_listing": {
+      "status": "pass",
+      "checkKey": "directory_listing"
+    },
+    "defacement": {
+      "status": "pass",
+      "checkKey": "defacement"
+    },
+    "exposed_env": {
+      "status": "pass",
+      "checkKey": "exposed_env"
+    },
+    "exposed_env_local": {
+      "status": "pass",
+      "checkKey": "exposed_env_local"
+    },
+    "exposed_git": {
+      "status": "pass",
+      "checkKey": "exposed_git"
+    },
+    "exposed_ds_store": {
+      "status": "pass",
+      "checkKey": "exposed_ds_store"
+    },
+    "exposed_backup_sql": {
+      "status": "pass",
+      "checkKey": "exposed_backup_sql"
+    },
+    "exposed_db_sql": {
+      "status": "pass",
+      "checkKey": "exposed_db_sql"
+    },
+    "exposed_phpinfo": {
+      "status": "pass",
+      "checkKey": "exposed_phpinfo"
+    },
+    "cors": {
+      "status": "pass",
+      "checkKey": "cors"
+    },
+    "robots_missing": {
+      "status": "pass",
+      "checkKey": "robots_missing"
+    },
+    "sitemap_missing": {
+      "status": "pass",
+      "checkKey": "sitemap_missing"
+    },
+    "security_txt_missing": {
+      "status": "finding",
+      "checkKey": "security_txt_missing"
+    },
+    "leaked_secrets": {
+      "status": "pass",
+      "checkKey": "leaked_secrets"
+    },
+    "domain_expiry": {
+      "status": "pass",
+      "checkKey": "domain_expiry"
+    },
+    "dns_ns": {
+      "status": "pass",
+      "checkKey": "dns_ns"
+    },
+    "dns_mx": {
+      "status": "pass",
+      "checkKey": "dns_mx"
+    }
+  },
+  "tls": {
+    "days": 43,
+    "validTo": "Dec 25 22:56:35 2026 GMT",
+    "issuer": "SSL Corporation",
+    "subject": "example.com"
+  },
+  "pageSample": {
+    "title": "Example Domain",
+    "text": "example domain this domain is for use in documentation examples without needing permission. this is not a service; avoid relying on it for testing and monitoring purposes.",
+    "at": "2026-11-13T02:16:37.480Z"
+  },
+  "defacementSimilarity": 1,
+  "durationMs": 1127
+}

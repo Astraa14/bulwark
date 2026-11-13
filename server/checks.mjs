@@ -1299,6 +1299,9 @@ export async function runChecks(rawDomain, { baseline = null } = {}) {
       checkOutcomes.set(h.check, { status: "pass", checkKey: h.check });
     }
   });
+  if (!checkOutcomes.has("server_banner")) {
+    checkOutcomes.set("server_banner", { status: "pass", checkKey: "server_banner" });
+  }
 
   const cspFindings = checkCspQuality(page.headers);
   findings.push(...cspFindings);

@@ -436,10 +436,19 @@ function scanOutcomeSummary(scan: ScanRow): ScanOutcomeSummary {
     };
   }
 
-  const total = numberOrNull(scan.checks_total) ?? results.length;
-  const passed = numberOrNull(scan.checks_passed) ?? fromResults.passed;
-  const error = numberOrNull(scan.checks_errored) ?? fromResults.error;
-  const notChecked = numberOrNull(scan.checks_skipped) ?? fromResults.not_checked;
+  // The recorded outcomes are authoritative when present: some checks can
+  // report more than one specific finding, so the stored checks_total is not
+  // always the right denominator for check-level coverage.
+  const total = results.length || (numberOrNull(scan.checks_total) ?? 0);
+  const passed = results.length
+    ? fromResults.passed
+    : (numberOrNull(scan.checks_passed) ?? 0);
+  const error = results.length
+    ? fromResults.error
+    : (numberOrNull(scan.checks_errored) ?? 0);
+  const notChecked = results.length
+    ? fromResults.not_checked
+    : (numberOrNull(scan.checks_skipped) ?? 0);
   const finding = results.length
     ? fromResults.finding
     : Math.max(0, total - passed - error - notChecked);
@@ -1701,7 +1710,7 @@ function Scans({
           scanState(s, summary).label,
           s.http_status ?? "",
           s.response_ms ?? "",
-          s.checks_total,
+          summary.detailed ? summary.total : s.checks_total,
           summary.detailed ? summary.passed : "",
           summary.detailed ? summary.finding : "",
           summary.detailed ? summary.not_checked : "",

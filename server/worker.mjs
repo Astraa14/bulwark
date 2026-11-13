@@ -72,10 +72,19 @@ const CHECK_STATUS_MAP = {
   unavailable: "not_checked",
 };
 
+const CHECK_ACRONYMS = new Set([
+  "api", "cors", "csp", "dns", "hsts", "http", "https", "mx", "ns", "php", "sql", "ssl", "tls", "url",
+]);
+
 function humanizeCheckKey(key) {
   return String(key ?? "")
     .replace(/[_-]+/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => CHECK_ACRONYMS.has(word.toLowerCase())
+      ? word.toUpperCase()
+      : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
 }
 
 /**
