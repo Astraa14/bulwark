@@ -308,7 +308,52 @@ app.post(
 
     await db.from("github_connections").update({ last_checked_at: new Date().toISOString() }).eq("id", req.params.id);
 
-    res.json({ ok: true, ...result });
+    // Persist scan record + findings so they appear in the UI alongside website scans.
+    const startedAt = new Date().toISOString();
+    const finishedAt = new Date().toISOString();
+
+    const { data: scan, error: scanError } = await db
+      .from("scans")
+      .insert({
+        site_id: null,
+        status: result.error ? "failed" : "completed",
+        http_status: null,
+        response_ms: null,
+        checks_total: 1,
+        checks_passed: result.error ? 0 : 1,
+        checks_errored: result.error ? 1 : 0,
+        checks_skipped: 0,
+        check_results: { github_scan: result.error ? "error" : "pass" },
+        error: result.error ?? null,
+        started_at: startedAt,
+        finished_at: finishedAt,
+      })
+      .select("id")
+      .single();
+
+    if (scanError) throw new Error(`insert scan: ${scanError.message}`);
+
+    const findingRows = (result.findings ?? []).map((f) => ({
+      scan_id: scan.id,
+      site_id: null,
+      check_key: f.check_key ?? "github_finding",
+      title: f.title ?? "GitHub finding",
+      severity: f.severity ?? "medium",
+      status: "open",
+      detail: f.detail ?? null,
+      evidence: f.evidence ?? null,
+      url: f.url ?? null,
+      affected_resource: f.affected_resource ?? null,
+      first_seen_at: finishedAt,
+      last_seen_at: finishedAt,
+    }));
+
+    if (findingRows.length) {
+      const { error: insertError } = await db.from("findings").insert(findingRows);
+      if (insertError) throw new Error(`insert findings: ${insertError.message}`);
+    }
+
+    res.json({ ok: true, scanId: scan.id, ...result });
   }),
 );
 
@@ -321,9 +366,57 @@ app.post(
 
     const result = await scanSupabaseProject(conn.projectUrl, conn.apiKey);
 
-    await db.from("supabase_connections").update({ last_checked_at: new Date().toISOString() }).eq("id", req.params.id);
+    await db
+      .from("supabase_connections")
+      .update({ last_checked_at: new Date().toISOString() })
+      .eq("id", req.params.id);
 
-    res.json({ ok: true, ...result });
+    // Persist scan record + findings so they appear in the UI alongside website scans.
+    const startedAt = new Date().toISOString();
+    const finishedAt = new Date().toISOString();
+
+    const { data: scan, error: scanError } = await db
+      .from("scans")
+      .insert({
+        site_id: null,
+        status: result.error ? "failed" : "completed",
+        http_status: null,
+        response_ms: null,
+        checks_total: 1,
+        checks_passed: result.error ? 0 : 1,
+        checks_errored: result.error ? 1 : 0,
+        checks_skipped: 0,
+        check_results: { supabase_scan: result.error ? "error" : "pass" },
+        error: result.error ?? null,
+        started_at: startedAt,
+        finished_at: finishedAt,
+      })
+      .select("id")
+      .single();
+
+    if (scanError) throw new Error(`insert scan: ${scanError.message}`);
+
+    const findingRows = (result.findings ?? []).map((f) => ({
+      scan_id: scan.id,
+      site_id: null,
+      check_key: f.check_key ?? "supabase_finding",
+      title: f.title ?? "Supabase finding",
+      severity: f.severity ?? "medium",
+      status: "open",
+      detail: f.detail ?? null,
+      evidence: f.evidence ?? null,
+      url: f.url ?? null,
+      affected_resource: f.affected_resource ?? null,
+      first_seen_at: finishedAt,
+      last_seen_at: finishedAt,
+    }));
+
+    if (findingRows.length) {
+      const { error: insertError } = await db.from("findings").insert(findingRows);
+      if (insertError) throw new Error(`insert findings: ${insertError.message}`);
+    }
+
+    res.json({ ok: true, scanId: scan.id, ...result });
   }),
 );
 

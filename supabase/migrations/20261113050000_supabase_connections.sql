@@ -32,3 +32,42 @@ create policy "supabase_connections_delete_own" on public.supabase_connections
 -- server (service role) so plaintext credentials never pass through the browser.
 
 create index if not exists supabase_connections_user_idx on public.supabase_connections (user_id);
+
+-- ---------------------------------------------------------------------------
+-- RLS introspection RPC (run this in each connected Supabase project).
+--
+-- The scanner calls `bulwark_check_rls` to list public tables and report
+-- which ones have Row Level Security enabled. Without this function, RLS
+-- introspection is skipped and a setup hint is reported instead.
+-- ---------------------------------------------------------------------------
+
+create or replace function public.bulwark_check_rls()
+returns table (
+  table_schema text,
+  table_name text,
+  row_security_enabled boolean,
+  row_count bigint
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  return query
+  select
+    c.relnamespace::regnamespace::text as table_schema,
+    c.relname as table_name,
+    c.relrowsecurity as row_security_enabled,
+    c.reltuples::bigint as row_count
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  where c.relkind = 'r'
+    and n.nspname not in ('pg_catalog', 'information_schema', 'auth', 'realtime', 'storage', 'pg_toast')
+    and n.nspname not like 'pg_%'
+    and n.nspname not like 'information_%';
+end;
+$$;
+
+revoke all on function public.bulwark_check_rls() from public, anon, authenticated;
+grant execute on function public.bulwark_check_rls() to anon, authenticated;
+

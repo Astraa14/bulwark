@@ -68,7 +68,10 @@ export async function scanSupabaseProject(projectUrl, apiKey) {
     errors.push(`Storage bucket check: ${err?.message ?? String(err)}`);
   }
 
-  // 3. Check if the anon key can read from information_schema (RLS introspection).
+  // 3. Check RLS on tables via the bulwark_check_rls RPC.
+  //    The user must deploy this RPC in their Supabase project (see migration SQL).
+  let rlsChecked = false;
+  let rpcMissing = false;
   try {
     const res = await supabaseFetch(
       projectUrl,
@@ -77,6 +80,7 @@ export async function scanSupabaseProject(projectUrl, apiKey) {
       { method: "POST", body: JSON.stringify({}) },
     );
     if (res.ok) {
+      rlsChecked = true;
       const result = await res.json().catch(() => null);
       if (Array.isArray(result)) {
         for (const row of result) {
@@ -97,10 +101,30 @@ export async function scanSupabaseProject(projectUrl, apiKey) {
           }
         }
       }
+    } else if (res.status === 404 || res.status === 400) {
+      // RPC function doesn't exist yet.
+      rpcMissing = true;
+    } else {
+      errors.push(`RLS introspection: HTTP ${res.status}`);
     }
-    // RPC may not exist — that's expected for most projects. Skip silently.
   } catch {
-    // RPC not available — skip introspection.
+    rpcMissing = true;
+  }
+
+  if (rpcMissing && !rlsChecked) {
+    findings.push(
+      finding(
+        "supabase_rls_setup_needed",
+        "RLS introspection not configured",
+        "info",
+        "Bulwark cannot check Row Level Security on your tables yet. Run the `bulwark_check_rls` SQL function in your Supabase project's SQL editor (included in the Bulwark migration), then re-scan.",
+        {
+          url: `${projectUrl.replace(/\/$/, "")}/editor`,
+          evidence: "RPC function bulwark_check_rls not found",
+          affected_resource: "project:rls",
+        },
+      ),
+    );
   }
 
   return { findings, error: errors.length ? errors.join("; ") : null };

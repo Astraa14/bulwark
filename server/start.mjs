@@ -4,6 +4,12 @@ import { spawn } from "node:child_process";
 // If either process dies the other is stopped, so Render restarts the service
 // instead of silently running without scans (or without an API).
 
+console.log(
+  "Bulwark starting · Application-level SSRF protection enforced · " +
+  "Consider network-level egress controls (firewall/VPC) to block outbound " +
+  "traffic to private IP ranges (see render.yaml).",
+);
+
 const children = [
   spawn(process.execPath, ["server/api.mjs"], { stdio: "inherit" }),
   spawn(process.execPath, ["server/worker.mjs"], { stdio: "inherit" }),

@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: bulwark
+    env: node
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: node server/start.mjs
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: BULWARK_ENCRYPTION_KEY
+        generateValue: true
+      - key: SCAN_POLL_SECONDS
+        value: 60
+      - key: API_PORT
+        value: 8787
+      - key: BULWARK_APP_URL
+        sync: false
+      - key: PORT
+        sync: false
+
+# Network-level egress controls (defense in depth):
+#
+# Render does not provide native outbound firewall rules at the service level.
+# To restrict Bulwark's outbound traffic to public, non-private addresses:
+#
+# 1. Deploy Bulwark in a Render VPC (if available on your plan) and configure
+#    egress rules to allow only public IP ranges.
+# 2. Or run Bulwark behind a reverse proxy / firewall that blocks outbound
+#    requests to private ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
+#    127.0.0.0/8, 169.254.0.0/16, ::1/128, fc00::/7, fe80::/10).
+# 3. Application-level SSRF protection is already enforced in server/checks.mjs
+#    (ports 80/443 only, private IP blocklist, redirect target validation).

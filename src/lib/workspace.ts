@@ -88,6 +88,20 @@ export type Settings = {
   alertsEnabled: boolean;
 };
 
+export type ConnectionType = "github" | "supabase";
+
+export type ConnectionRow = {
+  id: string;
+  type: ConnectionType;
+  label: string | null;
+  preview: string;
+  lastCheckedAt: string | null;
+  createdAt: string;
+  githubUsername?: string | null;
+  projectRef?: string | null;
+  projectName?: string | null;
+};
+
 export type ApiKeyRow = {
   id: string;
   provider: "openai" | "anthropic";
@@ -319,4 +333,106 @@ export function useApiKeys() {
   );
 
   return { keys, loading, error, add, remove, reload: load };
+}
+
+// ---------------------------------------------------------------------------
+// Connection API (GitHub / Supabase)
+// ---------------------------------------------------------------------------
+
+export async function listConnections(): Promise<ConnectionRow[]> {
+  const res = await apiGet<{ connections: ConnectionRow[] }>("/api/connections/github");
+  const supabaseRes = await apiGet<{ connections: ConnectionRow[] }>("/api/connections/supabase");
+  return [...(res.connections ?? []), ...(supabaseRes.connections ?? [])];
+}
+
+export async function addConnection(input: {
+  type: ConnectionType;
+  label?: string;
+  githubUsername?: string;
+  token?: string;
+  projectRef?: string;
+  projectName?: string;
+  projectUrl?: string;
+  apiKey?: string;
+}) {
+  const body: Record<string, unknown> = { label: input.label ?? null };
+  if (input.type === "github") {
+    body.githubUsername = input.githubUsername ?? "";
+    body.token = input.token ?? "";
+  } else {
+    body.projectRef = input.projectRef ?? "";
+    body.projectName = input.projectName ?? null;
+    body.projectUrl = input.projectUrl ?? "";
+    body.apiKey = input.apiKey ?? "";
+  }
+  const res = await apiPost<{ connection: ConnectionRow }>(
+    `/api/connections/${input.type}_connections`,
+    body,
+  );
+  return res.connection;
+}
+
+export async function removeConnection(id: string, type: ConnectionType) {
+  await apiDelete(`/api/connections/${type}_connections/${id}`);
+}
+
+export async function scanConnection(
+  id: string,
+  type: ConnectionType,
+  repo?: { owner: string; repo: string },
+) {
+  if (type === "github") {
+    if (!repo) throw new Error("Repository owner and name are required.");
+    return apiPost<{ findings: any[]; error: string | null; filesScanned: number }>(
+      `/api/connections/github/${id}/scan`,
+      repo,
+    );
+  }
+  return apiPost<{ findings: any[]; error: string | null }>(
+    `/api/connections/supabase/${id}/scan`,
+    {},
+  );
+}
+
+export function useConnections() {
+  const [connections, setConnections] = useState<ConnectionRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await listConnections();
+      setConnections(data);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const add = useCallback(async (input: Parameters<typeof addConnection>[0]) => {
+    const conn = await addConnection(input);
+    void load();
+    return conn;
+  }, [load]);
+
+  const remove = useCallback(async (id: string, type: ConnectionType) => {
+    await removeConnection(id, type);
+    void load();
+  }, [load]);
+
+  const scan = useCallback(
+    async (id: string, type: ConnectionType, repo?: { owner: string; repo: string }) => {
+      return scanConnection(id, type, repo);
+    },
+    [],
+  );
+
+  return { connections, loading, error, add, remove, scan, reload: load };
 }

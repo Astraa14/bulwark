@@ -4,20 +4,27 @@ import AuthScreen from "@/screens/AuthScreen";
 import { apiPost } from "@/lib/api";
 import {
   acceptBaseline,
+  addConnection,
   createSite,
   deleteSite,
   explainFinding,
+  listConnections,
+  removeConnection,
   relTime,
+  scanConnection,
   scanSiteNow,
   setFindingStatus,
   setSiteInterval,
   setSiteStatus,
   shortDate,
   useApiKeys,
+  useConnections,
   useSettings,
   useWorkspace,
   verifySite,
   type ApiKeyRow,
+  type ConnectionRow,
+  type ConnectionType,
   type FindingRow,
   type FindingStatus,
   type ScanCheckResult,
@@ -2039,16 +2046,310 @@ function Reports({
   );
 }
 
+function ConnectionsSection({
+  connections,
+  loading,
+  error,
+  onAdd,
+  onRemove,
+  onScan,
+}: {
+  connections: ConnectionRow[];
+  loading: boolean;
+  error: string | null;
+  onAdd: (input: Parameters<typeof addConnection>[0]) => Promise<void>;
+  onRemove: (id: string, type: ConnectionType) => Promise<void>;
+  onScan: (id: string, type: ConnectionType, repo?: { owner: string; repo: string }) => Promise<void>;
+}) {
+  const [addType, setAddType] = useState<ConnectionType | null>(null);
+  const [scanId, setScanId] = useState<string | null>(null);
+  const [scanType, setScanType] = useState<ConnectionType | null>(null);
+  const [githubOwner, setGithubOwner] = useState("");
+  const [githubRepo, setGithubRepo] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const addConnection = async () => {
+    setLocalError(null);
+    try {
+      if (addType === "github") {
+        await onAdd({ type: "github", githubUsername: githubOwner, token: githubRepo });
+      } else {
+        await onAdd({
+          type: "supabase",
+          projectRef: githubOwner,
+          projectName: githubRepo,
+          projectUrl: `https://${githubOwner}.supabase.co`,
+          apiKey: githubRepo,
+        });
+      }
+      setAddType(null);
+      setGithubOwner("");
+      setGithubRepo("");
+    } catch (err) {
+      setLocalError((err as Error).message);
+    }
+  };
+
+  const removeConnection = async (id: string, type: ConnectionType) => {
+    if (!window.confirm("Remove this connection? Scans using it will stop working.")) return;
+    setBusy(id);
+    setLocalError(null);
+    try {
+      await onRemove(id, type);
+    } catch (err) {
+      setLocalError((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const scanConnection = async (id: string, type: ConnectionType, repo?: { owner: string; repo: string }) => {
+    setBusy(id);
+    setLocalError(null);
+    try {
+      if (type === "github") {
+        await onScan(id, type, repo);
+        setScanId(null);
+        setScanType(null);
+        setGithubOwner("");
+        setGithubRepo("");
+      } else {
+        await onScan(id, type);
+        setScanId(null);
+        setScanType(null);
+      }
+    } catch (err) {
+      setLocalError((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <>
+      <section className="card setting-list">
+        <div className="setting-title">
+          <h3>Connected platforms</h3>
+          <p>
+            Read-only connections to GitHub and Supabase. Bulwark never writes to your
+            repositories or projects.
+          </p>
+          <button
+            className="button dark"
+            onClick={() => setAddType("github")}
+            disabled={addType !== null || busy !== null}
+          >
+            + Connect GitHub
+          </button>
+          <button
+            className="button dark"
+            onClick={() => setAddType("supabase")}
+            disabled={addType !== null || busy !== null}
+          >
+            + Connect Supabase
+          </button>
+        </div>
+        {(error || localError) && <p className="modal-error">{localError ?? error}</p>}
+        {loading ? (
+          <p className="muted pad">Loading connections…</p>
+        ) : connections.length === 0 ? (
+          <div className="key-empty">
+            <p>No platform connections yet.</p>
+            <span className="key-empty-hint">Connect GitHub or Supabase to scan your repositories and projects.</span>
+          </div>
+        ) : (
+          connections.map((c) => (
+            <div className="key-row" key={c.id}>
+              <div className="key-body">
+                <div className="provider-name">
+                  <div>
+                    <h3>{c.type === "github" ? "GitHub" : "Supabase"}</h3>
+                    <p>
+                      {c.label ?? c.type === "github" ? c.githubUsername ?? "GitHub" : c.projectName ?? "Supabase"}{" "}
+                      · {c.preview}
+                    </p>
+                  </div>
+                  <span>
+                    <Dot />
+                    Connected
+                  </span>
+                </div>
+                <div className="key-field">
+                  <code>{c.lastCheckedAt ? `Last checked: ${shortDate(c.lastCheckedAt)}` : "Never scanned"}</code>
+                  <span className="muted">Added {shortDate(c.createdAt)}</span>
+                </div>
+              </div>
+              <div className="key-actions">
+                <button
+                  className="button dark"
+                  onClick={() => {
+                    setScanId(c.id);
+                    setScanType(c.type);
+                    setGithubOwner("");
+                    setGithubRepo("");
+                  }}
+                  disabled={busy !== null}
+                >
+                  {busy === c.id ? "Scanning…" : "Scan now"}
+                </button>
+                <Button onClick={() => removeConnection(c.id, c.type)}>
+                  {busy === c.id ? "Removing…" : "Remove"}
+                </Button>
+              </div>
+            </div>
+          ))
+        )}
+      </section>
+
+      {addType === "github" && (
+        <div className="modal-overlay" onClick={() => setAddType(null)}>
+          <div className="modal card" onClick={(e) => e.stopPropagation()}>
+            <h3>Connect GitHub</h3>
+            <p>
+              Bulwark will scan your repositories for hardcoded secrets, exposed config files,
+              and unpinned dependencies. The token is encrypted at rest and used read-only.
+            </p>
+            <div className="field-block">
+              <label>GitHub username or org</label>
+              <input
+                autoComplete="off"
+                value={githubOwner}
+                onChange={(e) => setGithubOwner(e.target.value)}
+                placeholder="octocat"
+              />
+            </div>
+            <div className="field-block">
+              <label>Personal access token (read-only repo scope)</label>
+              <input
+                type="password"
+                autoComplete="off"
+                value={githubRepo}
+                onChange={(e) => setGithubRepo(e.target.value)}
+                placeholder="ghp_..."
+              />
+            </div>
+            <div className="modal-actions">
+              <button className="button" onClick={() => setAddType(null)}>Cancel</button>
+              <button className="button dark" onClick={addConnection} disabled={busy !== null}>
+                {busy !== null ? "Adding…" : "Connect"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {addType === "supabase" && (
+        <div className="modal-overlay" onClick={() => setAddType(null)}>
+          <div className="modal card" onClick={(e) => e.stopPropagation()}>
+            <h3>Connect Supabase</h3>
+            <p>
+              Bulwark will check your storage buckets for public access and verify API
+              connectivity. Credentials are encrypted at rest and used read-only.
+            </p>
+            <div className="field-block">
+              <label>Project ref</label>
+              <input
+                autoComplete="off"
+                value={githubOwner}
+                onChange={(e) => setGithubOwner(e.target.value)}
+                placeholder="abcdefghijklmnop"
+              />
+            </div>
+            <div className="field-block">
+              <label>Project name (optional)</label>
+              <input
+                autoComplete="off"
+                value={githubRepo}
+                onChange={(e) => setGithubRepo(e.target.value)}
+                placeholder="My Project"
+              />
+            </div>
+            <div className="field-block">
+              <label>Anon API key</label>
+              <input
+                type="password"
+                autoComplete="off"
+                value={githubRepo}
+                onChange={(e) => setGithubRepo(e.target.value)}
+                placeholder="eyJ..."
+              />
+            </div>
+            <div className="modal-actions">
+              <button className="button" onClick={() => setAddType(null)}>Cancel</button>
+              <button className="button dark" onClick={addConnection} disabled={busy !== null}>
+                {busy !== null ? "Adding…" : "Connect"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {scanId && (
+        <div className="modal-overlay" onClick={() => setScanId(null)}>
+          <div className="modal card" onClick={(e) => e.stopPropagation()}>
+            <h3>Scan {scanType === "github" ? "GitHub" : "Supabase"}</h3>
+            {scanType === "github" && (
+              <>
+                <div className="field-block">
+                  <label>Repository owner</label>
+                  <input
+                    autoComplete="off"
+                    value={githubOwner}
+                    onChange={(e) => setGithubOwner(e.target.value)}
+                    placeholder="octocat"
+                  />
+                </div>
+                <div className="field-block">
+                  <label>Repository name</label>
+                  <input
+                    autoComplete="off"
+                    value={githubRepo}
+                    onChange={(e) => setGithubRepo(e.target.value)}
+                    placeholder="Hello-World"
+                  />
+                </div>
+              </>
+            )}
+            <div className="modal-actions">
+              <button className="button" onClick={() => setScanId(null)}>Cancel</button>
+              <button
+                className="button dark"
+                onClick={() => scanConnection(scanId!, scanType!, scanType === "github" ? { owner: githubOwner, repo: githubRepo } : undefined)}
+                disabled={busy !== null || (!scanType && scanType !== "supabase" && (!githubOwner || !githubRepo))}
+              >
+                {busy !== null ? "Scanning…" : "Run scan"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function Integrations({
   settings,
   onSave,
   onChanged,
   email,
+  connections,
+  loading,
+  error,
+  onAddConnection,
+  onRemoveConnection,
+  onScanConnection,
 }: {
   settings: Settings | null;
   onSave: (patch: Partial<Settings>) => Promise<Settings>;
   onChanged: () => void;
   email?: string | null;
+  connections: ConnectionRow[];
+  loading: boolean;
+  error: string | null;
+  onAddConnection: (input: Parameters<typeof addConnection>[0]) => Promise<void>;
+  onRemoveConnection: (id: string, type: ConnectionType) => Promise<void>;
+  onScanConnection: (id: string, type: ConnectionType, repo?: { owner: string; repo: string }) => Promise<void>;
 }) {
   const [webhook, setWebhook] = useState(settings?.slackWebhookUrl ?? "");
   const [showWebhook, setShowWebhook] = useState(false);
@@ -2056,7 +2357,7 @@ function Integrations({
   const [enabled, setEnabled] = useState(Boolean(settings?.slackWebhookUrl && settings?.alertsEnabled));
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [slackError, setSlackError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!settings) return;
@@ -2067,7 +2368,7 @@ function Integrations({
 
   const save = async (label: string) => {
     setBusy(label);
-    setError(null);
+    setSlackError(null);
     setMessage(null);
     try {
       await onSave({
@@ -2078,7 +2379,7 @@ function Integrations({
       onChanged();
       setMessage("Saved.");
     } catch (err) {
-      setError((err as Error).message);
+      setSlackError((err as Error).message);
     } finally {
       setBusy(null);
     }
@@ -2086,14 +2387,14 @@ function Integrations({
 
   const test = async () => {
     setBusy("test");
-    setError(null);
+    setSlackError(null);
     setMessage(null);
     try {
       if (!webhook.trim()) throw new Error("Add a Slack webhook URL before sending a test message.");
       await apiPost("/api/alerts/test", { webhookUrl: webhook });
       setMessage("Test message sent. Save changes separately to keep this configuration.");
     } catch (err) {
-      setError((err as Error).message);
+      setSlackError((err as Error).message);
     } finally {
       setBusy(null);
     }
@@ -2177,7 +2478,7 @@ function Integrations({
             <div className="modal-actions">
               <Button onClick={test} disabled={!configured || busy !== null}>{busy === "test" ? "Sending…" : "Send test message"}</Button>
             </div>
-            {error && <p className="modal-error" role="alert">{error}</p>}
+            {slackError && <p className="modal-error" role="alert">{slackError}</p>}
             {message && <p className="save-note" role="status" aria-live="polite">{message}</p>}
           </section>
         </div>
@@ -2208,6 +2509,15 @@ _Open Bulwark for the fix_`}</pre>
           </section>
         </div>
       </div>
+
+      <ConnectionsSection
+        connections={connections}
+        loading={loading}
+        error={error}
+        onAdd={onAddConnection}
+        onRemove={onRemoveConnection}
+        onScan={onScanConnection}
+      />
     </>
   );
 }
@@ -2326,7 +2636,7 @@ function Modal({
   onAddKey,
   initialSite,
 }: {
-  type: "site" | "key";
+  type: "site" | "key" | "connection";
   close: () => void;
   onChanged: () => void;
   onAddKey?: (input: { provider: string; key: string; label?: string; model?: string }) => Promise<unknown>;
@@ -2603,10 +2913,11 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
     monitoringState === "paused" ? "Monitoring paused" : "Setup required";
   const settingsState = useSettings();
   const keysState = useApiKeys();
+  const connectionsState = useConnections();
   const [page, setPage] = useState<Page>("Overview");
   const [activeFindingId, setActiveFindingId] = useState<string | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
-  const [modal, setModal] = useState<"site" | "key" | null>(null);
+  const [modal, setModal] = useState<"site" | "key" | "connection" | null>(null);
   const [siteToVerify, setSiteToVerify] = useState<SiteRow | null>(null);
 
   useEffect(() => {
@@ -2688,6 +2999,12 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
         void settingsState.reload();
       }}
       email={user?.email}
+      connections={connectionsState.connections}
+      loading={connectionsState.loading}
+      error={connectionsState.error}
+      onAddConnection={(input) => connectionsState.add(input).then(() => {})}
+      onRemoveConnection={connectionsState.remove}
+      onScanConnection={(id, type, repo) => connectionsState.scan(id, type, repo).then(() => {})}
     />
   ) : page === "AI Copilot" ? (
     <AiCopilot
