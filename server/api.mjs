@@ -57,6 +57,24 @@ app.use((req, res, next) => {
 app.use(express.static(path.join(__dirname, "../dist")));
 app.use(express.json({ limit: "64kb" }));
 
+const wrap = (fn) => (req, res) =>
+  fn(req, res).catch((err) => {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  });
+
+async function requireUser(req, res, next) {
+  const header = req.headers.authorization ?? "";
+  const jwt = header.startsWith("Bearer ") ? header.slice(7) : null;
+  if (!jwt) return res.status(401).json({ error: "Missing bearer token" });
+
+  const { data, error } = await db.auth.getUser(jwt);
+  if (error || !data?.user) return res.status(401).json({ error: "Invalid session" });
+
+  req.user = data.user;
+  next();
+}
+
 // ---------------------------------------------------------------------------
 // Read-only GitHub + Supabase connections (encrypted at rest)
 // ---------------------------------------------------------------------------
@@ -396,24 +414,6 @@ app.get(
 );
 
 const db = adminClient();
-
-const wrap = (fn) => (req, res) =>
-  fn(req, res).catch((err) => {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  });
-
-async function requireUser(req, res, next) {
-  const header = req.headers.authorization ?? "";
-  const jwt = header.startsWith("Bearer ") ? header.slice(7) : null;
-  if (!jwt) return res.status(401).json({ error: "Missing bearer token" });
-
-  const { data, error } = await db.auth.getUser(jwt);
-  if (error || !data?.user) return res.status(401).json({ error: "Invalid session" });
-
-  req.user = data.user;
-  next();
-}
 
 async function ownedSite(userId, siteId) {
   if (!siteId) return null;
