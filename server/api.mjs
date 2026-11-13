@@ -87,8 +87,29 @@ app.get(
   }),
 );
 
+app.get(
+  "/api/connections/github_connections",
+  requireUser,
+  wrap(async (req, res) => {
+    res.json({ connections: await listConnections(db, req.user.id, "github_connections") });
+  }),
+);
+
 app.post(
   "/api/connections/github",
+  requireUser,
+  wrap(async (req, res) => {
+    try {
+      const conn = await addConnection(db, req.user.id, "github_connections", req.body ?? {});
+      res.status(201).json({ ok: true, connection: conn });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  }),
+);
+
+app.post(
+  "/api/connections/github_connections",
   requireUser,
   wrap(async (req, res) => {
     try {
@@ -117,8 +138,29 @@ app.get(
   }),
 );
 
+app.get(
+  "/api/connections/supabase_connections",
+  requireUser,
+  wrap(async (req, res) => {
+    res.json({ connections: await listConnections(db, req.user.id, "supabase_connections") });
+  }),
+);
+
 app.post(
   "/api/connections/supabase",
+  requireUser,
+  wrap(async (req, res) => {
+    try {
+      const conn = await addConnection(db, req.user.id, "supabase_connections", req.body ?? {});
+      res.status(201).json({ ok: true, connection: conn });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  }),
+);
+
+app.post(
+  "/api/connections/supabase_connections",
   requireUser,
   wrap(async (req, res) => {
     try {
