@@ -108,6 +108,36 @@ export function buildCheckResults(result) {
   });
 }
 
+// A finding is often reported under a more specific key than the check that
+// passes when the issue is gone (`csp_unsafe_inline` vs `csp_quality`). These
+// parents let a passing check close the specific findings it covers.
+const PASS_OUTCOME_PARENT = [
+  [/^secret_/, "leaked_secrets"],
+  [/^csp_/, "csp_quality"],
+  [/^cors_/, "cors"],
+  [/^domain_/, "domain_expiry"],
+  [/^tls_/, "tls"],
+  [/^http_(4xx|5xx)$/, "http_status"],
+  [/^slow_response$/, "response_time"],
+  [/^site_unreachable$/, "http_status"],
+  [/^robots_/, "robots_missing"],
+  [/^sitemap_/, "sitemap_missing"],
+  [/^security_txt_/, "security_txt_missing"],
+  [/^content_replaced$/, "defacement"],
+  [/^dns_no_ns$/, "dns_ns"],
+  [/^dns_no_mx$/, "dns_mx"],
+];
+
+/** Resolves a finding's key to its direct or parent check outcome. */
+export function outcomeForFinding(checkKey, checkOutcomes) {
+  const direct = checkOutcomes?.[checkKey];
+  if (direct) return direct;
+  for (const [pattern, parent] of PASS_OUTCOME_PARENT) {
+    if (pattern.test(checkKey)) return checkOutcomes?.[parent] ?? null;
+  }
+  return null;
+}
+
 function scanStatusFor(result, checkResults) {
   if (result.status === "failed") return "failed";
   if (result.status === "running") return "running";
@@ -287,9 +317,10 @@ export async function scanSite(db, site, { userId = null, manual = false } = {})
       .filter((f) => {
         if (f.status !== "open") return false;
         if (seenKeys.has(f.check_key)) return false;
-        // Check if the check completed successfully
-        const outcome = checkOutcomes[f.check_key];
-        return outcome && outcome.status === 'pass';
+        // Only resolve when the check that covers this finding completed
+        // successfully. A specific finding key may map to a parent check key.
+        const outcome = outcomeForFinding(f.check_key, checkOutcomes);
+        return outcome && (outcome.status === "pass" || outcome.status === "passed");
       })
       .map((f) => f.id);
     if (staleIds.length) {
