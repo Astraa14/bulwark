@@ -2381,11 +2381,12 @@ function ConnectionsSection({
                 placeholder="Enter a random secret string"
               />
             </div>
-              <div className="modal-actions">
+            {localError && <p className="modal-error">{localError}</p>}
+            <div className="modal-actions">
               <button className="button" onClick={() => setWebhookId(null)}>Cancel</button>
               <button
                 className="button dark"
-                onClick={() => onSetWebhookSecret(webhookId!, webhookSecret)}
+                onClick={() => setWebhookSecret(webhookId!, webhookSecret)}
                 disabled={busy !== null || !webhookSecret.trim()}
               >
                 {busy !== null ? "Saving…" : "Save secret"}
