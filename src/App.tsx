@@ -2077,6 +2077,7 @@ function ConnectionsSection({
   const [webhookSecret, setWebhookSecretState] = useState("");
   const [repos, setRepos] = useState<{ full_name: string; owner: string; name: string; private: boolean }[]>([]);
   const [reposLoading, setReposLoading] = useState(false);
+  const [reposConnectionId, setReposConnectionId] = useState<string | null>(null);
 
   const addConnection = async () => {
     setLocalError(null);
@@ -2229,6 +2230,7 @@ function ConnectionsSection({
                 <button
                   className="button dark"
                   onClick={() => {
+                    setReposConnectionId(c.id);
                     setReposLoading(true);
                     apiGet<{ repos: { full_name: string; owner: string; name: string; private: boolean }[] }>(`/api/connections/github/${c.id}/repos`)
                       .then((d) => setRepos(d.repos ?? []))
@@ -2268,30 +2270,30 @@ function ConnectionsSection({
             <p>Select repositories to scan for secrets, exposed config, and dependencies.</p>
             {reposLoading && <p className="muted pad">Loading repositories…</p>}
           </div>
-          {repos.map((repo) => (
-            <div className="key-row" key={repo.full_name}>
-              <div className="key-body">
-                <div className="provider-name">
-                  <div>
-                    <h3>{repo.name}</h3>
-                    <p>{repo.owner}/{repo.name} · {repo.private ? "Private" : "Public"}</p>
+{repos.map((repo) => (
+              <div className="key-row" key={repo.full_name}>
+                <div className="key-body">
+                  <div className="provider-name">
+                    <div>
+                      <h3>{repo.name}</h3>
+                      <p>{repo.owner}/{repo.name} · {repo.private ? "Private" : "Public"}</p>
+                    </div>
+                  </div>
+                  <div className="key-actions">
+                    <button
+                      className="button dark"
+                      onClick={() => {
+                        const [owner, name] = repo.full_name.split("/");
+                        void onScan(reposConnectionId!, "github", { owner, repo: name });
+                      }}
+                      disabled={busy !== null}
+                    >
+                      Scan
+                    </button>
                   </div>
                 </div>
-                <div className="key-actions">
-                  <button
-                    className="button dark"
-                    onClick={() => {
-                      const [owner, name] = repo.full_name.split("/");
-                      void onScan(scanId!, "github", { owner, repo: name });
-                    }}
-                    disabled={busy !== null}
-                  >
-                    Scan
-                  </button>
-                </div>
               </div>
-            </div>
-          ))}
+            ))}
         </section>
       )}
 
