@@ -2075,6 +2075,8 @@ function ConnectionsSection({
   const [localError, setLocalError] = useState<string | null>(null);
   const [webhookId, setWebhookId] = useState<string | null>(null);
   const [webhookSecret, setWebhookSecretState] = useState("");
+  const [repos, setRepos] = useState<{ full_name: string; owner: string; name: string; private: boolean }[]>([]);
+  const [reposLoading, setReposLoading] = useState(false);
 
   const addConnection = async () => {
     setLocalError(null);
@@ -2117,14 +2119,8 @@ function ConnectionsSection({
     try {
       if (type === "github") {
         await onScan(id, type, repo);
-        setScanId(null);
-        setScanType(null);
-        setGithubOwner("");
-        setGithubRepo("");
       } else {
         await onScan(id, type);
-        setScanId(null);
-        setScanType(null);
       }
     } catch (err) {
       setLocalError((err as Error).message);
@@ -2143,6 +2139,29 @@ function ConnectionsSection({
       setLocalError((err as Error).message);
     }
   };
+
+  const modalStyle = {
+    position: "fixed",
+    top: 0,
+    left: 0,
+    width: "100%",
+    height: "100%",
+    background: "rgba(0,0,0,0.5)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 50,
+  } as React.CSSProperties;
+
+  const modalCardStyle = {
+    background: "#1a1a1a",
+    border: "1px solid #333",
+    borderRadius: "8px",
+    padding: "24px",
+    width: "min(500px, 90vw)",
+    maxHeight: "90vh",
+    overflow: "auto",
+  } as React.CSSProperties;
 
   return (
     <>
@@ -2214,6 +2233,12 @@ function ConnectionsSection({
                     setScanType(c.type);
                     setGithubOwner("");
                     setGithubRepo("");
+                    setReposLoading(true);
+                    fetch(`/api/connections/github/${c.id}/repos`)
+                      .then((r) => r.json())
+                      .then((d) => setRepos(d.repos ?? []))
+                      .catch(() => setRepos([]))
+                      .finally(() => setReposLoading(false));
                   }}
                   disabled={busy !== null}
                 >
@@ -2240,9 +2265,44 @@ function ConnectionsSection({
         )}
       </section>
 
+      {/* Repos to scan (shown after GitHub connection) */}
+      {repos.length > 0 && (
+        <section className="card setting-list">
+          <div className="setting-title">
+            <h3>GitHub repositories to scan</h3>
+            <p>Select repositories to scan for secrets, exposed config, and dependencies.</p>
+            {reposLoading && <p className="muted pad">Loading repositories…</p>}
+          </div>
+          {repos.map((repo) => (
+            <div className="key-row" key={repo.full_name}>
+              <div className="key-body">
+                <div className="provider-name">
+                  <div>
+                    <h3>{repo.name}</h3>
+                    <p>{repo.owner}/{repo.name} · {repo.private ? "Private" : "Public"}</p>
+                  </div>
+                </div>
+                <div className="key-actions">
+                  <button
+                    className="button dark"
+                    onClick={() => {
+                      const [owner, name] = repo.full_name.split("/");
+                      void onScan(scanId!, "github", { owner, repo: name });
+                    }}
+                    disabled={busy !== null}
+                  >
+                    Scan
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
+
       {addType === "github" && (
-        <div className="modal-overlay" onClick={() => setAddType(null)}>
-          <div className="modal card" onClick={(e) => e.stopPropagation()}>
+        <div style={modalStyle}>
+          <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
             <h3>Connect GitHub</h3>
             <p>
               Bulwark will scan your repositories for hardcoded secrets, exposed config files,
@@ -2278,8 +2338,8 @@ function ConnectionsSection({
       )}
 
       {addType === "supabase" && (
-        <div className="modal-overlay" onClick={() => setAddType(null)}>
-          <div className="modal card" onClick={(e) => e.stopPropagation()}>
+        <div style={modalStyle}>
+          <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
             <h3>Connect Supabase</h3>
             <p>
               Bulwark will check your storage buckets for public access and verify API
@@ -2324,36 +2384,27 @@ function ConnectionsSection({
       )}
 
       {scanId && (
-        <div className="modal-overlay" onClick={() => setScanId(null)}>
-          <div className="modal card" onClick={(e) => e.stopPropagation()}>
+        <div style={modalStyle}>
+          <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
             <h3>Scan {scanType === "github" ? "GitHub" : "Supabase"}</h3>
-            {scanType === "github" && (
-              <>
-                <div className="field-block">
-                  <label>Repository owner</label>
-                  <input
-                    autoComplete="off"
-                    value={githubOwner}
-                    onChange={(e) => setGithubOwner(e.target.value)}
-                    placeholder="octocat"
-                  />
-                </div>
-                <div className="field-block">
-                  <label>Repository name</label>
-                  <input
-                    autoComplete="off"
-                    value={githubRepo}
-                    onChange={(e) => setGithubRepo(e.target.value)}
-                    placeholder="Hello-World"
-                  />
-                </div>
-              </>
-            )}
+            <p>
+              Scanning will analyze your repository for security issues including hardcoded
+              secrets, exposed configuration, and unpinned dependencies.
+            </p>
             <div className="modal-actions">
               <button className="button" onClick={() => setScanId(null)}>Cancel</button>
               <button
                 className="button dark"
-                onClick={() => scanConnection(scanId!, scanType!, scanType === "github" ? { owner: githubOwner, repo: githubRepo } : undefined)}
+                onClick={() => {
+                  if (scanType === "github") {
+                    const [owner, name] = (githubOwner || "").split("/");
+                    void onScan(scanId!, "github", { owner, repo: name });
+                  } else {
+                    void onScan(scanId!, scanType!);
+                  }
+                  setScanId(null);
+                  setScanType(null);
+                }}
                 disabled={busy !== null || (!scanType && scanType !== "supabase" && (!githubOwner || !githubRepo))}
               >
                 {busy !== null ? "Scanning…" : "Run scan"}
@@ -2364,8 +2415,8 @@ function ConnectionsSection({
       )}
 
       {webhookId && (
-        <div className="modal-overlay" onClick={() => setWebhookId(null)}>
-          <div className="modal card" onClick={(e) => e.stopPropagation()}>
+        <div style={modalStyle}>
+          <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
             <h3>GitHub Webhook Secret</h3>
             <p>
               Set a secret to validate incoming GitHub webhooks. Go to your repository settings →

@@ -95,6 +95,36 @@ app.get(
   }),
 );
 
+app.get(
+  "/api/connections/github/:id/repos",
+  requireUser,
+  wrap(async (req, res) => {
+    const conn = await resolveConnection(db, req.user.id, req.params.id, "github_connections");
+    if (!conn) return res.status(404).json({ error: "GitHub connection not found" });
+
+    const res2 = await fetch(`https://api.github.com/user/repos?per_page=100&sort=updated`, {
+      headers: {
+        authorization: `Bearer ${conn.token}`,
+        "user-agent": "BulwarkBot/0.5",
+        accept: "application/vnd.github+json",
+      },
+    });
+    if (!res2.ok) {
+      const body = await res2.text().catch(() => "");
+      throw new Error(`GitHub API ${res2.status}: ${body.slice(0, 200)}`);
+    }
+    const repos = await res2.json();
+    res.json({
+      repos: repos.map((r) => ({
+        full_name: r.full_name,
+        owner: r.owner.login,
+        name: r.name,
+        private: r.private,
+      })),
+    });
+  }),
+);
+
 app.post(
   "/api/connections/github",
   requireUser,
