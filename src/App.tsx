@@ -2229,10 +2229,6 @@ function ConnectionsSection({
                 <button
                   className="button dark"
                   onClick={() => {
-                    setScanId(c.id);
-                    setScanType(c.type);
-                    setGithubOwner("");
-                    setGithubRepo("");
                     setReposLoading(true);
                     fetch(`/api/connections/github/${c.id}/repos`)
                       .then((r) => r.json())
@@ -2383,29 +2379,24 @@ function ConnectionsSection({
         </div>
       )}
 
-      {scanId && (
+      {scanId && scanType === "supabase" && (
         <div style={modalStyle}>
           <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
-            <h3>Scan {scanType === "github" ? "GitHub" : "Supabase"}</h3>
+            <h3>Scan Supabase</h3>
             <p>
-              Scanning will analyze your repository for security issues including hardcoded
-              secrets, exposed configuration, and unpinned dependencies.
+              Scanning will analyze your project for security issues including public
+              storage buckets and API connectivity issues.
             </p>
             <div className="modal-actions">
               <button className="button" onClick={() => setScanId(null)}>Cancel</button>
               <button
                 className="button dark"
                 onClick={() => {
-                  if (scanType === "github") {
-                    const [owner, name] = (githubOwner || "").split("/");
-                    void onScan(scanId!, "github", { owner, repo: name });
-                  } else {
-                    void onScan(scanId!, scanType!);
-                  }
+                  void onScan(scanId!, "supabase");
                   setScanId(null);
                   setScanType(null);
                 }}
-                disabled={busy !== null || (!scanType && scanType !== "supabase" && (!githubOwner || !githubRepo))}
+                disabled={busy !== null}
               >
                 {busy !== null ? "Scanning…" : "Run scan"}
               </button>
