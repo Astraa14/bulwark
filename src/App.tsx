@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import AuthScreen from "@/screens/AuthScreen";
-import { apiPost } from "@/lib/api";
+import { apiGet, apiPost } from "@/lib/api";
 import {
   acceptBaseline,
   addConnection,
@@ -2230,8 +2230,7 @@ function ConnectionsSection({
                   className="button dark"
                   onClick={() => {
                     setReposLoading(true);
-                    fetch(`/api/connections/github/${c.id}/repos`)
-                      .then((r) => r.json())
+                    apiGet<{ repos: { full_name: string; owner: string; name: string; private: boolean }[] }>(`/api/connections/github/${c.id}/repos`)
                       .then((d) => setRepos(d.repos ?? []))
                       .catch(() => setRepos([]))
                       .finally(() => setReposLoading(false));
