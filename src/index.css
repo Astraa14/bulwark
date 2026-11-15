@@ -485,8 +485,7 @@ a:focus:not(:focus-visible) {
 }
 
 .model-picker,
-.theme-toggle,
-.system-pill {
+.theme-toggle {
   height: 34px;
   display: inline-flex;
   align-items: center;
@@ -502,11 +501,17 @@ a:focus:not(:focus-visible) {
 }
 
 .model-picker:hover,
-.theme-toggle:hover,
-.system-pill:hover {
+.theme-toggle:hover {
   background: var(--surface-hover);
   border-color: var(--border-strong);
   color: var(--text-primary);
+}
+
+.theme-toggle {
+  width: 34px;
+  padding: 0;
+  gap: 0;
+  justify-content: center;
 }
 
 .theme-toggle svg {
@@ -516,26 +521,6 @@ a:focus:not(:focus-visible) {
 
 .model-picker svg {
   opacity: 0.75;
-}
-
-.system-pill {
-  min-width: 0;
-}
-
-.system-pill .dot {
-  animation: none;
-}
-
-.monitoring-status .status-hint {
-  color: var(--text-subtle);
-  font-size: 11px;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-
-.monitoring-status:hover .status-hint,
-.monitoring-status:focus-visible .status-hint {
-  opacity: 1;
 }
 
 .user-menu {

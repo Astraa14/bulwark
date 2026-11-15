@@ -156,10 +156,6 @@ function Header({
   onMenu,
   email,
   onSignOut,
-  onGoKeys,
-  monitoringState,
-  monitoringLabel,
-  onGoSites,
   theme,
   onToggleTheme,
 }: {
@@ -167,10 +163,6 @@ function Header({
   onMenu: () => void;
   email?: string | null;
   onSignOut?: () => void;
-  onGoKeys?: () => void;
-  monitoringState: "active" | "setup" | "paused";
-  monitoringLabel: string;
-  onGoSites: () => void;
   theme: Theme;
   onToggleTheme: () => void;
 }) {
@@ -189,12 +181,6 @@ function Header({
         <strong>{page}</strong>
       </div>
       <div className="top-actions">
-        <button className="model-picker byok-btn" onClick={onGoKeys} title="Manage AI API keys">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="12" height="12" aria-hidden="true">
-            <path fillRule="evenodd" d="M9.75 2a.75.75 0 0 1 .75.75v.096A6.5 6.5 0 0 1 14.5 9.5a.75.75 0 0 1-1.5 0 5 5 0 0 0-3.25-4.667V5a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1-.75-.75v-.25A5 5 0 0 0 4.5 9.5a.75.75 0 0 1-1.5 0A6.5 6.5 0 0 1 7.5 2.846V2.75A.75.75 0 0 1 8.25 2h1.5ZM7 11.5a1 1 0 1 1 2 0 1 1 0 0 1-2 0Z" clipRule="evenodd" />
-          </svg>
-          AI keys
-        </button>
         <button
           type="button"
           className="theme-toggle"
@@ -212,18 +198,6 @@ function Header({
               <path d="M20.5 14.2A8.4 8.4 0 0 1 9.8 3.5 8.7 8.7 0 1 0 20.5 14.2Z" />
             </svg>
           )}
-          <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
-        </button>
-        <button
-          type="button"
-          className={`system-pill monitoring-status ${monitoringState}`}
-          onClick={onGoSites}
-          title="View site monitoring status"
-          aria-label={`${monitoringLabel}. Open Sites`}
-        >
-          <Dot tone={monitoringState === "active" ? "healthy" : monitoringState === "setup" ? "medium" : "low"} />
-          {monitoringLabel}
-          <span className="status-hint">View sites</span>
         </button>
         <div className="user-menu">
           <button
@@ -3679,13 +3653,6 @@ export default function App() {
 function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
   const { user, signOut } = useAuth();
   const { sites, findings, scans, scanCount, refresh } = useWorkspace();
-  const activeSiteCount = sites.filter((site) => site.status === "verified").length;
-  const pendingSiteCount = sites.filter((site) => site.status === "pending").length;
-  const monitoringState: "active" | "setup" | "paused" =
-    activeSiteCount > 0 ? "active" : pendingSiteCount > 0 || sites.length === 0 ? "setup" : "paused";
-  const monitoringLabel =
-    monitoringState === "active" ? "Monitoring active" :
-    monitoringState === "paused" ? "Monitoring paused" : "Setup required";
   const settingsState = useSettings();
   const keysState = useApiKeys();
   const connectionsState = useConnections();
@@ -3874,10 +3841,6 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
           onMenu={() => setMobileNav(true)}
           email={user?.email}
           onSignOut={signOut}
-          onGoKeys={() => go("API Keys")}
-          monitoringState={monitoringState}
-          monitoringLabel={monitoringLabel}
-          onGoSites={() => go("Sites")}
           theme={theme}
           onToggleTheme={onToggleTheme}
         />
