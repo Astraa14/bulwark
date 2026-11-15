@@ -527,6 +527,13 @@ a:focus:not(:focus-visible) {
   padding: 0;
   gap: 0;
   justify-content: center;
+  border-color: transparent;
+  background: transparent;
+}
+
+.theme-toggle:hover {
+  border-color: transparent;
+  background: var(--surface-hover);
 }
 
 .theme-toggle svg {
@@ -1297,6 +1304,18 @@ main {
 
 .stat:hover {
   border-color: var(--border-strong);
+}
+
+.stat-link {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  appearance: none;
+}
+
+.stat-link:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
 }
 
 .stat span {

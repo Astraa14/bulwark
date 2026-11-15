@@ -372,15 +372,18 @@ function Stat({
   value,
   note,
   figure,
+  onClick,
 }: {
   label: string;
   value: string;
   note?: string;
   /** Quiet, informative graphic pinned to the card's baseline. */
   figure?: React.ReactNode;
+  /** Turns the card into a link to the page that explains the number. */
+  onClick?: () => void;
 }) {
-  return (
-    <div className="stat card">
+  const body = (
+    <>
       <span>{label}</span>
       <strong>{value}</strong>
       {note && <small>{note}</small>}
@@ -389,8 +392,18 @@ function Stat({
           {figure}
         </div>
       )}
-    </div>
+    </>
   );
+
+  if (onClick) {
+    return (
+      <button type="button" className="stat card stat-link" onClick={onClick}>
+        {body}
+      </button>
+    );
+  }
+
+  return <div className="stat card">{body}</div>;
 }
 
 function healthKey(site: SiteRow, findings: FindingRow[]) {
@@ -685,6 +698,7 @@ function Overview({
         <Stat
           label="Connected sites"
           value={String(sites.length)}
+          onClick={() => go("Sites")}
           figure={
             <span className="stat-slots">
               {Array.from({ length: PLAN_SITE_LIMIT }, (_, i) => (
@@ -696,6 +710,7 @@ function Overview({
         <Stat
           label="Open threats"
           value={String(openFindings.length)}
+          onClick={() => go("Threats")}
           figure={
             <span className="stat-severity">
               {openFindings.length === 0 ? (
@@ -716,6 +731,7 @@ function Overview({
         <Stat
           label="Scans completed"
           value={scanCount.toLocaleString()}
+          onClick={() => go("Scans")}
           figure={
             <span className="stat-spark">
               {scanDays.map((count, i) => (
@@ -727,6 +743,7 @@ function Overview({
         <Stat
           label="Active monitors"
           value={String(activeSites)}
+          onClick={() => go("Sites")}
           figure={
             <span className="stat-split">
               <i
