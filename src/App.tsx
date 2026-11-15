@@ -17,6 +17,7 @@ import {
   setSiteStatus,
   setWebhookSecret,
   shortDate,
+  PLAN_SITE_LIMIT,
   useApiKeys,
   useConnections,
   useSettings,
@@ -48,8 +49,6 @@ type Page =
   | "Integrations"
   | "API Keys"
   | "Settings";
-
-const PLAN_SITE_LIMIT = 10;
 
 const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low", "info"];
 

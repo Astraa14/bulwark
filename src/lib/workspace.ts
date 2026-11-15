@@ -194,6 +194,9 @@ export function shortDate(iso: string | null) {
   });
 }
 
+/** Sites included in the free plan. */
+export const PLAN_SITE_LIMIT = 5;
+
 export async function createSite(domain: string): Promise<SiteRow> {
   if (!supabase) throw new Error("Supabase is not configured.");
   const clean = normalizeDomain(domain);
@@ -201,6 +204,17 @@ export async function createSite(domain: string): Promise<SiteRow> {
 
   const { data: userData } = await supabase.auth.getUser();
   if (!userData.user) throw new Error("You are signed out.");
+
+  const { count } = await supabase
+    .from("sites")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userData.user.id);
+
+  if ((count ?? 0) >= PLAN_SITE_LIMIT) {
+    throw new Error(
+      `The free plan covers ${PLAN_SITE_LIMIT} sites. Delete one before adding another.`,
+    );
+  }
 
   const { data, error } = await supabase
     .from("sites")
