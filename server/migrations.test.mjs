@@ -12,6 +12,18 @@ const migrationFiles = (await readdir(migrationsDir))
   .filter((name) => name.endsWith(".sql"))
   .sort();
 
+test("jsonb array aliases are table aliases, not column aliases", async () => {
+  const files = (await readdir(migrationsDir)).filter((name) => name.endsWith(".sql"));
+  for (const name of files) {
+    const sql = await readFile(path.join(migrationsDir, name), "utf8");
+    assert.doesNotMatch(
+      sql,
+      /as\s+elem\(f2\)/i,
+      `${name} aliases the jsonb column as f2 but then uses f2.finding as a table`,
+    );
+  }
+});
+
 test("apply_all.sql contains every migration verbatim and in order", async () => {
   const applyAll = await readFile(applyAllPath, "utf8");
 

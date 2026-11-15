@@ -819,7 +819,7 @@ begin
      where f.site_id = p_site_id
        and f.status = 'open'
        and not exists (
-         select 1 from jsonb_array_elements(p_findings) as elem(f2)
+         select 1 from jsonb_array_elements(p_findings) as f2(finding)
          where (f2.finding ->> 'check_key') = f.check_key
            and coalesce(f2.finding ->> 'affected_resource', '') = coalesce(f.affected_resource, '')
        );
@@ -1229,7 +1229,7 @@ begin
        and f.user_id = v_user_id
        and f.status = 'open'
        and not exists (
-         select 1 from jsonb_array_elements(coalesce(p_findings, '[]'::jsonb)) as elem(f2)
+         select 1 from jsonb_array_elements(coalesce(p_findings, '[]'::jsonb)) as f2(finding)
          where (f2.finding ->> 'check_key') = f.check_key
            and coalesce(f2.finding ->> 'affected_resource', '') = coalesce(f.affected_resource, '')
        );
@@ -1547,7 +1547,7 @@ begin
        and f.resource = p_resource
        and f.status = 'open'
        and not exists (
-         select 1 from jsonb_array_elements(coalesce(p_findings, '[]'::jsonb)) as elem(f2)
+         select 1 from jsonb_array_elements(coalesce(p_findings, '[]'::jsonb)) as f2(finding)
          where (f2.finding ->> 'check_key') = f.check_key
            and coalesce(f2.finding ->> 'affected_resource', '') = coalesce(f.affected_resource, '')
        );
