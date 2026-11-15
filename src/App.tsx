@@ -377,12 +377,28 @@ function PageTitle({
   );
 }
 
-function Stat({ label, value, note }: { label: string; value: string; note?: string }) {
+function Stat({
+  label,
+  value,
+  note,
+  figure,
+}: {
+  label: string;
+  value: string;
+  note?: string;
+  /** Quiet, informative graphic pinned to the card's baseline. */
+  figure?: React.ReactNode;
+}) {
   return (
     <div className="stat card">
       <span>{label}</span>
       <strong>{value}</strong>
       {note && <small>{note}</small>}
+      {figure && (
+        <div className="stat-figure" aria-hidden="true">
+          {figure}
+        </div>
+      )}
     </div>
   );
 }
@@ -529,6 +545,7 @@ function Overview({
   openModal,
   sites,
   findings,
+  scans,
   scanCount,
   onOpenFinding,
 }: {
@@ -536,6 +553,7 @@ function Overview({
   openModal: () => void;
   sites: SiteRow[];
   findings: FindingRow[];
+  scans: ScanRow[];
   scanCount: number;
   onOpenFinding: (id: string) => void;
 }) {
@@ -555,6 +573,16 @@ function Overview({
   );
   const isSetupRequired = sites.length === 0 || pendingSites > 0;
   const isAllPaused = activeSites === 0 && pausedSites > 0;
+
+  // 30 daily scan counts, oldest first, for the scan sparkline.
+  const scanDays = Array.from({ length: 30 }, () => 0);
+  for (const scan of scans) {
+    const daysAgo = (Date.now() - new Date(scan.started_at).getTime()) / 86_400_000;
+    if (daysAgo < 0 || daysAgo >= 30) continue;
+    scanDays[29 - Math.floor(daysAgo)] += 1;
+  }
+  const scanDayPeak = Math.max(1, ...scanDays);
+  const severityCounts = [critical, high, medium, low, info];
   const briefingState =
     openFindings.length > 0 ? "has-findings" :
     isSetupRequired ? "needs-setup" :
@@ -664,10 +692,61 @@ function Overview({
         )}
       </section>
       <section className="stats" aria-label="Workspace metrics">
-        <Stat label="Connected sites" value={String(sites.length)} />
-        <Stat label="Open threats" value={String(openFindings.length)} />
-        <Stat label="Scans completed" value={scanCount.toLocaleString()} />
-        <Stat label="Active monitors" value={String(activeSites)} />
+        <Stat
+          label="Connected sites"
+          value={String(sites.length)}
+          figure={
+            <span className="stat-slots">
+              {Array.from({ length: PLAN_SITE_LIMIT }, (_, i) => (
+                <i key={i} className={i < sites.length ? "on" : ""} />
+              ))}
+            </span>
+          }
+        />
+        <Stat
+          label="Open threats"
+          value={String(openFindings.length)}
+          figure={
+            <span className="stat-severity">
+              {openFindings.length === 0 ? (
+                <i className="empty" />
+              ) : (
+                severityCounts.map((count, i) =>
+                  count > 0 ? (
+                    <i
+                      key={SEVERITY_ORDER[i]}
+                      style={{ flexGrow: count, opacity: 1 - i * 0.17 }}
+                    />
+                  ) : null,
+                )
+              )}
+            </span>
+          }
+        />
+        <Stat
+          label="Scans completed"
+          value={scanCount.toLocaleString()}
+          figure={
+            <span className="stat-spark">
+              {scanDays.map((count, i) => (
+                <i key={i} style={{ height: `${Math.max(8, (count / scanDayPeak) * 100)}%` }} />
+              ))}
+            </span>
+          }
+        />
+        <Stat
+          label="Active monitors"
+          value={String(activeSites)}
+          figure={
+            <span className="stat-split">
+              <i
+                style={{
+                  width: `${sites.length ? (activeSites / sites.length) * 100 : 0}%`,
+                }}
+              />
+            </span>
+          }
+        />
       </section>
       <section className="overview-grid">
         <div className="card chart-card">
@@ -3697,6 +3776,7 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
       openModal={() => openSiteModal()}
       sites={sites}
       findings={findings}
+      scans={scans}
       scanCount={scanCount}
       onOpenFinding={(id) => {
         setPage("Threats");
