@@ -295,7 +295,7 @@ function Sidebar({
   // Grouped so a long list of pages reads as three short, obvious sections.
   const groups: { label: string; items: Page[] }[] = [
     { label: "Monitor", items: ["Overview", "Sites", "Threats", "Scans"] },
-    { label: "Understand", items: ["AI Copilot", "Reports"] },
+    { label: "Insights", items: ["AI Copilot", "Reports"] },
     { label: "Workspace", items: ["Integrations", "API Keys", "Settings"] },
   ];
   return (
@@ -378,12 +378,12 @@ function PageTitle({
   );
 }
 
-function Stat({ label, value, note }: { label: string; value: string; note: string }) {
+function Stat({ label, value, note }: { label: string; value: string; note?: string }) {
   return (
     <div className="stat card">
       <span>{label}</span>
       <strong>{value}</strong>
-      <small>{note}</small>
+      {note && <small>{note}</small>}
     </div>
   );
 }
@@ -665,22 +665,10 @@ function Overview({
         )}
       </section>
       <section className="stats" aria-label="Workspace metrics">
-        <Stat
-          label="Connected sites"
-          value={String(sites.length)}
-          note={sites.length === 0 ? "No sites connected yet" : `${activeSites} active · ${pausedSites} paused · ${pendingSites} awaiting setup`}
-        />
-        <Stat
-          label="Open threats"
-          value={String(openFindings.length)}
-          note={`${critical} critical · ${high} high · ${medium} medium · ${low} low${info > 0 ? ` · ${info} info` : ""}`}
-        />
-        <Stat label="Scans completed" value={scanCount.toLocaleString()} note="Across all your sites" />
-        <Stat
-          label="Active monitors"
-          value={String(activeSites)}
-          note={activeSites > 0 ? "Verified sites currently scanning" : pausedSites > 0 ? "All verified sites are paused" : "Verify a site to start monitoring"}
-        />
+        <Stat label="Connected sites" value={String(sites.length)} />
+        <Stat label="Open threats" value={String(openFindings.length)} />
+        <Stat label="Scans completed" value={scanCount.toLocaleString()} />
+        <Stat label="Active monitors" value={String(activeSites)} />
       </section>
       <section className="overview-grid">
         <div className="card chart-card">
@@ -712,9 +700,11 @@ function Overview({
                 </span>
               ))}
             </div>
-            <span>{chartDateFmt(27)}</span>
-            <span>{chartDateFmt(14)}</span>
-            <span>{chartDateFmt(0)}</span>
+            <div className="chart-x">
+              <span>{chartDateFmt(27)}</span>
+              <span>{chartDateFmt(14)}</span>
+              <span>{chartDateFmt(0)}</span>
+            </div>
           </div>
         </div>
         <div className="card feed">

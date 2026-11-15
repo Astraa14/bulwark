@@ -1581,9 +1581,14 @@ main {
   color: var(--text-subtle);
 }
 
-.chart > span {
-  position: relative;
-  z-index: 1;
+/* Dates line up with the plot area, not the full card width. */
+.chart-x {
+  position: absolute;
+  left: 26px;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: space-between;
   color: var(--text-subtle);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
