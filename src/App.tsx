@@ -877,21 +877,6 @@ function Sites({
                 aria-pressed={healthFilter === item.key}
                 onClick={() => setHealthFilter(item.key)}
               >
-                {item.key !== "all" && (
-                  <Dot
-                    tone={
-                      item.key === "at-risk"
-                        ? "critical"
-                        : item.key === "attention"
-                          ? "high"
-                          : item.key === "pending"
-                            ? "medium"
-                            : item.key === "paused"
-                              ? "low"
-                              : "healthy"
-                    }
-                  />
-                )}
                 {item.label}
                 <strong>{item.key === "all" ? sites.length : (healthCounts[item.key] ?? 0)}</strong>
               </button>
