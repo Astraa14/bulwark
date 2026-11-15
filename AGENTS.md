@@ -36,6 +36,14 @@ This project uses **Tailwind CSS v4** through the `@tailwindcss/vite` plugin con
 
 Tailwind emits utility classes in `@layer utilities`, and CSS outside any cascade layer overrides every layer regardless of specificity. Put global element styles, such as resets and defaults for `body`, headings, `button`, or `input`, inside `@layer base { ... }` so utility classes on those elements still apply. Tailwind's Preflight already applies `box-sizing: border-box`, removes default margins, and sets `font: inherit` on form controls, so do not repeat those rules.
 
+## Manual steps (database and credentials)
+
+The agent has no Supabase access token or database password and must not ask for one. Never attempt `supabase db push`, `psql`, or any DDL against the hosted project.
+
+- Write migrations to `supabase/migrations/`, then run `npm run db:apply-all` to regenerate `supabase/apply_all.sql`.
+- Every reply that needs one must end with an explicit **"You need to run"** section naming the exact file or command, in order.
+- Treat an unapplied migration as not yet active: verify behaviour only after the user confirms it ran.
+
 ## Git workflow
 
 - After making changes, commit them and push to `origin/master` unless the user says otherwise.
