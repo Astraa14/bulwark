@@ -3100,6 +3100,25 @@ pre.explanation {
   letter-spacing: 0.06em;
 }
 
+.verify-steps {
+  display: grid;
+  gap: 3px;
+  margin: 9px 0 0;
+  padding-left: 16px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.verify-steps li::marker {
+  color: var(--text-subtle);
+}
+
+.verify-steps code {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
 .code-line {
   display: flex;
   align-items: center;

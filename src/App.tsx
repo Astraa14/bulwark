@@ -3570,16 +3570,19 @@ function Modal({
             {error && <p className="modal-error">{error}</p>}
             <Button dark>{busy ? "Adding…" : "Continue"}</Button>
             <p className="modal-note">
-              Only add sites you control. Bulwark refuses to scan a domain you have not verified.
+              Next you will prove ownership with a DNS record or a meta tag. Only add sites you
+              control — Bulwark refuses to scan a domain you have not verified.
             </p>
           </form>
         )}
 
         {step === "verify" && site && (
           <>
-            <p className="modal-note">DNS is the fastest option. Records can take a few minutes.</p>
+            <p className="modal-note">
+              Choose one method. DNS is fastest, but records can take a few minutes to propagate.
+            </p>
             <div className="verify-box">
-              <small>DNS TXT RECORD</small>
+              <small>OPTION 1 — DNS TXT RECORD</small>
               <div className="code-line">
                 <code>_bulwark.{site.domain}</code>
                 <button type="button" onClick={() => copy("dns", `_bulwark.${site.domain}`)}>
@@ -3592,9 +3595,14 @@ function Modal({
                   {copied === "token" ? "Copied" : "Copy"}
                 </button>
               </div>
+              <ol className="verify-steps">
+                <li>In your DNS provider, add a <code>TXT</code> record at the name above.</li>
+                <li>Paste the token as its value, with nothing else in the record.</li>
+                <li>Wait for propagation, then press Verify now.</li>
+              </ol>
             </div>
             <div className="verify-box">
-              <small>OR HTML META TAG — HOMEPAGE &lt;HEAD&gt;</small>
+              <small>OPTION 2 — HTML META TAG IN THE HOMEPAGE &lt;HEAD&gt;</small>
               <div className="code-line">
                 <code className="token">{`<meta name="bulwark-verify" content="${site.verify_token}" />`}</code>
                 <button
@@ -3606,6 +3614,14 @@ function Modal({
                   {copied === "meta" ? "Copied" : "Copy"}
                 </button>
               </div>
+              <ol className="verify-steps">
+                <li>Paste the tag into the <code>&lt;head&gt;</code> of your homepage's HTML.</li>
+                <li>
+                  Deploy it so the live page serves the tag. Bulwark reads the HTML your server
+                  sends, so a tag injected by JavaScript will not be found.
+                </li>
+                <li>Press Verify now.</li>
+              </ol>
             </div>
             {error && <p className="modal-error">{error}</p>}
             <div className="modal-actions">
