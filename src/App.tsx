@@ -1447,49 +1447,69 @@ function ApiKeys({
         </span>
       </div>
       {(error || localError) && <p className="modal-error">{localError ?? error}</p>}
+      <div className="integration-body">
       <div className="api-grid">
         <div>
-          <section className="card provider-card">
-            <div className="card-heading">
+          <section className="card setting-list">
+            <div className="setting-title">
               <h3>Connected providers</h3>
-              <span>
-                {keys.length} active key{keys.length === 1 ? "" : "s"}
-              </span>
+              <p>
+                {keys.length} active key{keys.length === 1 ? "" : "s"}. Keys are used only when
+                you ask Bulwark to explain a finding.
+              </p>
             </div>
             {loading ? (
               <p className="muted pad">Loading keys…</p>
             ) : keys.length === 0 ? (
               <div className="key-empty">
                 <p>
-                  No AI key yet. Add an OpenAI or Anthropic key to unlock plain-English explanations.
+                  No AI key yet. Add an OpenAI or Anthropic key to unlock plain-English
+                  explanations.
                 </p>
-                <span className="key-empty-hint">Add a key using the button above to unlock explanations.</span>
+                <span className="key-empty-hint">
+                  Use “Add API key” above. Nothing is generated until you request an explanation.
+                </span>
               </div>
             ) : (
               keys.map((k) => (
-                <div className="key-row" key={k.id}>
-                  <div className="key-body">
-                    <div className="provider-name">
-                      <div>
-                        <h3>{k.providerLabel}</h3>
-                        <p>
-                          {k.label ?? "Key"} · {k.model}
-                        </p>
-                      </div>
-                      <span>
-                        <Dot />
-                        Connected
-                      </span>
+                <div className="record" key={k.id}>
+                  <div className="record-head">
+                    <div className="record-title">
+                      <h3>{k.providerLabel}</h3>
+                      <p>
+                        {k.label ?? "Key"} · {k.model}
+                      </p>
                     </div>
-                    <div className="key-field">
-                      <code>{k.preview}</code>
-                      <span className="muted">Added {shortDate(k.createdAt)}</span>
-                      <span className="muted">Last used {relTime(k.lastUsedAt)}</span>
-                    </div>
+                    <span className="record-status">
+                      <Dot />
+                      Connected
+                    </span>
                   </div>
-                  <div className="key-actions">
+                  <dl className="record-facts">
+                    <div>
+                      <dt>Key</dt>
+                      <dd>
+                        <code>{k.preview}</code>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Model</dt>
+                      <dd>
+                        <code>{k.model}</code>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Added</dt>
+                      <dd>{shortDate(k.createdAt)}</dd>
+                    </div>
+                    <div>
+                      <dt>Last used</dt>
+                      <dd>{relTime(k.lastUsedAt)}</dd>
+                    </div>
+                  </dl>
+                  <div className="record-actions">
                     <Button onClick={() => remove(k.id)}>
-                      {busy === k.id ? "Removing…" : "Remove"}
+                      {busy === k.id ? "Removing…" : "Remove key"}
                     </Button>
                   </div>
                 </div>
@@ -1539,16 +1559,19 @@ function ApiKeys({
               const key = keys.find((x) => x.providerLabel === name);
               return (
                 <div key={name}>
-                  <code>{name}</code>
                   <span>
-                    <strong>{key ? "Connected" : "Not connected"}</strong>
-                    <code>{key ? key.model : "—"}</code>
+                    <Dot tone={key ? "healthy" : "info"} />
+                    {name}
+                  </span>
+                  <span>
+                    <strong>{key ? key.model : "Not connected"}</strong>
                   </span>
                 </div>
               );
             })}
           </section>
         </div>
+      </div>
       </div>
     </>
   );
