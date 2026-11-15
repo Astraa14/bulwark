@@ -179,7 +179,7 @@ function Header({
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" width="12" height="12" aria-hidden="true">
             <path fillRule="evenodd" d="M9.75 2a.75.75 0 0 1 .75.75v.096A6.5 6.5 0 0 1 14.5 9.5a.75.75 0 0 1-1.5 0 5 5 0 0 0-3.25-4.667V5a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1-.75-.75v-.25A5 5 0 0 0 4.5 9.5a.75.75 0 0 1-1.5 0A6.5 6.5 0 0 1 7.5 2.846V2.75A.75.75 0 0 1 8.25 2h1.5ZM7 11.5a1 1 0 1 1 2 0 1 1 0 0 1-2 0Z" clipRule="evenodd" />
           </svg>
-          AI: BYOK
+          AI keys
         </button>
         <button
           type="button"
@@ -277,44 +277,50 @@ function Sidebar({
   threatCount: number;
   siteCount: number;
 }) {
-  const nav: Page[] = [
-    "Overview",
-    "Sites",
-    "Threats",
-    "Scans",
-    "AI Copilot",
-    "Reports",
-    "Integrations",
-    "API Keys",
-    "Settings",
+  // Grouped so a long list of pages reads as three short, obvious sections.
+  const groups: { label: string; items: Page[] }[] = [
+    { label: "Monitor", items: ["Overview", "Sites", "Threats", "Scans"] },
+    { label: "Understand", items: ["AI Copilot", "Reports"] },
+    { label: "Workspace", items: ["Integrations", "API Keys", "Settings"] },
   ];
   return (
     <>
       {open && <button className="scrim" onClick={close} aria-label="Close navigation" />}
       <aside className={`sidebar ${open ? "open" : ""}`}>
         <div className="brand">
-          <img src="/bulwark-icon.svg" alt="Bulwark" className="brand-logo" />
-          <span className="sr-only">Bulwark</span>
+          <img src="/bulwark-icon.svg" alt="" className="brand-logo" />
+          <div className="brand-text">
+            <span className="brand-name">Bulwark</span>
+            <span className="brand-meta" aria-label="Current workspace">
+              Indie workspace
+            </span>
+          </div>
         </div>
-        <div className="workspace" aria-label="Current workspace">
-          Indie workspace
-        </div>
-        <nav>
-          {nav.map((item) => (
-            <button
-              key={item}
-              className={page === item ? "active" : ""}
-              onClick={() => {
-                setPage(item);
-                close();
-              }}
-            >
-              <span className="nav-label">
-                {NAV_ICONS[item] && <NavIcon path={NAV_ICONS[item]} />}
-                {item}
-              </span>
-              {item === "Threats" && threatCount > 0 && <small>{threatCount}</small>}
-            </button>
+        <nav aria-label="Main navigation">
+          {groups.map((group) => (
+            <div className="nav-group" key={group.label}>
+              <span className="nav-group-label">{group.label}</span>
+              {group.items.map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  className={page === item ? "active" : ""}
+                  aria-current={page === item ? "page" : undefined}
+                  onClick={() => {
+                    setPage(item);
+                    close();
+                  }}
+                >
+                  <span className="nav-label">
+                    {NAV_ICONS[item] && <NavIcon path={NAV_ICONS[item]} />}
+                    {item}
+                  </span>
+                  {item === "Threats" && threatCount > 0 && (
+                    <span className="nav-badge">{threatCount}</span>
+                  )}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
         <div className="sidebar-bottom">
@@ -367,14 +373,21 @@ function Stat({ label, value, note }: { label: string; value: string; note: stri
   );
 }
 
-function siteHealth(site: SiteRow, findings: FindingRow[]) {
-  if (site.status === "pending") return { label: "Awaiting verification", tone: "medium" };
-  if (site.status === "paused") return { label: "Paused", tone: "low" };
+function healthKey(site: SiteRow, findings: FindingRow[]) {
+  if (site.status === "pending") return "pending";
+  if (site.status === "paused") return "paused";
   const open = findings.filter((f) => f.site_id === site.id && f.status === "open");
-  if (open.some((f) => f.severity === "critical" || f.severity === "high")) {
-    return { label: "At risk", tone: "critical" };
-  }
-  if (open.length) return { label: "Needs attention", tone: "high" };
+  if (open.some((f) => f.severity === "critical" || f.severity === "high")) return "at-risk";
+  if (open.length) return "attention";
+  return "healthy";
+}
+
+function siteHealth(site: SiteRow, findings: FindingRow[]) {
+  const key = healthKey(site, findings);
+  if (key === "pending") return { label: "Awaiting verification", tone: "medium" };
+  if (key === "paused") return { label: "Paused", tone: "low" };
+  if (key === "at-risk") return { label: "At risk", tone: "critical" };
+  if (key === "attention") return { label: "Needs attention", tone: "high" };
   return { label: "Healthy", tone: "healthy" };
 }
 
@@ -493,12 +506,14 @@ function Overview({
   sites,
   findings,
   scanCount,
+  onOpenFinding,
 }: {
   go: (p: Page) => void;
   openModal: () => void;
   sites: SiteRow[];
   findings: FindingRow[];
   scanCount: number;
+  onOpenFinding: (id: string) => void;
 }) {
   const openFindings = findings.filter((f) => f.status === "open");
   const critical = openFindings.filter((f) => f.severity === "critical").length;
@@ -593,10 +608,21 @@ function Overview({
         </div>
         {openFindings.length > 0 && (
           <>
-            <div className="attention-caption">Highest-priority findings</div>
+            <div className="section-head">
+              <span className="attention-caption">Highest-priority findings</span>
+              <button type="button" onClick={() => go("Threats")}>
+                View all threats →
+              </button>
+            </div>
             <div className="attention-grid">
             {priorityFindings.slice(0, 3).map((f) => (
-              <div className="attention" key={f.id}>
+              <button
+                type="button"
+                className="attention"
+                key={f.id}
+                onClick={() => onOpenFinding(f.id)}
+                title={`Open ${f.title}`}
+              >
                 <div>
                   <span className="severity">
                     <Dot tone={f.severity} />
@@ -607,7 +633,7 @@ function Overview({
                     {siteLabel(sites, f)}
                   </code>
                 </div>
-              </div>
+              </button>
             ))}
             </div>
           </>
@@ -674,7 +700,13 @@ function Overview({
             </span>
           </div>
           {priorityFindings.slice(0, 3).map((f) => (
-            <div className="feed-row" key={f.id}>
+            <button
+              type="button"
+              className="feed-row"
+              key={f.id}
+              onClick={() => onOpenFinding(f.id)}
+              title={`Open ${f.title}`}
+            >
               <span>
                 <Dot tone={f.severity} />
                 {f.severity}
@@ -685,7 +717,7 @@ function Overview({
                   {siteLabel(sites, f)} · {relTime(f.last_seen_at)}
                 </code>
               </div>
-            </div>
+            </button>
           ))}
           {priorityFindings.length === 0 && <p className="feed-empty">No open threats. New findings will appear here.</p>}
         </div>
@@ -747,21 +779,25 @@ function Sites({
   const [busy, setBusy] = useState<string | null>(null);
   const filtered = sites.filter((site) => {
     const matchesSearch = site.domain.includes(search.trim().toLowerCase());
-    const openFindings = findings.filter((finding) => finding.site_id === site.id && finding.status === "open");
-    const healthKey =
-      site.status === "pending"
-        ? "pending"
-        : site.status === "paused"
-          ? "paused"
-          : openFindings.some((finding) => finding.severity === "critical" || finding.severity === "high")
-            ? "at-risk"
-            : openFindings.length > 0
-              ? "attention"
-              : "healthy";
-    const matchesHealth = healthFilter === "all" || healthKey === healthFilter;
+    const matchesHealth = healthFilter === "all" || healthKey(site, findings) === healthFilter;
     const matchesAutonomy = autonomyFilter === "all" || site.autonomy === autonomyFilter;
     return matchesSearch && matchesHealth && matchesAutonomy;
   });
+
+  const healthCounts = sites.reduce<Record<string, number>>((totals, site) => {
+    const key = healthKey(site, findings);
+    totals[key] = (totals[key] ?? 0) + 1;
+    return totals;
+  }, {});
+
+  const healthFilters = [
+    { key: "all", label: "All sites" },
+    { key: "healthy", label: "Healthy" },
+    { key: "attention", label: "Needs attention" },
+    { key: "at-risk", label: "At risk" },
+    { key: "pending", label: "Awaiting verification" },
+    { key: "paused", label: "Paused" },
+  ];
 
   const act = async (id: string, fn: () => Promise<unknown>) => {
     setBusy(id);
@@ -807,6 +843,35 @@ function Sites({
         </div>
       ) : (
         <>
+          <div className="summary-strip" aria-label="Site health summary">
+            {healthFilters.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                className={`summary-chip ${healthFilter === item.key ? "active" : ""}`}
+                aria-pressed={healthFilter === item.key}
+                onClick={() => setHealthFilter(item.key)}
+              >
+                {item.key !== "all" && (
+                  <Dot
+                    tone={
+                      item.key === "at-risk"
+                        ? "critical"
+                        : item.key === "attention"
+                          ? "high"
+                          : item.key === "pending"
+                            ? "medium"
+                            : item.key === "paused"
+                              ? "low"
+                              : "healthy"
+                    }
+                  />
+                )}
+                {item.label}
+                <strong>{item.key === "all" ? sites.length : (healthCounts[item.key] ?? 0)}</strong>
+              </button>
+            ))}
+          </div>
           <div className="filters">
             <input
               value={search}
@@ -893,7 +958,7 @@ function Sites({
             </div>
           </div>
           <section className="card activity">
-            <h3>Latest scans</h3>
+            <h3>Monitoring schedule</h3>
             {sites.map((s) => (
               <div key={s.id}>
                 <code>{relTime(s.last_scan_at)}</code>
@@ -980,16 +1045,49 @@ function Threats({
       <PageTitle
         title="Threats"
         subtitle="Know what matters. Understand what to do next."
-        action={<Button onClick={exportCsv} download>Export CSV</Button>}
+        action={
+          <div className="title-actions">
+            <Button onClick={exportCsv} download>
+              Export CSV
+            </Button>
+            {counts.Open > 0 && (
+              <Button
+                dark
+                onClick={() => {
+                  const worst = findings
+                    .filter((f) => f.status === "open")
+                    .sort(
+                      (a, b) =>
+                        SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity),
+                    )[0];
+                  if (worst) onOpen(worst);
+                }}
+              >
+                Highest priority
+              </Button>
+            )}
+          </div>
+        }
       />
-      <div className="tabs">
-        {(["All threats", "Open", "Acknowledged", "Resolved", "Ignored"] as const).map((label) => (
+      <div className="tabs" role="tablist" aria-label="Threat status">
+        {(
+          [
+            ["All threats", "All"],
+            ["Open", "Open"],
+            ["Acknowledged", "Acknowledged"],
+            ["Resolved", "Resolved"],
+            ["Ignored", "Ignored"],
+          ] as const
+        ).map(([key, label]) => (
           <button
-            className={tab === label ? "selected" : ""}
-            key={label}
-            onClick={() => setTab(label)}
+            type="button"
+            role="tab"
+            aria-selected={tab === key}
+            className={tab === key ? "selected" : ""}
+            key={key}
+            onClick={() => setTab(key)}
           >
-            {label} <small>{counts[label]}</small>
+            {label} <small>{counts[key]}</small>
           </button>
         ))}
       </div>
@@ -1049,32 +1147,10 @@ function Threats({
           <span>Live from your latest scans</span>
         </div>
       </div>
-      {counts.Open > 0 && (
-        <div className="card priority">
-          <div>
-            <h2>Start with the highest severity.</h2>
-            <p>
-              Each finding includes a plain-English explanation you can generate with your own AI
-              key, plus the exact evidence Bulwark saw.
-            </p>
-            <small>ORDERED BY SEVERITY · THEN MOST RECENT</small>
-          </div>
-          <Button
-            dark
-            onClick={() => {
-              const worst = findings
-                .filter((f) => f.status === "open")
-                .sort(
-                  (a, b) =>
-                    SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity),
-                )[0];
-              if (worst) onOpen(worst);
-            }}
-          >
-            Review highest-priority threat →
-          </Button>
-        </div>
-      )}
+      <p className="page-note">
+        Ordered by severity, then most recent. Each finding includes the evidence Bulwark saw and
+        an optional plain-English explanation generated with your own AI key.
+      </p>
     </>
   );
 }
@@ -1411,9 +1487,11 @@ function ApiKeys({
                       <span className="muted">Last used {relTime(k.lastUsedAt)}</span>
                     </div>
                   </div>
-                  <Button onClick={() => remove(k.id)}>
-                    {busy === k.id ? "Removing…" : "Remove"}
-                  </Button>
+                  <div className="key-actions">
+                    <Button onClick={() => remove(k.id)}>
+                      {busy === k.id ? "Removing…" : "Remove"}
+                    </Button>
+                  </div>
                 </div>
               ))
             )}
@@ -1439,20 +1517,21 @@ function ApiKeys({
           </section>
         </div>
         <div>
-          <section className="card spend">
-            <h3>Spend</h3>
-            <small>BILLED BY YOUR PROVIDER</small>
-            <strong>$0</strong>
-            <span>of markup. You pay your provider directly.</span>
+          <section className="card side-setting">
+            <h3>Billing</h3>
             <div>
-              <span>Keys connected</span>
-              <code>{keys.length}</code>
+              <span>Token markup</span>
+              <code>$0</code>
+            </div>
+            <div>
+              <span>Charged by</span>
+              <code>Your provider</code>
             </div>
             <div>
               <span>Explanations</span>
-              <code>cached per finding</code>
+              <code>Cached</code>
             </div>
-            <small>Regenerating a cached explanation costs nothing.</small>
+            <p>Regenerating a cached explanation costs nothing.</p>
           </section>
           <section className="card activity api-activity">
             <h3>Provider status</h3>
@@ -1748,7 +1827,14 @@ function Scans({
       <PageTitle
         title="Scans"
         subtitle="What each external posture scan completed, observed, or could not check."
-        action={<Button onClick={exportCsv} download>Export CSV</Button>}
+        action={
+          <div className="title-actions">
+            <Button onClick={onChanged}>↻ Refresh</Button>
+            <Button onClick={exportCsv} download>
+              Export CSV
+            </Button>
+          </div>
+        }
       />
       <div className="filters">
         <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} aria-label="Site">
@@ -1768,9 +1854,6 @@ function Scans({
         <span>
           {filtered.length} scan{filtered.length === 1 ? "" : "s"} shown
         </span>
-        <button className="link-button refresh-button" onClick={onChanged}>
-          ↻ Refresh
-        </button>
       </div>
       <div className="card data-table scans-table">
         <div className="scan-row table-head">
@@ -2261,9 +2344,9 @@ function ConnectionsSection({
   } as React.CSSProperties;
 
   const modalCardStyle = {
-    background: "#1a1a1a",
-    border: "1px solid #333",
-    borderRadius: "8px",
+    background: "var(--surface)",
+    border: "1px solid var(--border-strong)",
+    borderRadius: "10px",
     padding: "24px",
     width: "min(500px, 90vw)",
     maxHeight: "90vh",
@@ -2280,20 +2363,24 @@ function ConnectionsSection({
             repositories or projects. Signing in with GitHub is identity only; repository
             access comes from the read-only token you add here.
           </p>
-          <button
-            className="button dark"
-            onClick={() => setAddType("github")}
-            disabled={addType !== null || busy !== null}
-          >
-            + Connect GitHub
-          </button>
-          <button
-            className="button dark"
-            onClick={() => setAddType("supabase")}
-            disabled={addType !== null || busy !== null}
-          >
-            + Connect Supabase
-          </button>
+          <div className="title-actions">
+            <button
+              type="button"
+              className="button dark"
+              onClick={() => setAddType("github")}
+              disabled={addType !== null || busy !== null}
+            >
+              + Connect GitHub
+            </button>
+            <button
+              type="button"
+              className="button"
+              onClick={() => setAddType("supabase")}
+              disabled={addType !== null || busy !== null}
+            >
+              + Connect Supabase
+            </button>
+          </div>
         </div>
         {(error || localError) && <p className="modal-error">{localError ?? error}</p>}
         {notice && (
@@ -2802,6 +2889,7 @@ function Integrations({
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [slackError, setSlackError] = useState<string | null>(null);
+  const [tab, setTab] = useState<"alerts" | "platforms" | "findings">("alerts");
 
   useEffect(() => {
     if (!settings) return;
@@ -2850,13 +2938,30 @@ function Integrations({
     <>
       <PageTitle
         title="Integrations"
-        subtitle="Send the signal where you already work."
-        action={
-          <Button dark onClick={() => save("save")} disabled={busy !== null}>
-            {busy === "save" ? "Saving…" : "Save changes"}
-          </Button>
-        }
+        subtitle="Send alerts to your team, and connect the platforms Bulwark scans."
       />
+      <div className="tabs" role="tablist" aria-label="Integration sections">
+        {(
+          [
+            { id: "alerts", label: "Slack alerts", count: undefined },
+            { id: "platforms", label: "Platform connections", count: connections.length },
+            { id: "findings", label: "Platform findings", count: platformFindings.length },
+          ] as const
+        ).map((item) => (
+          <button
+            type="button"
+            role="tab"
+            key={item.id}
+            aria-selected={tab === item.id}
+            className={tab === item.id ? "selected" : ""}
+            onClick={() => setTab(item.id)}
+          >
+            {item.label}
+            {item.count !== undefined && <small>{item.count}</small>}
+          </button>
+        ))}
+      </div>
+      {tab === "alerts" && (
       <div className="api-grid">
         <div>
           <section className="card setting-list">
@@ -2919,8 +3024,13 @@ function Integrations({
                 ))}
               </select>
             </div>
-            <div className="modal-actions">
-              <Button onClick={test} disabled={!configured || busy !== null}>{busy === "test" ? "Sending…" : "Send test message"}</Button>
+            <div className="setting-actions">
+              <Button dark onClick={() => save("save")} disabled={busy !== null}>
+                {busy === "save" ? "Saving…" : "Save changes"}
+              </Button>
+              <Button onClick={test} disabled={!configured || busy !== null}>
+                {busy === "test" ? "Sending…" : "Send test message"}
+              </Button>
             </div>
             {slackError && <p className="modal-error" role="alert">{slackError}</p>}
             {message && <p className="save-note" role="status" aria-live="polite">{message}</p>}
@@ -2953,7 +3063,9 @@ _Open Bulwark for the fix_`}</pre>
           </section>
         </div>
       </div>
+      )}
 
+      {tab === "platforms" && (
       <ConnectionsSection
         connections={connections}
         loading={loading}
@@ -2963,12 +3075,15 @@ _Open Bulwark for the fix_`}</pre>
         onScan={onScanConnection}
         onSetWebhookSecret={(id, secret) => onSetWebhookSecret(id, secret)}
       />
+      )}
 
+      {tab === "findings" && (
       <PlatformFindingsSection
         findings={platformFindings}
         loading={platformFindingsLoading}
         onSetStatus={onSetPlatformFindingStatus}
       />
+      )}
     </>
   );
 }
@@ -3475,6 +3590,10 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
       sites={sites}
       findings={findings}
       scanCount={scanCount}
+      onOpenFinding={(id) => {
+        setPage("Threats");
+        setActiveFindingId(id);
+      }}
     />
   ) : page === "Sites" ? (
     <Sites
