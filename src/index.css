@@ -857,6 +857,12 @@ main {
   animation: pulse-green 2.4s ease-in-out infinite;
 }
 
+/* Scan rows read as a record, not a live signal: keep the colour, drop the
+   pulse. */
+.scan-state .dot {
+  animation: none;
+}
+
 @keyframes pulse-green {
   0%,
   100% {
