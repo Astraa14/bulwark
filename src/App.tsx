@@ -612,7 +612,7 @@ function Overview({
             </h2>
             <p className="briefing-summary">
               {openFindings.length > 0
-                ? `${critical} critical · ${high} high · ${medium} medium · ${low} low${info > 0 ? ` · ${info} info` : ""} across your monitored sites. Start with the highest severity.`
+                ? `${critical} critical · ${high} high · ${medium} medium · ${low} low${info > 0 ? ` · ${info} info` : ""} across your monitored sites.`
                 : sites.length === 0
                   ? "Connect your first site to begin continuous security checks."
                   : activeSites === 0 && pausedSites > 0
