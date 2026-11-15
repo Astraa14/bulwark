@@ -5,6 +5,15 @@ function apiBase() {
   return url ? url.replace(/\/$/, "") : "";
 }
 
+/** Absolute URL for a server route, usable in copyable docs and webhook setup. */
+export function apiUrl(path: string) {
+  const base = apiBase();
+  if (base) return `${base}${path}`;
+  // Same-origin deployments still need an absolute URL when the value is
+  // pasted into a third-party service such as GitHub's webhook form.
+  return `${window.location.origin}${path}`;
+}
+
 async function authToken() {
   if (!supabase) throw new Error("Supabase is not configured.");
   const { data } = await supabase.auth.getSession();

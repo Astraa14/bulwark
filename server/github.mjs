@@ -1,168 +1,26 @@
-import { decrypt, maskSecret } from "./crypto.mjs";
+import {
+  CONFIG_CHECKS,
+  DEPENDENCY_FILES,
+  GITHUB_API,
+  GITHUB_FETCH_CONCURRENCY,
+  GITHUB_REQUEST_TIMEOUT_MS,
+  MAX_FILES_SCANNED,
+  MAX_FILE_BYTES,
+  MAX_FINDINGS,
+  MAX_SECRET_MATCHES_PER_PATTERN_PER_FILE,
+  OSV_API,
+  SECRET_PATTERNS,
+  SENSITIVE_FILENAMES,
+  TEXT_EXTENSIONS,
+} from "./github-config.mjs";
 
-const GITHUB_API = "https://api.github.com";
-const MAX_FILE_BYTES = 500_000;
-// Scan the complete repository tree, not an arbitrary 40-file cap.
-// Report files scanned vs total so coverage is honest.
-const MAX_FILES_SCANNED = 500;
+const OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
+const EXACT_VERSION_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+const SEVERITY_RANK = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
 
-// Known-vulnerable dependency patterns (lockfile-based).
-// This is a small, high-signal set. A production service would subscribe
-// to a vulnerability advisory feed (OSV, GitHub Advisories, etc.).
-const VULN_PATTERNS = [
-  {
-    key: "dep_vuln_lodash",
-    name: "lodash",
-    severity: "high",
-    versions: ["<4.17.21"],
-    detail: "lodash versions before 4.17.21 have prototype pollution vulnerabilities.",
-  },
-  {
-    key: "dep_vuln_minimist",
-    name: "minimist",
-    severity: "high",
-    versions: ["<1.2.6"],
-    detail: "minimist versions before 1.2.6 have prototype pollution vulnerabilities.",
-  },
-  {
-    key: "dep_vuln_yargs",
-    name: "yargs",
-    severity: "high",
-    versions: ["<16.11.0"],
-    detail: "yargs versions before 16.11.0 have prototype pollution vulnerabilities.",
-  },
-  {
-    key: "dep_vuln_handlebars",
-    name: "handlebars",
-    severity: "critical",
-    versions: ["<4.7.7"],
-    detail: "handlebars versions before 4.7.7 have remote code execution vulnerabilities.",
-  },
-  {
-    key: "dep_vuln_minimatch",
-    name: "minimatch",
-    severity: "high",
-    versions: ["<3.0.2"],
-    detail: "minimatch versions before 3.0.2 have regular expression denial of service vulnerabilities.",
-  },
-  {
-    key: "dep_vuln_trim",
-    name: "trim",
-    severity: "high",
-    versions: ["<1.0.1"],
-    detail: "trim versions before 1.0.1 have regular expression denial of service vulnerabilities.",
-  },
-];
-
-// Deployment/config files that commonly contain dangerous settings.
-// Each check has a `path` (file or directory prefix), a `test` function
-// that returns true when a problem is found, and metadata for the finding.
-const CONFIG_CHECKS = [
-  {
-    path: "Dockerfile",
-    check: "dockerfile_root_user",
-    title: "Dockerfile runs as root",
-    severity: "medium",
-    test: (content) => !/^\s*USER\s+/m.test(content),
-    detail: "The Dockerfile does not set a non-root USER. Containers running as root have more privileges than necessary if compromised.",
-  },
-  {
-    path: "docker-compose.yml",
-    check: "compose_root_user",
-    title: "Docker Compose service runs as root",
-    severity: "medium",
-    test: (content) => !/^\s*user:\s*[^0\s]/m.test(content),
-    detail: "A Docker Compose service does not set a non-root user.",
-  },
-  {
-    path: ".github/workflows/",
-    check: "workflow_pull_request_target",
-    title: "GitHub Action uses pull_request_target with untrusted input",
-    severity: "high",
-    test: (content) => /pull_request_target/.test(content),
-    detail: "A workflow uses `pull_request_target`, which runs with repository write permissions. Untrusted input from the fork can lead to repository takeover.",
-  },
-];
-
-// Same secret patterns as the external scanner, applied to repo file contents.
-const SECRET_PATTERNS = [
-  {
-    key: "secret_openai",
-    name: "OpenAI API key",
-    severity: "critical",
-    re: /\bsk-(?:proj-|svcacct-|live-)?[A-Za-z0-9_-]{32,}\b/g,
-  },
-  {
-    key: "secret_anthropic",
-    name: "Anthropic API key",
-    severity: "critical",
-    re: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g,
-  },
-  {
-    key: "secret_google",
-    name: "Google API key",
-    severity: "high",
-    re: /\bAIza[0-9A-Za-z_-]{35}\b/g,
-  },
-  {
-    key: "secret_github",
-    name: "GitHub token",
-    severity: "critical",
-    re: /\bgh[pousr]_[A-Za-z0-9]{30,}\b/g,
-  },
-  {
-    key: "secret_aws",
-    name: "AWS access key id",
-    severity: "critical",
-    re: /\bAKIA[0-9A-Z]{16}\b/g,
-  },
-  {
-    key: "secret_stripe",
-    name: "Stripe live secret key",
-    severity: "critical",
-    re: /\bsk_live_[0-9A-Za-z]{20,}\b/g,
-  },
-  {
-    key: "secret_slack",
-    name: "Slack token",
-    severity: "critical",
-    re: /\bxox[baprs]-[0-9A-Za-z-]{12,}\b/g,
-  },
-  {
-    key: "secret_private_key",
-    name: "Private key block",
-    severity: "critical",
-    re: /-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/g,
-  },
-  {
-    key: "secret_generic_password",
-    name: "Possible hardcoded password",
-    severity: "medium",
-    re: /(?:password|passwd|pwd)\s*[:=]\s*["'][^"'\s]{8,}["']/gi,
-  },
-  {
-    key: "secret_generic_api_key",
-    name: "Possible hardcoded API key",
-    severity: "high",
-    re: /(?:api[_-]?key|apikey)\s*[:=]\s*["'][A-Za-z0-9_-]{20,}["']/gi,
-  },
-];
-
-const SENSITIVE_FILENAMES = new Set([
-  ".env", ".env.local", ".env.development", ".env.production", ".env.example",
-  ".env.sample", "config.json", "config.yaml", "config.yml", "settings.json",
-  "secrets.json", "credentials.json", "service-account.json", "id_rsa", "id_ecdsa",
-  "id_ed25519", "id_dsa", ".netrc", ".pgpass", ".my.cnf",
-]);
-
-const DEPENDENCY_FILES = new Set([
-  "package.json", "package-lock.json", "requirements.txt", "Pipfile", "Pipfile.lock",
-  "go.mod", "go.sum", "Cargo.toml", "Cargo.lock", "Gemfile", "Gemfile.lock",
-  "composer.json", "composer.lock", "pom.xml", "build.gradle", "build.gradle.kts",
-]);
-
-function finding(check_key, title, severity, detail, extra = {}) {
-  return { check_key, title, severity, detail, ...extra };
+function finding(checkKey, title, severity, detail, extra = {}) {
+  return { check_key: checkKey, title, severity, detail, ...extra };
 }
 
 function redactSecret(value) {
@@ -171,23 +29,227 @@ function redactSecret(value) {
   return `${s.slice(0, 4)}…${s.slice(-4)}`;
 }
 
-function scanTextForSecrets(text, path) {
+export function assertRepoCoordinates(owner, repo) {
+  if (!OWNER_RE.test(String(owner ?? ""))) throw new Error("Invalid GitHub repository owner.");
+  if (!REPO_RE.test(String(repo ?? ""))) throw new Error("Invalid GitHub repository name.");
+}
+
+function isTextFile(filePath) {
+  const lower = String(filePath ?? "").toLowerCase();
+  if (SENSITIVE_FILENAMES.has(lower.split("/").pop())) return true;
+  const base = lower.slice(lower.lastIndexOf("/") + 1);
+  if (base === "dockerfile" || base === "makefile" || base === "gemfile") return true;
+  const dot = base.lastIndexOf(".");
+  if (dot === -1) return false;
+  return TEXT_EXTENSIONS.has(base.slice(dot));
+}
+
+async function githubFetch(token, path, { fetchImpl = fetch, timeout = GITHUB_REQUEST_TIMEOUT_MS } = {}) {
+  const res = await fetchImpl(`${GITHUB_API}${path}`, {
+    headers: {
+      authorization: `Bearer ${token}`,
+      "user-agent": "BulwarkBot/0.7",
+      accept: "application/vnd.github+json",
+      "x-github-api-version": "2022-11-28",
+    },
+    signal: AbortSignal.timeout(timeout),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    const err = new Error(`GitHub API ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+
+export async function listGitHubRepos(token, { fetchImpl = fetch, maxPages = 10 } = {}) {
+  const repos = [];
+  for (let page = 1; page <= maxPages; page += 1) {
+    const batch = await githubFetch(
+      token,
+      `/user/repos?per_page=100&page=${page}&sort=updated&affiliation=owner,collaborator,organization_member`,
+      { fetchImpl },
+    );
+    const items = Array.isArray(batch) ? batch : [];
+    repos.push(...items);
+    if (items.length < 100) break;
+  }
+  return repos.map((repo) => ({
+    full_name: repo.full_name,
+    owner: repo.owner?.login,
+    name: repo.name,
+    private: repo.private === true,
+    default_branch: repo.default_branch ?? null,
+  }));
+}
+
+/**
+ * Verify that the token can actually read the repository named in a webhook.
+ * 404/403 means "not authorized"; network or GitHub outage errors are rethrown
+ * so the delivery can be retried rather than silently rejected.
+ */
+export async function checkRepoAccess(token, owner, repo, { fetchImpl = fetch, timeout = 5000 } = {}) {
+  assertRepoCoordinates(owner, repo);
+  try {
+    await githubFetch(token, `/repos/${owner}/${repo}`, { fetchImpl, timeout });
+    return true;
+  } catch (err) {
+    if (err.status === 403 || err.status === 404) return false;
+    throw err;
+  }
+}
+
+async function resolveTarget(token, owner, repo, { fetchImpl, sha = null, ref = null }) {
+  if (sha) {
+    if (!/^[0-9a-f]{7,64}$/i.test(String(sha))) throw new Error("Invalid commit SHA.");
+    const commit = await githubFetch(token, `/repos/${owner}/${repo}/git/commits/${sha}`, {
+      fetchImpl,
+    });
+    return {
+      commitSha: commit.sha,
+      treeSha: commit.tree?.sha,
+      ref: ref ?? null,
+    };
+  }
+
+  const info = await githubFetch(token, `/repos/${owner}/${repo}`, { fetchImpl });
+  let branch = ref || info.default_branch;
+  if (String(branch).startsWith("refs/heads/")) branch = String(branch).slice("refs/heads/".length);
+  if (!branch) throw new Error("Repository has no default branch.");
+
+  const branchInfo = await githubFetch(
+    token,
+    `/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}`,
+    { fetchImpl },
+  );
+  return {
+    commitSha: branchInfo.commit?.sha,
+    treeSha: branchInfo.commit?.commit?.tree?.sha,
+    ref: `refs/heads/${branch}`,
+  };
+}
+
+function blobUrl(owner, repo, commitSha, filePath, line = null) {
+  const encodedPath = String(filePath)
+    .split("/")
+    .map(encodeURIComponent)
+    .join("/");
+  const base = `https://github.com/${owner}/${repo}/blob/${commitSha}/${encodedPath}`;
+  return line ? `${base}#L${line}` : base;
+}
+
+function scanTextForSecrets(text, path, { owner, repo, commitSha }) {
   const out = [];
   if (!text) return out;
+
   for (const pattern of SECRET_PATTERNS) {
-    pattern.re.lastIndex = 0;
-    const match = pattern.re.exec(text);
-    if (!match) continue;
+    const flags = pattern.re.flags.includes("g") ? pattern.re.flags : `${pattern.re.flags}g`;
+    const re = new RegExp(pattern.re.source, flags);
+    let occurrence = 0;
+
+    for (const match of text.matchAll(re)) {
+      if (occurrence >= MAX_SECRET_MATCHES_PER_PATTERN_PER_FILE) break;
+      if (match.index === undefined) continue;
+      occurrence += 1;
+
+      const line = text.slice(0, match.index).split("\n").length;
+      const specific = !pattern.key.startsWith("secret_generic_");
+      out.push(
+        finding(
+          pattern.key,
+          `${pattern.name} in ${path}`,
+          pattern.severity,
+          "A credential-like value is committed to the repository. Anyone with read access can use it. Rotate it, remove it from the file, and purge it from git history if it was ever pushed.",
+          {
+            url: blobUrl(owner, repo, commitSha, path, line),
+            evidence: `${redactSecret(match[0])} · ${owner}/${repo}/${path}:${line}`,
+            affected_resource: `${path}:${line}:${occurrence}`,
+            confidence: specific ? "high" : "medium",
+            what_it_does_not_prove:
+              "A pattern match does not prove the credential is live, privileged, or still valid.",
+            remediation:
+              "Rotate the credential, remove it from the repository, and purge it from git history if it was pushed.",
+          },
+        ),
+      );
+    }
+  }
+  return out;
+}
+
+export function packagesFromPackageLock(path, content) {
+  let json;
+  try {
+    json = JSON.parse(content);
+  } catch {
+    return [];
+  }
+
+  const out = [];
+  const seen = new Set();
+  const add = (name, version) => {
+    if (!name || !version) return;
+    const normalized = String(version).trim().replace(/^v/, "");
+    if (!EXACT_VERSION_RE.test(normalized)) return;
+    const key = `${name}@${normalized}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ name, version: normalized, ecosystem: "npm", lockPath: path });
+  };
+
+  if (json.packages && typeof json.packages === "object") {
+    for (const [packagePath, info] of Object.entries(json.packages)) {
+      if (!packagePath || !info || info.link) continue;
+      const marker = "node_modules/";
+      const index = packagePath.lastIndexOf(marker);
+      if (index < 0) continue;
+      const name = packagePath.slice(index + marker.length);
+      if (!name || name.includes(marker)) continue;
+      add(name, info.version);
+    }
+  } else if (json.dependencies && typeof json.dependencies === "object") {
+    const walk = (dependencies) => {
+      for (const [name, info] of Object.entries(dependencies ?? {})) {
+        if (!info || typeof info !== "object") continue;
+        add(name, info.version);
+        if (info.dependencies) walk(info.dependencies);
+      }
+    };
+    walk(json.dependencies);
+  }
+
+  return out;
+}
+
+function unpinnedFindings(path, content, { owner, repo, commitSha }) {
+  let json;
+  try {
+    json = JSON.parse(content);
+  } catch {
+    return [];
+  }
+
+  const out = [];
+  const deps = { ...(json.dependencies ?? {}), ...(json.devDependencies ?? {}) };
+  for (const [name, version] of Object.entries(deps)) {
+    const value = String(version ?? "").trim();
+    if (!["*", "latest", ""].includes(value)) continue;
     out.push(
       finding(
-        pattern.key,
-        `${pattern.name} in ${path}`,
-        pattern.severity,
-        "A secret is committed to the repository. Anyone with read access can use it. Rotate it and remove it from git history.",
+        "dep_unpinned",
+        `Unpinned dependency: ${name}`,
+        "medium",
+        `Dependency ${name} uses an unpinned version (${value || "empty"}), which can introduce breaking or malicious updates.`,
         {
-          url: `https://github.com/${encodeURIComponent(path)}`,
-          evidence: `${redactSecret(match[0])} · found in ${path}`,
-          affected_resource: path,
+          url: blobUrl(owner, repo, commitSha, path),
+          evidence: `${name}@${value || "(empty)"}`,
+          affected_resource: `${path}:${name}`,
+          confidence: "high",
+          what_it_does_not_prove:
+            "An unpinned range is a supply-chain risk, not proof that a malicious version is installed today.",
+          remediation: `Pin ${name} to an exact version and commit the lockfile.`,
         },
       ),
     );
@@ -195,162 +257,8 @@ function scanTextForSecrets(text, path) {
   return out;
 }
 
-function isTextFile(name) {
-  const textExts = new Set([
-    ".js", ".ts", ".jsx", ".tsx", ".py", ".go", ".rs", ".java", ".rb", ".php",
-    ".cs", ".cpp", ".c", ".h", ".hpp", ".swift", ".kt", ".scala", ".clj",
-    ".ex", ".exs", ".erl", ".hs", ".ml", ".fs", ".vb", ".fsproj", ".csproj",
-    ".json", ".yaml", ".yml", ".toml", ".xml", ".ini", ".cfg", ".conf",
-    ".md", ".txt", ".env", ".gitignore", ".dockerignore", ".sh", ".bash",
-    ".zsh", ".fish", ".ps1", ".bat", ".cmd", ".dockerfile", ".gitmodules",
-    ".github/workflows", ".circleci", ".gitlab-ci",
-  ]);
-  const lower = name.toLowerCase();
-  if (SENSITIVE_FILENAMES.has(lower)) return true;
-  // Files without extensions that are still text (Dockerfile, Makefile, etc.)
-  if (lower === "dockerfile" || lower === "makefile" || lower === "gemfile") return true;
-  const dot = lower.lastIndexOf(".");
-  if (dot === -1) return false;
-  return textExts.has(lower.slice(dot)) || lower.endsWith("dockerfile") || lower.endsWith("makefile");
-}
-
-async function githubFetch(token, path, opts = {}) {
-  const { timeout = 15000 } = opts;
-  const url = `${GITHUB_API}${path}`;
-  const res = await fetch(url, {
-    headers: {
-      authorization: `Bearer ${token}`,
-      "user-agent": "BulwarkBot/0.5",
-      accept: "application/vnd.github+json",
-    },
-    signal: AbortSignal.timeout(timeout),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`GitHub API ${res.status}: ${body.slice(0, 200)}`);
-  }
-  return res.json();
-}
-
-async function getRepoContents(token, owner, repo, path = "") {
-  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-  const data = await githubFetch(token, `/repos/${owner}/${repo}/contents/${encodedPath}`);
-  if (Array.isArray(data)) return data;
-  return [data];
-}
-
-async function getFileContent(token, owner, repo, path) {
-  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-  const data = await githubFetch(token, `/repos/${owner}/${repo}/contents/${encodedPath}`);
-  if (data.encoding === "base64" && data.content) {
-    return Buffer.from(data.content, "base64").toString("utf8");
-  }
-  return null;
-}
-
-function parseSemver(version) {
-  const m = String(version).match(/^(\d+)\.(\d+)\.(\d+)/);
-  if (!m) return null;
-  return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
-}
-
-function versionLessThan(v, constraint) {
-  const parsed = parseSemver(v);
-  if (!parsed) return false;
-  const m = constraint.match(/^<(.+)$/);
-  if (!m) return false;
-  const target = parseSemver(m[1]);
-  if (!target) return false;
-  if (parsed.major !== target.major) return parsed.major < target.major;
-  if (parsed.minor !== target.minor) return parsed.minor < target.minor;
-  return parsed.patch < target.patch;
-}
-
-function scanLockfile(path, content, owner, repo) {
-  const findings = [];
-  const lower = path.toLowerCase();
-
-  if (lower === "package-lock.json") {
-    try {
-      const json = JSON.parse(content);
-      const packages = json.packages ?? {};
-      for (const [pkgPath, pkgInfo] of Object.entries(packages)) {
-        const name = pkgPath.replace(/^node_modules\//, "");
-        if (!name) continue;
-        const version = pkgInfo.version;
-        if (!version) continue;
-        for (const vuln of VULN_PATTERNS) {
-          if (name === vuln.name && versionLessThan(version, vuln.versions[0])) {
-            findings.push(
-              finding(
-                vuln.key,
-                `Vulnerable dependency: ${name}@${version}`,
-                vuln.severity,
-                `${vuln.detail} Locked version ${version} is affected. Upgrade to ${vuln.versions[0].replace(/^</, "")} or later.`,
-                {
-                  url: `https://github.com/${owner}/${repo}/blob/main/package-lock.json`,
-                  evidence: `${name}@${version} (locked in package-lock.json)`,
-                  affected_resource: `package-lock.json:${name}`,
-                },
-              ),
-            );
-          }
-        }
-      }
-    } catch {
-      // Invalid JSON — skip.
-    }
-  }
-
-  if (lower === "package.json") {
-    try {
-      const json = JSON.parse(content);
-      const deps = { ...json.dependencies, ...json.devDependencies };
-      for (const [name, version] of Object.entries(deps)) {
-        const v = String(version);
-        if (v.includes("*") || v === "latest") {
-          findings.push(
-            finding(
-              "dep_unpinned",
-              `Unpinned dependency: ${name}`,
-              "medium",
-              `Dependency ${name} uses an unpinned version (${v}), which can introduce breaking or malicious updates.`,
-              {
-                url: `https://github.com/${owner}/${repo}/blob/main/package.json`,
-                evidence: `${name}@${v}`,
-                affected_resource: `package.json:${name}`,
-              },
-            ),
-          );
-        }
-        for (const vuln of VULN_PATTERNS) {
-          if (name === vuln.name && versionLessThan(v.replace(/^[^0-9]*/, ""), vuln.versions[0])) {
-            findings.push(
-              finding(
-                vuln.key,
-                `Vulnerable dependency: ${name}@${v}`,
-                vuln.severity,
-                `${vuln.detail} Declared version ${v} is affected. Upgrade to ${vuln.versions[0].replace(/^</, "")} or later.`,
-                {
-                  url: `https://github.com/${owner}/${repo}/blob/main/package.json`,
-                  evidence: `${name}@${v}`,
-                  affected_resource: `package.json:${name}`,
-                },
-              ),
-            );
-          }
-        }
-      }
-    } catch {
-      // Invalid JSON — skip.
-    }
-  }
-
-  return findings;
-}
-
-function scanConfigFile(path, content, owner, repo) {
-  const findings = [];
+function scanConfigFile(path, content, { owner, repo, commitSha }) {
+  const out = [];
   const lower = path.toLowerCase();
 
   for (const check of CONFIG_CHECKS) {
@@ -358,131 +266,460 @@ function scanConfigFile(path, content, owner, repo) {
     const isDirectory = checkPath.endsWith("/");
     const matchesPath = isDirectory
       ? lower.startsWith(checkPath)
-      : lower === checkPath || lower.startsWith(checkPath + "/");
+      : lower === checkPath || lower.startsWith(`${checkPath}/`);
     if (!matchesPath) continue;
     try {
       if (check.test(content)) {
-        findings.push(
-          finding(
-            check.check,
-            check.title,
-            check.severity,
-            check.detail,
-            {
-              url: `https://github.com/${owner}/${repo}/blob/main/${path}`,
-              evidence: `Found in ${path}`,
-              affected_resource: path,
-            },
-          ),
+        out.push(
+          finding(check.check, check.title, check.severity, check.detail, {
+            url: blobUrl(owner, repo, commitSha, path),
+            evidence: `Found in ${path}`,
+            affected_resource: path,
+            confidence: "medium",
+            what_it_does_not_prove:
+              "This is a static configuration heuristic; it does not prove the container or workflow is exploitable.",
+            remediation: check.check.includes("docker")
+              ? "Add a non-root USER directive to the image or service."
+              : "Remove untrusted pull-request input from pull_request_target workflows.",
+          }),
         );
       }
     } catch {
       // Invalid test — skip.
     }
   }
+  return out;
+}
 
+function severityFromOsv(vuln) {
+  const raw =
+    vuln?.database_specific?.severity ??
+    vuln?.affected?.[0]?.database_specific?.severity ??
+    null;
+  const value = String(raw ?? "").toLowerCase();
+  if (value === "moderate") return "medium";
+  if (["low", "medium", "high", "critical"].includes(value)) return value;
+  return "medium";
+}
+
+function fixedVersions(vuln) {
+  const fixed = [];
+  for (const affected of vuln?.affected ?? []) {
+    for (const range of affected?.ranges ?? []) {
+      for (const event of range?.events ?? []) {
+        if (event?.fixed) fixed.push(String(event.fixed));
+      }
+    }
+  }
+  return [...new Set(fixed)];
+}
+
+function worstSeverity(values) {
+  return values.reduce(
+    (worst, value) =>
+      (SEVERITY_RANK[value] ?? 0) > (SEVERITY_RANK[worst] ?? 0) ? value : worst,
+    "info",
+  );
+}
+
+async function queryOsv(packages, { fetchImpl = fetch } = {}) {
+  if (!packages.length) return [];
+
+  const unique = [];
+  const seen = new Set();
+  for (const pkg of packages) {
+    const key = `${pkg.lockPath}:${pkg.name}@${pkg.version}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(pkg);
+  }
+
+  const out = [];
+  for (let offset = 0; offset < unique.length; offset += 500) {
+    const chunk = unique.slice(offset, offset + 500);
+    const res = await fetchImpl(OSV_API, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        queries: chunk.map((pkg) => ({
+          package: { name: pkg.name, ecosystem: "npm" },
+          version: pkg.version,
+        })),
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`OSV advisory lookup returned HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ""}`);
+    }
+
+    const json = await res.json();
+    const results = Array.isArray(json?.results) ? json.results : [];
+    for (let i = 0; i < chunk.length; i += 1) {
+      out.push({ pkg: chunk[i], vulns: results[i]?.vulns ?? [] });
+    }
+  }
+  return out;
+}
+
+function osvFindings(results, { owner, repo, commitSha }) {
+  const findings = [];
+  for (const { pkg, vulns } of results) {
+    if (!vulns.length) continue;
+
+    const ids = [...new Set(vulns.map((v) => v.id).filter(Boolean))];
+    const severity = worstSeverity(vulns.map(severityFromOsv));
+    const fixed = [...new Set(vulns.flatMap(fixedVersions))];
+    const summary = vulns.find((v) => v.summary)?.summary ?? "See the linked advisory.";
+    const firstId = ids[0] ?? null;
+
+    findings.push(
+      finding(
+        `dep_vuln_${pkg.name}`,
+        `Vulnerable dependency: ${pkg.name}@${pkg.version}`,
+        severity,
+        `${vulns.length} advisory${vulns.length === 1 ? "" : "ies"} affect the locked version. ${summary}`,
+        {
+          url: firstId
+            ? `https://osv.dev/vulnerability/${encodeURIComponent(firstId)}`
+            : `https://osv.dev/list?q=${encodeURIComponent(pkg.name)}`,
+          evidence: [
+            ids.length ? `OSV ${ids.slice(0, 4).join(", ")}${ids.length > 4 ? "…" : ""}` : "OSV advisory",
+            fixed.length ? `fixed in ${fixed.join(", ")}` : null,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+          affected_resource: `${pkg.lockPath}:${pkg.name}@${pkg.version}`,
+          confidence: "high",
+          what_it_does_not_prove:
+            "An advisory match does not prove the vulnerable code path is reachable in this application.",
+          remediation: fixed.length
+            ? `Upgrade ${pkg.name} to ${fixed[0]} or later and regenerate the lockfile.`
+            : `Upgrade ${pkg.name} to a version outside the affected range and regenerate the lockfile.`,
+          url_path: blobUrl(owner, repo, commitSha, pkg.lockPath),
+        },
+      ),
+    );
+  }
   return findings;
 }
 
-export async function scanGitHubRepo(token, owner, repo) {
-  const findings = [];
-  const errors = [];
-  const scannedFiles = new Set();
-  const queue = [""];
-  let filesScanned = 0;
-  let totalFiles = 0;
-  let scanTruncated = false;
-
-  while (queue.length > 0) {
-    const current = queue.shift();
-    try {
-      const items = await getRepoContents(token, owner, repo, current);
-      for (const item of items) {
-        totalFiles += 1;
-
-        if (filesScanned >= MAX_FILES_SCANNED) {
-          scanTruncated = true;
-          continue;
-        }
-
-        if (item.type === "dir") {
-          queue.push(item.path);
-        } else if (item.type === "file") {
-          if (scannedFiles.has(item.path)) continue;
-          scannedFiles.add(item.path);
-          filesScanned += 1;
-
-          const lower = item.path.toLowerCase();
-
-          // Skip binary and very large files.
-          if (item.size > MAX_FILE_BYTES) continue;
-          if (!isTextFile(item.path)) continue;
-
-          // Check sensitive filenames.
-          if (SENSITIVE_FILENAMES.has(lower)) {
-            findings.push(
-              finding(
-                "exposed_config_file",
-                `Sensitive file committed: ${item.path}`,
-                "high",
-                "A potentially sensitive configuration or credential file is committed to the repository. Move secrets out of git and into environment variables or a secrets manager.",
-                {
-                  url: `https://github.com/${owner}/${repo}/blob/main/${item.path}`,
-                  evidence: `${item.size} bytes`,
-                  affected_resource: item.path,
-                },
-              ),
-            );
-          }
-
-          // Fetch and scan file content.
-          try {
-            const content = await getFileContent(token, owner, repo, item.path);
-            if (content) {
-              const secretFindings = scanTextForSecrets(content, item.path);
-              findings.push(...secretFindings);
-
-              // Lockfile vulnerability detection.
-              const lockfileFindings = scanLockfile(item.path, content, owner, repo);
-              findings.push(...lockfileFindings);
-
-              // Deployment/config checks.
-              const configFindings = scanConfigFile(item.path, content, owner, repo);
-              findings.push(...configFindings);
-            }
-          } catch (err) {
-            errors.push(`${item.path}: ${err?.message ?? String(err)}`);
-          }
-        }
-      }
-    } catch (err) {
-      errors.push(`${current || "(root)"}: ${err?.message ?? String(err)}`);
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (true) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index], index);
     }
-  }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
-  // Check dependency files for unpinned dependencies (from root-level package.json).
+function checkOutcome(label, findings, errors) {
+  if (errors.length && findings.length) {
+    return {
+      key: label,
+      label,
+      status: "finding",
+      complete: false,
+      error: errors.slice(0, 3).join("; "),
+    };
+  }
+  if (errors.length) {
+    return { key: label, label, status: "error", complete: false, error: errors.slice(0, 3).join("; ") };
+  }
+  if (findings.length) return { key: label, label, status: "finding", complete: true };
+  return { key: label, label, status: "pass", complete: true };
+}
+
+function failedResult(error) {
+  const message = error?.message ?? String(error);
+  return {
+    findings: [],
+    status: "failed",
+    error: message,
+    checkResults: [
+      {
+        key: "repo_access",
+        label: "Repository access",
+        status: "error",
+        complete: false,
+        error: message,
+      },
+    ],
+    checksTotal: 1,
+    checksPassed: 0,
+    checksErrored: 1,
+    checksSkipped: 0,
+    coverage: {
+      filesScanned: 0,
+      filesRead: 0,
+      totalFiles: 0,
+      skippedByCap: 0,
+      skippedNonText: 0,
+      skippedLarge: 0,
+      skippedUnreadable: 0,
+      treeTruncated: false,
+      scanTruncated: false,
+      scannedPercent: 0,
+      notes: [`Repository could not be scanned: ${message}`],
+    },
+  };
+}
+
+/**
+ * Scan the repository at an exact commit when one is supplied (webhook), or
+ * the default branch head (manual scan). Coverage is explicit: capped,
+ * truncated, skipped, and unreadable files are all reported.
+ */
+export async function scanGitHubRepo(
+  token,
+  owner,
+  repo,
+  { fetchImpl = fetch, osvFetchImpl = fetch, sha = null, ref = null } = {},
+) {
+  assertRepoCoordinates(owner, repo);
+
+  let target;
   try {
-    const content = await getFileContent(token, owner, repo, "package.json");
-    if (content) {
-      const pkgFindings = scanLockfile("package.json", content, owner, repo);
-      findings.push(...pkgFindings);
-    }
-  } catch {
-    // File doesn't exist — skip.
+    target = await resolveTarget(token, owner, repo, { fetchImpl, sha, ref });
+  } catch (err) {
+    return failedResult(err);
   }
+
+  if (!target.commitSha || !target.treeSha) return failedResult(new Error("Could not resolve a commit tree."));
+
+  let tree;
+  try {
+    tree = await githubFetch(
+      token,
+      `/repos/${owner}/${repo}/git/trees/${target.treeSha}?recursive=1`,
+      { fetchImpl },
+    );
+  } catch (err) {
+    return failedResult(err);
+  }
+
+  const blobs = (Array.isArray(tree?.tree) ? tree.tree : []).filter((entry) => entry.type === "blob");
+  const treeTruncated = tree?.truncated === true;
+
+  const candidates = [];
+  let skippedNonText = 0;
+  let skippedLarge = 0;
+  for (const blob of blobs) {
+    if (!isTextFile(blob.path)) {
+      skippedNonText += 1;
+      continue;
+    }
+    if (Number(blob.size ?? 0) > MAX_FILE_BYTES) {
+      skippedLarge += 1;
+      continue;
+    }
+    candidates.push(blob);
+  }
+
+  const toScan = candidates.slice(0, MAX_FILES_SCANNED);
+  const skippedByCap = candidates.length - toScan.length;
+
+  const secretFindings = [];
+  const sensitiveFindings = [];
+  const dependencyFindings = [];
+  const configFindings = [];
+  const secretErrors = [];
+  const dependencyErrors = [];
+  const configErrors = [];
+  const lockfiles = [];
+  const unsupportedDependencyFiles = new Set();
+  let filesRead = 0;
+  let skippedUnreadable = 0;
+
+  const results = await mapLimit(toScan, GITHUB_FETCH_CONCURRENCY, async (blob) => {
+    try {
+      const data = await githubFetch(
+        token,
+        `/repos/${owner}/${repo}/git/blobs/${blob.sha}`,
+        { fetchImpl },
+      );
+      const content =
+        data?.encoding === "base64" && data?.content
+          ? Buffer.from(data.content, "base64").toString("utf8")
+          : null;
+      return { blob, content, error: null };
+    } catch (err) {
+      return { blob, content: null, error: err?.message ?? String(err) };
+    }
+  });
+
+  for (const item of results) {
+    if (item.error || item.content === null) {
+      skippedUnreadable += 1;
+      secretErrors.push(`${item.blob.path}: ${item.error ?? "no content"}`);
+      continue;
+    }
+
+    filesRead += 1;
+    const path = item.blob.path;
+    const lower = path.toLowerCase();
+    const base = lower.slice(lower.lastIndexOf("/") + 1);
+
+    if (SENSITIVE_FILENAMES.has(base) || SENSITIVE_FILENAMES.has(lower)) {
+      sensitiveFindings.push(
+        finding(
+          "exposed_config_file",
+          `Sensitive file committed: ${path}`,
+          "high",
+          "A potentially sensitive configuration or credential file is committed to the repository. Move secrets out of git and into environment variables or a secrets manager.",
+          {
+            url: blobUrl(owner, repo, target.commitSha, path),
+            evidence: `${item.blob.size ?? "?"} bytes`,
+            affected_resource: path,
+            confidence: "high",
+            what_it_does_not_prove:
+              "The file may contain placeholders rather than live credentials; inspect and rotate anything real.",
+            remediation:
+              "Remove the file from the repository, move its values to environment variables, and rotate exposed secrets.",
+          },
+        ),
+      );
+    }
+
+    secretFindings.push(
+      ...scanTextForSecrets(item.content, path, {
+        owner,
+        repo,
+        commitSha: target.commitSha,
+      }),
+    );
+
+    if (base === "package.json") {
+      dependencyFindings.push(
+        ...unpinnedFindings(path, item.content, {
+          owner,
+          repo,
+          commitSha: target.commitSha,
+        }),
+      );
+    }
+
+    if (base === "package-lock.json") {
+      lockfiles.push(...packagesFromPackageLock(path, item.content));
+    } else if (DEPENDENCY_FILES.has(base)) {
+      unsupportedDependencyFiles.add(path);
+    }
+
+    configFindings.push(
+      ...scanConfigFile(path, item.content, {
+        owner,
+        repo,
+        commitSha: target.commitSha,
+      }),
+    );
+  }
+
+  if (lockfiles.length) {
+    try {
+      const osvResults = await queryOsv(lockfiles, { fetchImpl: osvFetchImpl });
+      dependencyFindings.push(
+        ...osvFindings(osvResults, {
+          owner,
+          repo,
+          commitSha: target.commitSha,
+        }),
+      );
+    } catch (err) {
+      dependencyErrors.push(err?.message ?? String(err));
+    }
+  }
+
+  const scanTruncated =
+    treeTruncated || skippedByCap > 0 || skippedLarge > 0 || skippedUnreadable > 0;
+  const notes = [];
+  if (skippedByCap > 0) {
+    notes.push(
+      `Scanned the first ${MAX_FILES_SCANNED} text files; ${skippedByCap} additional candidate files were not read.`,
+    );
+  }
+  if (treeTruncated) {
+    notes.push("GitHub truncated the repository tree, so file coverage is incomplete.");
+  }
+  if (skippedLarge > 0) {
+    notes.push(`${skippedLarge} file(s) exceeded ${MAX_FILE_BYTES} bytes and were not read.`);
+  }
+  if (skippedUnreadable > 0) {
+    notes.push(`${skippedUnreadable} file(s) could not be read.`);
+  }
+  if (unsupportedDependencyFiles.size > 0) {
+    notes.push(
+      `Dependency advisories currently cover npm lockfiles only. Not analyzed: ${[...unsupportedDependencyFiles]
+        .slice(0, 8)
+        .join(", ")}${unsupportedDependencyFiles.size > 8 ? "…" : ""}.`,
+    );
+  }
+
+  const checkResults = [
+    { key: "repo_access", label: "Repository access", status: "pass", complete: true },
+    checkOutcome("secrets", secretFindings, secretErrors),
+    checkOutcome("sensitive_files", sensitiveFindings, []),
+    checkOutcome("dependencies", dependencyFindings, dependencyErrors),
+    checkOutcome("config_checks", configFindings, configErrors),
+  ];
+
+  const collectedFindings = [
+    ...secretFindings,
+    ...sensitiveFindings,
+    ...dependencyFindings,
+    ...configFindings,
+  ];
+  const allFindings = collectedFindings.slice(0, MAX_FINDINGS);
+  if (collectedFindings.length > MAX_FINDINGS) {
+    notes.push(
+      `${collectedFindings.length - MAX_FINDINGS} finding(s) were omitted after the ${MAX_FINDINGS}-finding cap.`,
+    );
+  }
+
+  const hasErrors =
+    secretErrors.length > 0 || dependencyErrors.length > 0 || configErrors.length > 0;
+  const status =
+    hasErrors || scanTruncated || collectedFindings.length > MAX_FINDINGS
+      ? "partial"
+      : "completed";
+  const errors = [...secretErrors, ...dependencyErrors, ...configErrors];
 
   const coverage = {
-    filesScanned,
-    totalFiles,
+    commitSha: target.commitSha,
+    ref: target.ref,
+    filesScanned: toScan.length,
+    filesRead,
+    totalFiles: blobs.length,
+    skippedByCap,
+    skippedNonText,
+    skippedLarge,
+    skippedUnreadable,
+    treeTruncated,
     scanTruncated,
-    scannedPercent: totalFiles > 0 ? Math.round((filesScanned / totalFiles) * 100) : 0,
+    scannedPercent:
+      candidates.length > 0 ? Math.round((toScan.length / candidates.length) * 100) : 100,
+    notes,
   };
 
   return {
-    findings,
-    error: errors.length ? errors.join("; ") : null,
-    filesScanned,
+    findings: allFindings,
+    status,
+    error: errors.length ? errors.slice(0, 5).join("; ") : null,
+    commitSha: target.commitSha,
+    ref: target.ref,
+    checkResults,
+    checksTotal: checkResults.length,
+    checksPassed: checkResults.filter((check) => check.status === "pass").length,
+    checksErrored: checkResults.filter((check) => check.status === "error").length,
+    checksSkipped: checkResults.filter((check) => check.status === "not_checked").length,
     coverage,
+    filesScanned: toScan.length,
   };
 }
 

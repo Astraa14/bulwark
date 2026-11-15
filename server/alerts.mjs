@@ -1,5 +1,12 @@
 export const SEVERITY_RANK = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
 
+/** Only Slack incoming-webhook URLs may be called by the server. */
+export const SLACK_WEBHOOK_RE = /^https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9/_-]+$/;
+
+export function isSlackWebhookUrl(url) {
+  return SLACK_WEBHOOK_RE.test(String(url ?? "").trim());
+}
+
 export const DEFAULT_SETTINGS = {
   scan_interval_minutes: 60,
   autonomy: "suggest",
@@ -50,7 +57,7 @@ export async function saveSettings(db, userId, patch) {
   }
   if (patch.slackWebhookUrl !== undefined) {
     const url = String(patch.slackWebhookUrl ?? "").trim();
-    if (url && !/^https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9/_-]+$/.test(url)) {
+    if (url && !isSlackWebhookUrl(url)) {
       throw new Error("That does not look like a Slack incoming webhook URL.");
     }
     update.slack_webhook_url = url || null;
@@ -80,14 +87,18 @@ export async function saveSettings(db, userId, patch) {
 
 export async function sendSlack(url, text) {
   if (!url) throw new Error("No Slack webhook configured.");
+  if (!isSlackWebhookUrl(url)) {
+    throw new Error("Refusing to send an alert to a non-Slack webhook URL.");
+  }
   const res = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ text }),
   });
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Slack returned HTTP ${res.status}. ${body.slice(0, 160)}`);
+    // Do not echo the response body: this is an outbound request to a
+    // user-influenced URL, so the body could leak internal data.
+    throw new Error(`Slack returned HTTP ${res.status}.`);
   }
 }
 

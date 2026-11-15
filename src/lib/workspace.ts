@@ -24,7 +24,8 @@ export type SiteRow = {
 
 export type FindingRow = {
   id: string;
-  site_id: string;
+  /** Null for platform findings that belong to a repository or project. */
+  site_id: string | null;
   scan_id: string;
   check_key: string;
   title: string;
@@ -33,6 +34,12 @@ export type FindingRow = {
   detail: string | null;
   evidence: string | null;
   url: string | null;
+  /** Which platform produced this finding, when it is not a website finding. */
+  platform?: "github" | "supabase" | null;
+  connection_id?: string | null;
+  resource?: string | null;
+  commit_sha?: string | null;
+  ref?: string | null;
   /** Scanner confidence in the observation: high, medium, or low. */
   confidence?: "high" | "medium" | "low" | null;
   /** What this observation does not prove, so it is not over-read. */
@@ -61,9 +68,32 @@ export type ScanCheckResult = {
   error?: string | null;
 };
 
+export type ScanCoverage = {
+  filesScanned?: number;
+  filesRead?: number;
+  totalFiles?: number;
+  skippedByCap?: number;
+  skippedNonText?: number;
+  skippedLarge?: number;
+  skippedUnreadable?: number;
+  treeTruncated?: boolean;
+  scanTruncated?: boolean;
+  scannedPercent?: number;
+  tablesInspected?: number;
+  storageBucketsVisible?: number;
+  storageChecked?: boolean;
+  rlsChecked?: boolean;
+  policyAnalysis?: string;
+  notes?: string[];
+  [key: string]: unknown;
+};
+
 export type ScanRow = {
   id: string;
-  site_id: string;
+  site_id: string | null;
+  platform?: "github" | "supabase" | null;
+  resource?: string | null;
+  coverage?: ScanCoverage | null;
   started_at: string;
   finished_at: string | null;
   status: ScanStatus;
@@ -97,9 +127,28 @@ export type ConnectionRow = {
   preview: string;
   lastCheckedAt: string | null;
   createdAt: string;
+  lastScannedCommit?: string | null;
+  lastScanStatus?: ScanStatus | null;
+  lastScanError?: string | null;
+  lastScanCoverage?: ScanCoverage | null;
   githubUsername?: string | null;
   projectRef?: string | null;
   projectName?: string | null;
+};
+
+export type ScanConnectionResult = {
+  ok: boolean;
+  scanId: string;
+  duplicate?: boolean;
+  status: ScanStatus;
+  /** Number of findings observed in this scan. */
+  findings: number;
+  /** Findings the persistence layer created for the first time. */
+  newFindings: number;
+  /** Previously resolved findings this scan confirmed again. */
+  reopenedFindings: number;
+  coverage: ScanCoverage | null;
+  error: string | null;
 };
 
 export type ApiKeyRow = {
@@ -362,7 +411,6 @@ export async function addConnection(input: {
   } else {
     body.projectRef = input.projectRef ?? "";
     body.projectName = input.projectName ?? null;
-    body.projectUrl = input.projectUrl ?? "";
     body.apiKey = input.apiKey ?? "";
   }
   const res = await apiPost<{ connection: ConnectionRow }>(
@@ -380,18 +428,12 @@ export async function scanConnection(
   id: string,
   type: ConnectionType,
   repo?: { owner: string; repo: string },
-) {
+): Promise<ScanConnectionResult> {
   if (type === "github") {
     if (!repo) throw new Error("Repository owner and name are required.");
-    return apiPost<{ findings: any[]; error: string | null; filesScanned: number }>(
-      `/api/connections/github/${id}/scan`,
-      repo,
-    );
+    return apiPost<ScanConnectionResult>(`/api/connections/github/${id}/scan`, repo);
   }
-  return apiPost<{ findings: any[]; error: string | null }>(
-    `/api/connections/supabase/${id}/scan`,
-    {},
-  );
+  return apiPost<ScanConnectionResult>(`/api/connections/supabase/${id}/scan`, {});
 }
 
 export async function listPlatformFindings(): Promise<FindingRow[]> {

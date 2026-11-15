@@ -31,7 +31,11 @@ function isBlockedIpAddress(ip) {
 }
 
 export function isBlockedOutboundHost(hostname) {
-  const value = String(hostname ?? "").trim().toLowerCase().replace(/\.$/, "");
+  const value = String(hostname ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\.$/, "")
+    .replace(/^\[|\]$/g, "");
   if (!value) return true;
   if (value === "localhost" || value.endsWith(".localhost") || value.endsWith(".local")) return true;
   if (isIP(value)) return isBlockedIpAddress(value);
@@ -42,24 +46,24 @@ export function isUnsafeIp(ip) {
   return isBlockedIpAddress(ip);
 }
 
-async function resolvePublicAddresses(hostname) {
+async function resolvePublicAddresses(hostname, lookupFn = lookup) {
   const value = String(hostname ?? "").trim().toLowerCase().replace(/\.$/, "");
   if (!value || isBlockedOutboundHost(value)) return [];
-  const results = await lookup(value, { all: true });
+  const results = await lookupFn(value, { all: true });
   return results.map((entry) => entry.address);
 }
 
 /** True when the hostname resolves to a blocked/private address, or DNS fails. */
-export async function hasUnsafeDns(hostname) {
+export async function hasUnsafeDns(hostname, lookupFn = lookup) {
   try {
-    const addrs = await resolvePublicAddresses(hostname);
+    const addrs = await resolvePublicAddresses(hostname, lookupFn);
     return addrs.some((addr) => isBlockedIpAddress(addr));
   } catch {
     return true;
   }
 }
 
-async function ensureSafeFetchUrl(urlString) {
+async function ensureSafeFetchUrl(urlString, { lookup: lookupFn = lookup } = {}) {
   const parsed = new URL(urlString);
   if (!["http:", "https:"].includes(parsed.protocol)) {
     throw new Error(`Blocked outbound target: unsupported protocol ${parsed.protocol}`);
@@ -75,7 +79,7 @@ async function ensureSafeFetchUrl(urlString) {
     throw new Error(`Blocked outbound target: port ${port} is not allowed`);
   }
 
-  const resolved = await resolvePublicAddresses(host);
+  const resolved = await resolvePublicAddresses(host, lookupFn);
   if (resolved.some((addr) => isBlockedIpAddress(addr))) {
     throw new Error(`Blocked outbound target: ${host}`);
   }
@@ -124,9 +128,18 @@ async function readBodyBounded(res, maxBytes = MAX_BODY_BYTES) {
  * @returns {Promise<FetchResult>}
  */
 async function fetchWithTimeout(urlString, opts = {}) {
-  const { timeout = 15000, method = "GET", headers = {}, maxRedirects = 3 } = opts;
+  let {
+    timeout = 15000,
+    method = "GET",
+    headers = {},
+    maxRedirects = 3,
+    maxBytes = MAX_BODY_BYTES,
+    body = null,
+    lookup: lookupFn = lookup,
+    fetch: fetchFn = fetch,
+  } = opts;
 
-  let current = await ensureSafeFetchUrl(urlString);
+  let current = await ensureSafeFetchUrl(urlString, { lookup: lookupFn });
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
@@ -135,11 +148,12 @@ async function fetchWithTimeout(urlString, opts = {}) {
   try {
     let redirectCount = 0;
     while (true) {
-      const res = await fetch(current, {
+      const res = await fetchFn(current, {
         method,
         redirect: "manual",
         signal: controller.signal,
         headers: { "user-agent": UA, accept: "*/*", ...headers },
+        ...(body !== null && method !== "GET" && method !== "HEAD" ? { body } : {}),
       });
 
       const headerList = {};
@@ -152,13 +166,21 @@ async function fetchWithTimeout(urlString, opts = {}) {
         if (location && redirectCount < maxRedirects) {
           redirectCount += 1;
           redirected = true;
-          current = await ensureSafeFetchUrl(new URL(location, current).toString());
+          current = await ensureSafeFetchUrl(new URL(location, current).toString(), {
+            lookup: lookupFn,
+          });
           await res.body?.cancel();
+          // 303 always becomes GET; 301/302 commonly do for POST. 307/308
+          // preserve the method and body.
+          if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === "POST")) {
+            method = "GET";
+            body = null;
+          }
           continue;
         }
         // Consume and discard the redirect response body.
         try {
-          await readBodyBounded(res);
+          await readBodyBounded(res, maxBytes);
         } catch {
           // Ignore body read errors on terminal redirect responses.
         }
@@ -173,12 +195,12 @@ async function fetchWithTimeout(urlString, opts = {}) {
         };
       }
 
-      const body = await readBodyBounded(res);
+      const responseBody = await readBodyBounded(res, maxBytes);
       return {
         ok: res.ok,
         status: res.status,
         headers: headerList,
-        body,
+        body: responseBody,
         url: res.url,
         error: null,
         redirected,

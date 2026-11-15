@@ -1,4 +1,5 @@
 import { decrypt, encrypt, maskSecret } from "./crypto.mjs";
+import { normalizeSupabaseConnection } from "./supabase-config.mjs";
 
 function publicConnection(row, type) {
   let preview = "••••••••";
@@ -15,6 +16,9 @@ function publicConnection(row, type) {
     lastCheckedAt: row.last_checked_at,
     createdAt: row.created_at,
     lastScannedCommit: row.last_scanned_commit ?? null,
+    lastScanStatus: row.last_scan_status ?? null,
+    lastScanError: row.last_scan_error ?? null,
+    lastScanCoverage: row.last_scan_coverage ?? null,
     ...(row.github_username ? { githubUsername: row.github_username } : {}),
     ...(row.project_ref ? { projectRef: row.project_ref, projectName: row.project_name } : {}),
   };
@@ -35,28 +39,29 @@ export async function addConnection(db, userId, table, input) {
   if (!secret) throw new Error("Missing token or API key.");
   if (secret.length < 10) throw new Error("That token looks too short to be valid.");
 
-  const insertFields = {
+  const base = {
     user_id: userId,
     label: String(input?.label ?? "").trim() || null,
-    ...(table === "github_connections"
-      ? { github_username: String(input?.githubUsername ?? "").trim(), token_encrypted: encrypt(secret) }
-      : {
-          project_ref: String(input?.projectRef ?? "").trim(),
-          project_name: String(input?.projectName ?? "").trim() || null,
-          project_url_encrypted: encrypt(String(input?.projectUrl ?? "").trim()),
-          api_key_encrypted: encrypt(secret),
-        }),
   };
 
-  // Validate required fields per type.
-  if (table === "github_connections" && !insertFields.github_username) {
-    throw new Error("GitHub username is required.");
-  }
-  if (table === "supabase_connections" && !insertFields.project_ref) {
-    throw new Error("Supabase project ref is required.");
-  }
-  if (table === "supabase_connections" && !insertFields.project_url_encrypted) {
-    throw new Error("Supabase project URL is required.");
+  let insertFields;
+  if (table === "github_connections") {
+    const githubUsername = String(input?.githubUsername ?? "").trim();
+    if (!githubUsername) throw new Error("GitHub username is required.");
+    insertFields = {
+      ...base,
+      github_username: githubUsername,
+      token_encrypted: encrypt(secret),
+    };
+  } else {
+    const { projectRef, projectUrl } = normalizeSupabaseConnection(input);
+    insertFields = {
+      ...base,
+      project_ref: projectRef,
+      project_name: String(input?.projectName ?? "").trim() || null,
+      project_url_encrypted: encrypt(projectUrl),
+      api_key_encrypted: encrypt(secret),
+    };
   }
 
   const { data, error } = await db.from(table).insert(insertFields).select("*").single();

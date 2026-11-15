@@ -1,10 +1,12 @@
 # Bulwark Product Scope
 
+_Last updated: 2026-11-15_
+
 ## What Bulwark is
 
-Bulwark is an **external security posture monitoring** tool for small products and "vibe coders" who ship fast and aren't security specialists. It continuously checks surface-level signals that an attacker can also see from the outside, then explains findings in plain language with concrete remediation steps.
+Bulwark is an **external security posture monitor** for small products and "vibe coders" who ship fast and aren't security specialists. It checks signals an attacker can see from the outside, plus a deliberately limited read-only view of GitHub repositories and Supabase projects. Findings are explained in plain language with concrete remediation steps.
 
-## What Bulwark currently checks (external layer)
+## Website checks (external layer)
 
 | Layer | What's checked | What it does NOT prove |
 |-------|---------------|----------------------|
@@ -20,42 +22,71 @@ Bulwark is an **external security posture monitoring** tool for small products a
 | Discovery | robots.txt, sitemap.xml, security.txt | That no hidden routes exist |
 | Secrets | Hardcoded keys/tokens in homepage and same-host JS bundles | That no secrets exist in server code or other assets |
 
+Every check reports one of `pass`, `finding`, `error`, or `not_checked`. A scan is `completed` only when every check reached a conclusion; otherwise it is `partial`, and the UI shows what was not checked.
+
+## GitHub repository checks (read-only)
+
+A connection is a GitHub username plus a **personal access token** with read-only `Contents` (and `Metadata`) access. Signing in with GitHub is **identity only** and does not request repository scopes.
+
+A repository scan:
+
+- reads the repository tree at the default branch head, or at the exact commit named by a verified webhook delivery;
+- reads up to **500 text files** up to 500 KB each; larger files, binary files, unreadable blobs, and files beyond the cap are counted and disclosed;
+- flags hardcoded credentials in file contents (redacted evidence plus a line link);
+- flags sensitive filenames (`.env`, private keys, database dumps, etc.);
+- flags unpinned dependency declarations;
+- queries [OSV](https://osv.dev) for **npm `package-lock.json` only**, sending package names and exact versions — never source code, paths, tokens, or credentials;
+- flags a small set of container/CI configuration risks (root Dockerfile user, `pull_request_target`).
+
+It does **not** scan commit history, git objects, issues, pull requests, releases, or server-side authorization logic. It is not a SAST engine.
+
+## Supabase project checks (read-only)
+
+A connection stores the project reference (`https://<ref>.supabase.co`) and a **publishable/anon key**. Service-role keys and `sb_secret_` keys are rejected before any request.
+
+- connectivity with the publishable key;
+- storage bucket listing; when the key cannot list buckets, storage is reported as **not checked**, not as safe;
+- RLS metadata through the optional helper at `supabase/customer/bulwark_check_rls.sql`, which each customer installs in their own project. Without it, RLS is reported as **not checked**.
+
+RLS analysis is **heuristic**: it reports tables with RLS disabled, RLS enabled with no policies (deny-by-default, low severity), and policies whose expression is the literal `true`. It does not evaluate policy expressions, role targeting, or query results. A heuristic pass does not prove data is protected.
+
+## Webhooks (GitHub push)
+
+- Per-connection URL: `/api/webhooks/github/:connectionId`.
+- The raw request body is HMAC-verified against the connection's encrypted webhook secret before parsing (1 MB limit).
+- The delivery's repository must be readable with that connection's token; otherwise it is rejected.
+- A delivery ID is unique per connection, so retries and redeliveries do not create duplicate scans or alerts.
+- Webhooks only enqueue work; the worker scans and persists later with a stable scan ID.
+
 ## What Bulwark is NOT
 
 - **Not a vulnerability scanner** — it does not crawl routes, fuzz parameters, or test for SQL injection, XSS, CSRF, IDOR, etc.
 - **Not an authenticated scanner** — it cannot see behind login walls, admin panels, or role-gated content.
-- **Not a code scanner** — it does not read your source code (yet — repo analysis is planned).
+- **Not a full code audit** — repository checks cover text files at one revision, not history or runtime behavior.
 - **Not a compliance tool** — it does not produce SOC 2, HIPAA, or PCI reports.
 - **Not a WAF or runtime protection** — it does not block attacks in progress.
-
-## What's coming next (read-only repo + platform analysis)
-
-Per the roadmap, Bulwark will add read-only integrations that inspect the **project itself**, not just the live site:
-
-1. **GitHub repo analysis** — leaked secrets in commit history and files, dependency vulnerabilities in lockfiles, risky patterns in server routes/auth code, exposed environment variables in config files.
-2. **Supabase checks** — whether exposed tables have appropriate Row Level Security (RLS), whether policies are overly broad, whether storage buckets are publicly accessible.
-3. **Deployment checks** — Render/other provider configuration and deployment metadata.
-
-Each integration requests **read-only, least-privilege access** and clearly states what it did and didn't inspect.
+- **Not a guarantee of safety** — clean scans mean the checks that ran found nothing in what they could see.
 
 ## The honest promise
 
-> "Bulwark finds and explains risks it can verify."
+> "Bulwark finds and explains risks it can verify — and says what it could not check."
 
-A scan can return:
+A scan can be:
+
 - **completed** — every check had enough evidence to reach a conclusion.
-- **partial** — some checks errored or were skipped; the site may still have issues Bulwark couldn't verify.
-- **failed** — the site was unreachable; no checks could run.
-
-Bulwark never reports "secure" when it couldn't verify a check. It reports "could not check" instead.
+- **partial** — some checks errored, were skipped, or hit a coverage cap.
+- **failed** — the target was unreachable or credentials were rejected; no conclusions were drawn.
 
 ## Data handling
 
-- Scan results and findings are stored in Supabase with RLS so users only see their own data.
-- BYOK AI keys (OpenAI/Anthropic) are encrypted at rest with `BULWARK_ENCRYPTION_KEY` and never logged.
-- GitHub/Supabase connection tokens (future) will follow the same encrypted-at-rest pattern.
-- Outbound scanner requests are SSRF-hardened: only ports 80/443, only public non-private IPs, redirect targets re-validated.
+- Website, GitHub, and Supabase scans/findings are stored in Supabase with row-level security scoped to the signed-in owner. Legacy platform rows whose owner cannot be proven are retained but hidden from every user.
+- GitHub tokens and Supabase keys are encrypted at rest with `BULWARK_ENCRYPTION_KEY` and are never returned to the browser (only a masked preview).
+- Webhook bodies are not stored; only delivery metadata (connection, commit, resource, delivery ID) is queued.
+- OSV receives only npm package names and exact versions.
+- AI explanations run only when a user asks, using the user's own OpenAI/Anthropic key; the selected finding's text is sent to that provider.
+- Outbound scanner requests are SSRF-hardened: HTTP/HTTPS only, ports 80/443, public IPs only, every redirect hop re-validated, bounded response bodies. Supabase hosts are derived from the validated project reference instead of accepting arbitrary URLs.
+- Network-level egress restrictions are still recommended as defense in depth (see `render.yaml`).
 
 ## Who this is for
 
-Small product teams, indie developers, and "vibe coders" who want a security safety net without becoming security experts. Bulwark is designed to catch the obvious, high-impact mistakes (exposed `.env`, missing CSP, no HSTS, hardcoded keys, open CORS) and explain how to fix them in plain language.
+Small product teams, indie developers, and "vibe coders" who want a security safety net without becoming security experts. Bulwark is designed to catch obvious, high-impact mistakes and explain how to fix them.

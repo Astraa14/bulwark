@@ -2,18 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import AuthScreen from "@/screens/AuthScreen";
-import { apiGet, apiPost } from "@/lib/api";
+import { apiGet, apiPost, apiUrl } from "@/lib/api";
 import {
   acceptBaseline,
   addConnection,
   createSite,
   deleteSite,
   explainFinding,
-  listConnections,
   listPlatformFindings,
-  removeConnection,
   relTime,
-  scanConnection,
   scanSiteNow,
   setFindingStatus,
   setSiteInterval,
@@ -31,7 +28,9 @@ import {
   type FindingRow,
   type FindingStatus,
   type ScanCheckResult,
+  type ScanConnectionResult,
   type ScanRow,
+  type ScanStatus,
   type Settings,
   type Severity,
   type SiteRow,
@@ -104,6 +103,11 @@ function downloadCsv(name: string, header: string[], rows: unknown[][]) {
 
 function Dot({ tone = "healthy" }: { tone?: string }) {
   return <span className={`dot ${tone}`} />;
+}
+
+/** Website findings show their domain; platform findings show their resource. */
+function siteLabel(sites: SiteRow[], finding: FindingRow) {
+  return sites.find((site) => site.id === finding.site_id)?.domain ?? finding.resource ?? "—";
 }
 
 function Button({
@@ -599,8 +603,8 @@ function Overview({
                     {f.severity}
                   </span>
                   <strong title={f.title}>{f.title}</strong>
-                  <code title={sites.find((s) => s.id === f.site_id)?.domain ?? ""}>
-                    {sites.find((s) => s.id === f.site_id)?.domain ?? ""}
+                  <code title={siteLabel(sites, f)}>
+                    {siteLabel(sites, f)}
                   </code>
                 </div>
               </div>
@@ -678,7 +682,7 @@ function Overview({
               <div>
                 <strong title={f.title}>{f.title}</strong>
                 <code>
-                  {sites.find((s) => s.id === f.site_id)?.domain ?? ""} · {relTime(f.last_seen_at)}
+                  {siteLabel(sites, f)} · {relTime(f.last_seen_at)}
                 </code>
               </div>
             </div>
@@ -946,7 +950,7 @@ function Threats({
         if (tab === "Ignored" && f.status !== "ignored") return false;
         if (severity !== "all" && f.severity !== severity) return false;
         if (siteFilter !== "all" && f.site_id !== siteFilter) return false;
-        const site = sites.find((s) => s.id === f.site_id)?.domain ?? "";
+        const site = siteLabel(sites, f);
         const haystack = `${f.title} ${f.check_key} ${site}`.toLowerCase();
         return haystack.includes(query.toLowerCase());
       }),
@@ -959,7 +963,7 @@ function Threats({
       ["Title", "Site", "Severity", "Status", "Check", "First seen", "Last seen", "URL", "Evidence"],
       filtered.map((f) => [
         f.title,
-        sites.find((s) => s.id === f.site_id)?.domain ?? "",
+        siteLabel(sites, f),
         f.severity,
         f.status,
         f.check_key,
@@ -1025,7 +1029,7 @@ function Threats({
         {filtered.map((f) => (
           <button className="threat-row" key={f.id} onClick={() => onOpen(f)}>
             <strong className="table-title" title={f.title}>{f.title}</strong>
-            <code className="table-domain" title={sites.find((s) => s.id === f.site_id)?.domain ?? "—"}>{sites.find((s) => s.id === f.site_id)?.domain ?? "—"}</code>
+            <code className="table-domain" title={siteLabel(sites, f)}>{siteLabel(sites, f)}</code>
             <span>
               <Dot tone={f.severity} />
               {f.severity}
@@ -1689,6 +1693,11 @@ function Scans({
   const [siteFilter, setSiteFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
 
+  const scanSubject = (scan: ScanRow) =>
+    sites.find((site) => site.id === scan.site_id)?.domain ??
+    scan.resource ??
+    (scan.site_id ? "—" : "Platform scan");
+
   const filtered = scans.filter((s) => {
     if (siteFilter !== "all" && s.site_id !== siteFilter) return false;
     if (statusFilter !== "all" && s.status !== statusFilter) return false;
@@ -1716,7 +1725,7 @@ function Scans({
         const summary = scanOutcomeSummary(s);
         return [
           s.started_at,
-          sites.find((x) => x.id === s.site_id)?.domain ?? "",
+          scanSubject(s),
           scanState(s, summary).label,
           s.http_status ?? "",
           s.response_ms ?? "",
@@ -1784,7 +1793,7 @@ function Scans({
           return (
             <div className="scan-row" key={s.id}>
               <code>{shortDate(s.started_at)}</code>
-              <code>{sites.find((x) => x.id === s.site_id)?.domain ?? "—"}</code>
+              <code>{scanSubject(s)}</code>
               <span className={`scan-state ${state.tone}`}>
                 <Dot tone={state.tone} />
                 {state.label}
@@ -1867,13 +1876,13 @@ function printReport({
   const open = findings.filter((f) => f.status === "open").length;
   const critical = findings.filter((f) => f.severity === "critical").length;
   const high = findings.filter((f) => f.severity === "high").length;
-  const siteName = (id: string) => sites.find((s) => s.id === id)?.domain ?? "—";
+  const siteName = (finding: FindingRow) => siteLabel(sites, finding);
 
   const rows = findings
     .map(
       (f) => `<tr>
         <td>${escapeHtml(f.title)}</td>
-        <td>${escapeHtml(siteName(f.site_id))}</td>
+        <td>${escapeHtml(siteName(f))}</td>
         <td>${escapeHtml(f.severity)}</td>
         <td>${escapeHtml(f.status)}</td>
         <td>${escapeHtml(new Date(f.first_seen_at).toLocaleString())}</td>
@@ -1968,7 +1977,7 @@ function Reports({
       ["Title", "Site", "Severity", "Status", "Check", "First seen", "Last seen", "URL", "Explanation"],
       inRange.map((f) => [
         f.title,
-        sites.find((s) => s.id === f.site_id)?.domain ?? "",
+        siteLabel(sites, f),
         f.severity,
         f.status,
         f.check_key,
@@ -2022,7 +2031,7 @@ function Reports({
         {inRange.slice(0, 25).map((f) => (
           <div className="threat-row" key={f.id}>
             <strong>{f.title}</strong>
-            <code>{sites.find((s) => s.id === f.site_id)?.domain ?? "—"}</code>
+            <code>{siteLabel(sites, f)}</code>
             <span>
               <Dot tone={f.severity} />
               {f.severity}
@@ -2063,41 +2072,77 @@ function ConnectionsSection({
   error: string | null;
   onAdd: (input: Parameters<typeof addConnection>[0]) => Promise<void>;
   onRemove: (id: string, type: ConnectionType) => Promise<void>;
-  onScan: (id: string, type: ConnectionType, repo?: { owner: string; repo: string }) => Promise<void>;
+  onScan: (
+    id: string,
+    type: ConnectionType,
+    repo?: { owner: string; repo: string },
+  ) => Promise<ScanConnectionResult>;
   onSetWebhookSecret: (id: string, secret: string) => Promise<void>;
 }) {
   const [addType, setAddType] = useState<ConnectionType | null>(null);
-  const [scanId, setScanId] = useState<string | null>(null);
-  const [scanType, setScanType] = useState<ConnectionType | null>(null);
-  const [githubOwner, setGithubOwner] = useState("");
-  const [githubRepo, setGithubRepo] = useState("");
+  const [ghUsername, setGhUsername] = useState("");
+  const [ghToken, setGhToken] = useState("");
+  const [sbRef, setSbRef] = useState("");
+  const [sbName, setSbName] = useState("");
+  const [sbKey, setSbKey] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [webhookId, setWebhookId] = useState<string | null>(null);
   const [webhookSecret, setWebhookSecretState] = useState("");
-  const [repos, setRepos] = useState<{ full_name: string; owner: string; name: string; private: boolean }[]>([]);
+  const [repos, setRepos] = useState<
+    { full_name: string; owner: string; name: string; private: boolean }[]
+  >([]);
   const [reposLoading, setReposLoading] = useState(false);
+  const [reposError, setReposError] = useState<string | null>(null);
   const [reposConnectionId, setReposConnectionId] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  const addConnection = async () => {
+  const closeAddForm = () => {
+    setAddType(null);
+    setGhUsername("");
+    setGhToken("");
+    setSbRef("");
+    setSbName("");
+    setSbKey("");
     setLocalError(null);
+  };
+
+  const submitConnection = async () => {
+    setLocalError(null);
+    setNotice(null);
+    setBusy("add");
     try {
       if (addType === "github") {
-        await onAdd({ type: "github", githubUsername: githubOwner, token: githubRepo });
-      } else {
+        if (!ghUsername.trim()) throw new Error("Enter the GitHub username or organization.");
+        if (!ghToken.trim()) throw new Error("Enter a personal access token.");
+        await onAdd({
+          type: "github",
+          githubUsername: ghUsername.trim(),
+          token: ghToken.trim(),
+        });
+        setNotice("GitHub connection saved. Load its repositories to choose what to scan.");
+      } else if (addType === "supabase") {
+        const projectRef = sbRef.trim().toLowerCase();
+        if (!/^[a-z0-9]{10,32}$/.test(projectRef)) {
+          throw new Error(
+            "Project ref must be the 10–32 character reference from the Supabase project URL.",
+          );
+        }
+        if (!sbKey.trim()) throw new Error("Enter the project's publishable (anon) key.");
         await onAdd({
           type: "supabase",
-          projectRef: githubOwner,
-          projectName: githubRepo,
-          projectUrl: `https://${githubOwner}.supabase.co`,
-          apiKey: githubRepo,
+          projectRef,
+          projectName: sbName.trim() || undefined,
+          apiKey: sbKey.trim(),
         });
+        setNotice("Supabase connection saved. Run a scan when ready.");
       }
-      setAddType(null);
-      setGithubOwner("");
-      setGithubRepo("");
+      closeAddForm();
     } catch (err) {
       setLocalError((err as Error).message);
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -2114,15 +2159,42 @@ function ConnectionsSection({
     }
   };
 
-  const scanConnection = async (id: string, type: ConnectionType, repo?: { owner: string; repo: string }) => {
+  const loadRepos = async (id: string) => {
+    setReposConnectionId(id);
+    setRepos([]);
+    setReposError(null);
+    setReposLoading(true);
+    try {
+      const data = await apiGet<{
+        repos: { full_name: string; owner: string; name: string; private: boolean }[];
+      }>(`/api/connections/github/${id}/repos`);
+      setRepos(data.repos ?? []);
+    } catch (err) {
+      setReposError((err as Error).message);
+    } finally {
+      setReposLoading(false);
+    }
+  };
+
+  const runScan = async (
+    id: string,
+    type: ConnectionType,
+    repo?: { owner: string; repo: string },
+  ) => {
     setBusy(id);
     setLocalError(null);
+    setNotice(null);
     try {
-      if (type === "github") {
-        await onScan(id, type, repo);
-      } else {
-        await onScan(id, type);
-      }
+      const result = await onScan(id, type, repo);
+      const parts = [
+        `${result.findings} finding${result.findings === 1 ? "" : "s"} observed`,
+      ];
+      if (result.newFindings) parts.push(`${result.newFindings} new`);
+      if (result.reopenedFindings) parts.push(`${result.reopenedFindings} reopened`);
+      if (result.duplicate) parts.push("already recorded — no alert sent");
+      if (result.status !== "completed") parts.push(`status ${result.status}`);
+      if (result.error) parts.push(result.error);
+      setNotice(`Scan finished: ${parts.join(" · ")}`);
     } catch (err) {
       setLocalError((err as Error).message);
     } finally {
@@ -2132,14 +2204,48 @@ function ConnectionsSection({
 
   const setWebhookSecret = async (id: string, secret: string) => {
     setLocalError(null);
+    setNotice(null);
     try {
-      await onSetWebhookSecret(id, secret);
+      await onSetWebhookSecret(id, secret.trim());
       setWebhookId(null);
       setWebhookSecretState("");
+      setNotice("Webhook secret saved. Configure the same secret in GitHub.");
     } catch (err) {
       setLocalError((err as Error).message);
     }
   };
+
+  const copyText = async (id: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(id);
+      window.setTimeout(() => setCopiedId(null), 1500);
+    } catch {
+      setLocalError("Copy failed. Select the URL and copy it manually.");
+    }
+  };
+
+  const coverageSummary = (connection: ConnectionRow) => {
+    const coverage = connection.lastScanCoverage;
+    if (!coverage) return null;
+    const parts: string[] = [];
+    if (connection.type === "github") {
+      parts.push(`${coverage.filesRead ?? coverage.filesScanned ?? 0} files read`);
+      if (coverage.treeTruncated) parts.push("file tree truncated by GitHub");
+      if (coverage.skippedByCap) parts.push(`${coverage.skippedByCap} not read (file cap)`);
+      if (coverage.skippedLarge) parts.push(`${coverage.skippedLarge} large files skipped`);
+      if (coverage.skippedNonText) parts.push(`${coverage.skippedNonText} non-text skipped`);
+      if (coverage.skippedUnreadable) parts.push(`${coverage.skippedUnreadable} unreadable`);
+    } else {
+      parts.push(`${coverage.tablesInspected ?? 0} tables inspected`);
+      parts.push(coverage.rlsChecked ? "RLS inspected (heuristic)" : "RLS not checked");
+      parts.push(coverage.storageChecked ? "storage checked" : "storage not checked");
+    }
+    return parts.join(" · ");
+  };
+
+  const scanTone = (status?: ScanStatus | null) =>
+    status === "failed" ? "critical" : status === "partial" ? "medium" : "healthy";
 
   const modalStyle = {
     position: "fixed",
@@ -2171,7 +2277,8 @@ function ConnectionsSection({
           <h3>Connected platforms</h3>
           <p>
             Read-only connections to GitHub and Supabase. Bulwark never writes to your
-            repositories or projects.
+            repositories or projects. Signing in with GitHub is identity only; repository
+            access comes from the read-only token you add here.
           </p>
           <button
             className="button dark"
@@ -2189,6 +2296,11 @@ function ConnectionsSection({
           </button>
         </div>
         {(error || localError) && <p className="modal-error">{localError ?? error}</p>}
+        {notice && (
+          <p className="save-note" role="status" aria-live="polite">
+            {notice}
+          </p>
+        )}
         {loading ? (
           <p className="muted pad">Loading connections…</p>
         ) : connections.length === 0 ? (
@@ -2197,103 +2309,164 @@ function ConnectionsSection({
             <span className="key-empty-hint">Connect GitHub or Supabase to scan your repositories and projects.</span>
           </div>
         ) : (
-          connections.map((c) => (
-            <div className="key-row" key={c.id}>
-              <div className="key-body">
-                <div className="provider-name">
-                  <div>
-                    <h3>{c.type === "github" ? "GitHub" : "Supabase"}</h3>
-                    <p>
-                      {c.label ?? c.type === "github" ? c.githubUsername ?? "GitHub" : c.projectName ?? "Supabase"}{" "}
-                      · {c.preview}
-                    </p>
-                  </div>
-                  <span>
-                    <Dot />
-                    Connected
-                  </span>
-                </div>
-                <div className="key-field">
-                  <code>{c.lastCheckedAt ? `Last checked: ${shortDate(c.lastCheckedAt)}` : "Never scanned"}</code>
-                  <span className="muted">Added {shortDate(c.createdAt)}</span>
-                </div>
-              </div>
-              <div className="key-actions">
-                {c.type === "github" && (
-                  <div className="key-field">
-                    <span className="muted">Webhook URL:</span><br />
-                    <code style={{ fontSize: "0.75rem", wordBreak: "break-all" }}>
-                      {`${window.location.origin}/api/webhooks/github`}
-                    </code>
-                  </div>
-                )}
-                <button
-                  className="button dark"
-                  onClick={() => {
-                    setReposConnectionId(c.id);
-                    setReposLoading(true);
-                    apiGet<{ repos: { full_name: string; owner: string; name: string; private: boolean }[] }>(`/api/connections/github/${c.id}/repos`)
-                      .then((d) => setRepos(d.repos ?? []))
-                      .catch(() => setRepos([]))
-                      .finally(() => setReposLoading(false));
-                  }}
-                  disabled={busy !== null}
-                >
-                  {busy === c.id ? "Scanning…" : "Scan now"}
-                </button>
-                {c.type === "github" && (
-                  <button
-                    className="button"
-                    onClick={() => {
-                      setWebhookId(c.id);
-                      setWebhookSecretState("");
-                    }}
-                    disabled={busy !== null}
-                  >
-                    Webhook secret
-                  </button>
-                )}
-                <Button onClick={() => removeConnection(c.id, c.type)}>
-                  {busy === c.id ? "Removing…" : "Remove"}
-                </Button>
-              </div>
-            </div>
-          ))
-        )}
-      </section>
-
-      {/* Repos to scan (shown after GitHub connection) */}
-      {repos.length > 0 && (
-        <section className="card setting-list">
-          <div className="setting-title">
-            <h3>GitHub repositories to scan</h3>
-            <p>Select repositories to scan for secrets, exposed config, and dependencies.</p>
-            {reposLoading && <p className="muted pad">Loading repositories…</p>}
-          </div>
-{repos.map((repo) => (
-              <div className="key-row" key={repo.full_name}>
+          connections.map((c) => {
+            const subject =
+              c.label ||
+              (c.type === "github" ? c.githubUsername : c.projectName) ||
+              (c.type === "github" ? "GitHub" : "Supabase");
+            const coverage = coverageSummary(c);
+            const webhookUrl = apiUrl(`/api/webhooks/github/${c.id}`);
+            return (
+              <div className="key-row" key={c.id}>
                 <div className="key-body">
                   <div className="provider-name">
                     <div>
-                      <h3>{repo.name}</h3>
-                      <p>{repo.owner}/{repo.name} · {repo.private ? "Private" : "Public"}</p>
+                      <h3>{c.type === "github" ? "GitHub" : "Supabase"}</h3>
+                      <p>
+                        {subject} · {c.preview}
+                      </p>
                     </div>
+                    <span>
+                      <Dot tone={scanTone(c.lastScanStatus)} />
+                      {c.lastScanStatus
+                        ? `${c.lastScanStatus[0].toUpperCase()}${c.lastScanStatus.slice(1)}`
+                        : "Connected"}
+                    </span>
                   </div>
-                  <div className="key-actions">
+                  <div className="key-field">
+                    <code>
+                      {c.lastCheckedAt
+                        ? `Last scan: ${shortDate(c.lastCheckedAt)}`
+                        : "Never scanned"}
+                    </code>
+                    {coverage && <span className="muted">{coverage}</span>}
+                    {c.lastScanError && (
+                      <span className="muted">Last scan note: {c.lastScanError}</span>
+                    )}
+                    <span className="muted">Added {shortDate(c.createdAt)}</span>
+                  </div>
+                  {c.type === "github" && (
+                    <div className="key-field">
+                      <span className="muted">
+                        Webhook URL for this connection (use the secret you set here):
+                      </span>
+                      <code style={{ fontSize: "0.75rem", wordBreak: "break-all" }}>
+                        {webhookUrl}
+                      </code>
+                      <button
+                        type="button"
+                        className="link-button"
+                        onClick={() => void copyText(`url-${c.id}`, webhookUrl)}
+                        disabled={busy !== null}
+                      >
+                        {copiedId === `url-${c.id}` ? "Copied" : "Copy URL"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="key-actions">
+                  <button
+                    className="button dark"
+                    onClick={() => {
+                      if (c.type === "supabase") {
+                        void runScan(c.id, "supabase");
+                      } else {
+                        void loadRepos(c.id);
+                      }
+                    }}
+                    disabled={busy !== null}
+                  >
+                    {busy === c.id
+                      ? "Scanning…"
+                      : c.type === "github"
+                        ? "Choose repository…"
+                        : "Scan now"}
+                  </button>
+                  {c.type === "github" && (
                     <button
-                      className="button dark"
+                      className="button"
                       onClick={() => {
-                        const [owner, name] = repo.full_name.split("/");
-                        void onScan(reposConnectionId!, "github", { owner, repo: name });
+                        setWebhookId(c.id);
+                        setWebhookSecretState("");
                       }}
                       disabled={busy !== null}
                     >
-                      Scan
+                      Webhook secret
                     </button>
-                  </div>
+                  )}
+                  <Button onClick={() => removeConnection(c.id, c.type)}>
+                    {busy === c.id ? "Removing…" : "Remove"}
+                  </Button>
                 </div>
               </div>
-            ))}
+            );
+          })
+        )}
+      </section>
+
+      {/* Repository picker for the selected GitHub connection. */}
+      {reposConnectionId && (
+        <section className="card setting-list">
+          <div className="setting-title">
+            <h3>
+              Repositories for{" "}
+              {connections.find((c) => c.id === reposConnectionId)?.label ??
+                connections.find((c) => c.id === reposConnectionId)?.githubUsername ??
+                "this connection"}
+            </h3>
+            <p>
+              Scans read the default branch head for secrets, exposed config, dependency
+              advisories, and container/workflow configuration. Only repositories this token
+              can read are listed.
+            </p>
+            <button
+              className="button"
+              onClick={() => {
+                setReposConnectionId(null);
+                setRepos([]);
+                setReposError(null);
+              }}
+            >
+              Close
+            </button>
+          </div>
+          {reposLoading && <p className="muted pad">Loading repositories…</p>}
+          {reposError && <p className="modal-error">{reposError}</p>}
+          {!reposLoading && !reposError && repos.length === 0 && (
+            <div className="key-empty">
+              <p>No repositories are visible to this token.</p>
+              <span className="key-empty-hint">
+                Confirm the token belongs to this account or organization and has Contents
+                read access, then reconnect it.
+              </span>
+            </div>
+          )}
+          {repos.map((repo) => (
+            <div className="key-row" key={repo.full_name}>
+              <div className="key-body">
+                <div className="provider-name">
+                  <div>
+                    <h3>{repo.name}</h3>
+                    <p>
+                      {repo.owner}/{repo.name} · {repo.private ? "Private" : "Public"}
+                    </p>
+                  </div>
+                </div>
+                <div className="key-actions">
+                  <button
+                    className="button dark"
+                    onClick={() => {
+                      const [owner, name] = repo.full_name.split("/");
+                      void runScan(reposConnectionId, "github", { owner, repo: name });
+                    }}
+                    disabled={busy !== null}
+                  >
+                    {busy === reposConnectionId ? "Scanning…" : "Scan"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
         </section>
       )}
 
@@ -2302,31 +2475,43 @@ function ConnectionsSection({
           <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
             <h3>Connect GitHub</h3>
             <p>
-              Bulwark will scan your repositories for hardcoded secrets, exposed config files,
-              and unpinned dependencies. The token is encrypted at rest and used read-only.
+              Signing in with GitHub only identifies you; it does not grant repository access.
+              Paste a separate personal access token here. A fine-grained token with
+              <strong> Contents: Read-only</strong> and <strong>Metadata: Read-only</strong> is
+              enough. Bulwark never writes to your repositories, encrypts the token at rest, and
+              never shows it again.
             </p>
             <div className="field-block">
-              <label>GitHub username or org</label>
+              <label>GitHub username or organization</label>
               <input
                 autoComplete="off"
-                value={githubOwner}
-                onChange={(e) => setGithubOwner(e.target.value)}
+                value={ghUsername}
+                onChange={(e) => setGhUsername(e.target.value)}
                 placeholder="octocat"
               />
             </div>
             <div className="field-block">
-              <label>Personal access token (read-only repo scope)</label>
+              <label>Personal access token (read-only)</label>
               <input
                 type="password"
                 autoComplete="off"
-                value={githubRepo}
-                onChange={(e) => setGithubRepo(e.target.value)}
-                placeholder="ghp_..."
+                value={ghToken}
+                onChange={(e) => setGhToken(e.target.value)}
+                placeholder="github_pat_…"
               />
+              <small className="field-help">
+                Create it in GitHub under Settings → Developer settings → Personal access
+                tokens. Do not paste it anywhere except this form.
+              </small>
             </div>
+            {localError && <p className="modal-error">{localError}</p>}
             <div className="modal-actions">
-              <button className="button" onClick={() => setAddType(null)}>Cancel</button>
-              <button className="button dark" onClick={addConnection} disabled={busy !== null}>
+              <button className="button" onClick={closeAddForm}>Cancel</button>
+              <button
+                className="button dark"
+                onClick={() => void submitConnection()}
+                disabled={busy !== null}
+              >
                 {busy !== null ? "Adding…" : "Connect"}
               </button>
             </div>
@@ -2339,67 +2524,55 @@ function ConnectionsSection({
           <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
             <h3>Connect Supabase</h3>
             <p>
-              Bulwark will check your storage buckets for public access and verify API
-              connectivity. Credentials are encrypted at rest and used read-only.
+              Bulwark checks storage buckets, API connectivity, and Row Level Security
+              metadata. Use the project's publishable (anon) key: service-role and
+              <code> sb_secret_ </code> keys are refused. Credentials are encrypted at rest and
+              used read-only.
             </p>
             <div className="field-block">
               <label>Project ref</label>
               <input
                 autoComplete="off"
-                value={githubOwner}
-                onChange={(e) => setGithubOwner(e.target.value)}
+                value={sbRef}
+                onChange={(e) => setSbRef(e.target.value)}
                 placeholder="abcdefghijklmnop"
               />
+              <small className="field-help">
+                The subdomain in https://&lt;ref&gt;.supabase.co.
+              </small>
             </div>
             <div className="field-block">
               <label>Project name (optional)</label>
               <input
                 autoComplete="off"
-                value={githubRepo}
-                onChange={(e) => setGithubRepo(e.target.value)}
+                value={sbName}
+                onChange={(e) => setSbName(e.target.value)}
                 placeholder="My Project"
               />
             </div>
             <div className="field-block">
-              <label>Anon API key</label>
+              <label>Publishable (anon) key</label>
               <input
                 type="password"
                 autoComplete="off"
-                value={githubRepo}
-                onChange={(e) => setGithubRepo(e.target.value)}
-                placeholder="eyJ..."
+                value={sbKey}
+                onChange={(e) => setSbKey(e.target.value)}
+                placeholder="sb_publishable_… or eyJ…"
               />
+              <small className="field-help">
+                RLS inspection needs the helper at supabase/customer/bulwark_check_rls.sql.
+                Without it, RLS is reported as not checked rather than safe.
+              </small>
             </div>
+            {localError && <p className="modal-error">{localError}</p>}
             <div className="modal-actions">
-              <button className="button" onClick={() => setAddType(null)}>Cancel</button>
-              <button className="button dark" onClick={addConnection} disabled={busy !== null}>
-                {busy !== null ? "Adding…" : "Connect"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {scanId && scanType === "supabase" && (
-        <div style={modalStyle}>
-          <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
-            <h3>Scan Supabase</h3>
-            <p>
-              Scanning will analyze your project for security issues including public
-              storage buckets and API connectivity issues.
-            </p>
-            <div className="modal-actions">
-              <button className="button" onClick={() => setScanId(null)}>Cancel</button>
+              <button className="button" onClick={closeAddForm}>Cancel</button>
               <button
                 className="button dark"
-                onClick={() => {
-                  void onScan(scanId!, "supabase");
-                  setScanId(null);
-                  setScanType(null);
-                }}
+                onClick={() => void submitConnection()}
                 disabled={busy !== null}
               >
-                {busy !== null ? "Scanning…" : "Run scan"}
+                {busy !== null ? "Adding…" : "Connect"}
               </button>
             </div>
           </div>
@@ -2411,11 +2584,15 @@ function ConnectionsSection({
           <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
             <h3>GitHub Webhook Secret</h3>
             <p>
-              Set a secret to validate incoming GitHub webhooks. Go to your repository settings →
-              Webhooks → Add webhook, use the URL above, and paste this secret.
+              Use the per-connection webhook URL shown on this connection, then paste the same
+              secret here. GitHub signs each delivery with it, so unsigned or mismatched
+              requests are rejected. Deliveries are de-duplicated by delivery ID.
+            </p>
+            <p className="muted" style={{ wordBreak: "break-all" }}>
+              {apiUrl(`/api/webhooks/github/${webhookId}`)}
             </p>
             <div className="field-block">
-              <label>Webhook secret</label>
+              <label>Webhook secret (at least 16 characters)</label>
               <input
                 type="password"
                 autoComplete="off"
@@ -2423,14 +2600,18 @@ function ConnectionsSection({
                 onChange={(e) => setWebhookSecretState(e.target.value)}
                 placeholder="Enter a random secret string"
               />
+              <small className="field-help">
+                If two connections share one secret, deliveries sent to the shared URL are
+                refused as ambiguous. Use each connection's own URL.
+              </small>
             </div>
             {localError && <p className="modal-error">{localError}</p>}
             <div className="modal-actions">
               <button className="button" onClick={() => setWebhookId(null)}>Cancel</button>
               <button
                 className="button dark"
-                onClick={() => setWebhookSecret(webhookId!, webhookSecret)}
-                disabled={busy !== null || !webhookSecret.trim()}
+                onClick={() => void setWebhookSecret(webhookId, webhookSecret)}
+                disabled={busy !== null || webhookSecret.trim().length < 16}
               >
                 {busy !== null ? "Saving…" : "Save secret"}
               </button>
@@ -2453,16 +2634,10 @@ function PlatformFindingsSection({
 }) {
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
 
-  const githubFindings = findings.filter((f) =>
-    (f.check_key ?? "").startsWith("secret_") ||
-    (f.check_key ?? "").startsWith("dep_") ||
-    (f.check_key ?? "").startsWith("exposed_") ||
-    (f.check_key ?? "").startsWith("dockerfile_") ||
-    (f.check_key ?? "").startsWith("compose_") ||
-    (f.check_key ?? "").startsWith("workflow_"),
-  );
-  const supabaseFindings = findings.filter(
-    (f) => !githubFindings.some((g) => g.id === f.id),
+  const githubFindings = findings.filter((f) => f.platform === "github");
+  const supabaseFindings = findings.filter((f) => f.platform === "supabase");
+  const unclassifiedFindings = findings.filter(
+    (f) => f.platform !== "github" && f.platform !== "supabase",
   );
 
   const setStatus = async (id: string, status: FindingStatus) => {
@@ -2485,7 +2660,7 @@ function PlatformFindingsSection({
           <div>
             <h3>{f.title}</h3>
             <p>
-              {f.check_key} · {f.severity}{" "}
+              {f.resource ?? "—"} · {f.check_key} · {f.severity}{" "}
               <span>
                 <Dot tone={f.severity === "critical" || f.severity === "high" ? "critical" : "healthy"} />
                 {f.status}
@@ -2494,7 +2669,15 @@ function PlatformFindingsSection({
           </div>
           <div className="key-field">
             <code>{f.evidence ?? "—"}</code>
-            <span className="muted">{f.detail ?? ""}</span>
+            {f.detail && <span className="muted">{f.detail}</span>}
+            {f.confidence && <span className="muted">Confidence: {f.confidence}</span>}
+            {f.what_it_does_not_prove && (
+              <span className="muted">Does not prove: {f.what_it_does_not_prove}</span>
+            )}
+            {f.remediation && <span className="muted">Fix: {f.remediation}</span>}
+            {f.commit_sha && (
+              <span className="muted">Commit {f.commit_sha.slice(0, 7)}</span>
+            )}
           </div>
         </div>
       </div>
@@ -2525,8 +2708,10 @@ function PlatformFindingsSection({
         <div className="setting-title">
           <h3>Platform findings</h3>
           <p>
-            Findings from connected GitHub repositories and Supabase projects.
-            These are separate from website scan findings.
+            Findings from connected GitHub repositories and Supabase projects, separate from
+            website scans. Dependency checks send only package names and exact versions to OSV,
+            never source code. Supabase policy analysis is heuristic and never proves data is
+            safe.
           </p>
         </div>
         {loading ? (
@@ -2554,6 +2739,18 @@ function PlatformFindingsSection({
                   <p>Project scan findings (public storage, RLS coverage).</p>
                 </div>
                 {supabaseFindings.map(renderFinding)}
+              </>
+            )}
+            {unclassifiedFindings.length > 0 && (
+              <>
+                <div className="setting-title" style={{ marginTop: "1rem" }}>
+                  <h3>Unclassified platform findings</h3>
+                  <p>
+                    Legacy rows whose platform could not be established. They are visible only
+                    to their owner and can be reviewed or ignored.
+                  </p>
+                </div>
+                {unclassifiedFindings.map(renderFinding)}
               </>
             )}
           </>
@@ -2588,7 +2785,11 @@ function Integrations({
   error: string | null;
   onAddConnection: (input: Parameters<typeof addConnection>[0]) => Promise<void>;
   onRemoveConnection: (id: string, type: ConnectionType) => Promise<void>;
-  onScanConnection: (id: string, type: ConnectionType, repo?: { owner: string; repo: string }) => Promise<void>;
+  onScanConnection: (
+    id: string,
+    type: ConnectionType,
+    repo?: { owner: string; repo: string },
+  ) => Promise<ScanConnectionResult>;
   platformFindings: FindingRow[];
   platformFindingsLoading: boolean;
   onSetPlatformFindingStatus: (id: string, status: FindingStatus) => Promise<void>;
@@ -2827,7 +3028,7 @@ function AiCopilot({
                   <Dot tone={f.severity} /> {f.title}
                 </strong>
                 <small>
-                  {sites.find((s) => s.id === f.site_id)?.domain ?? "—"} · {f.severity} ·{" "}
+                  {siteLabel(sites, f)} · {f.severity} ·{" "}
                   {f.explanation ? "explained" : "not explained"}
                 </small>
               </span>
@@ -3308,7 +3509,11 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
       error={connectionsState.error}
       onAddConnection={(input) => connectionsState.add(input).then(() => {})}
       onRemoveConnection={connectionsState.remove}
-      onScanConnection={(id, type, repo) => connectionsState.scan(id, type, repo).then(() => {})}
+      onScanConnection={async (id, type, repo) => {
+        const result = await connectionsState.scan(id, type, repo);
+        await Promise.all([connectionsState.reload(), reloadPlatformFindings()]);
+        return result;
+      }}
       platformFindings={platformFindings}
       platformFindingsLoading={platformFindingsLoading}
       onSetPlatformFindingStatus={(id, status) => setFindingStatus(id, status).then(() => void reloadPlatformFindings())}

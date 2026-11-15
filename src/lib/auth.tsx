@@ -60,13 +60,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error: error?.message ?? null };
   }, []);
 
+  // Sign-in is identity only. Repository scanning uses a separately entered,
+  // read-only personal access token so we never request the `repo` OAuth scope
+  // merely to let someone sign in.
   const signInWithGitHub = useCallback(async () => {
     if (!supabase) return { error: "Supabase is not configured." };
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "github",
       options: {
         redirectTo: `${window.location.origin}/auth/callback`,
-        scopes: "repo read:user user:email",
       },
     });
     return { error: error?.message ?? null };

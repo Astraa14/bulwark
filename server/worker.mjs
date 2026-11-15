@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { alertNewFindings } from "./alerts.mjs";
 import { adminClient } from "./lib.mjs";
+import { runPlatformScanJobs } from "./platform-scans.mjs";
+import { websiteScanIdentity } from "./scan-id.mjs";
 
 /**
  * A scan lease is stored in the database so API and worker processes (and
@@ -30,13 +32,32 @@ async function releaseSiteScan(db, siteId, token) {
   if (error) throw new Error(`release scan claim: ${error.message}`);
 }
 
+/**
+ * Findings that were actually created by this scan. The RPC sets
+ * `first_seen_at` only for new rows, while existing findings keep their
+ * original timestamp. This is what keeps hourly scans from re-alerting every
+ * finding they still see.
+ */
+async function newFindingsForScan(db, scanId, finishedAt) {
+  const { data, error } = await db
+    .from("findings")
+    .select("id, title, severity, detail, url, check_key, affected_resource")
+    .eq("scan_id", scanId)
+    .gte("first_seen_at", finishedAt);
+  if (error) throw new Error(`load new findings: ${error.message}`);
+  return data ?? [];
+}
+
 /** Writes one scan + its findings and reschedules the site atomically. */
-export async function scanSite(db, site) {
+export async function scanSite(db, site, { runChecks: runChecksImpl } = {}) {
   const claimToken = await claimSiteScan(db, site.id);
-  // Stable scan ID used as idempotency key across retries of the same job.
-  const scanId = randomUUID();
+  // One logical scan per claimed slot. Retries of this slot reuse both values;
+  // the next due slot produces a new UUID pair. Never use site.id as the id:
+  // scans.id is a uuid and a constant key would suppress every later scan.
+  const slot = site.next_scan_at ?? new Date().toISOString();
+  const { scanId, idempotencyKey } = websiteScanIdentity({ siteId: site.id, slot });
   try {
-    const { runChecks } = await import("./checks.mjs");
+    const runChecks = runChecksImpl ?? (await import("./checks.mjs")).runChecks;
     const result = await runChecks(site.domain, { baseline: site.page_sample ?? null });
 
     const now = new Date().toISOString();
@@ -49,6 +70,7 @@ export async function scanSite(db, site) {
     // Persist scan record + finding changes + site schedule atomically.
     const { error: persistError } = await db.rpc("persist_scan_result", {
       p_scan_id: scanId,
+      p_idempotency_key: idempotencyKey,
       p_site_id: site.id,
       p_status: result.status,
       p_http_status: result.httpStatus,
@@ -71,17 +93,20 @@ export async function scanSite(db, site) {
 
     if (persistError) throw new Error(`persist scan: ${persistError.message}`);
 
-    // Newly created and reopened findings are actionable state changes.
-    // We derive these from the scan result for alerting purposes only.
-    const alertFindings = (result.findings ?? []).filter(
-      (f) => f.status === "open" || f.status === "new",
-    );
+    let newFindings = [];
+    if (result.status !== "failed" && site.user_id) {
+      try {
+        newFindings = await newFindingsForScan(db, scanId, now);
+      } catch (err) {
+        console.error(`load alertable findings for ${site.domain}: ${err.message}`);
+      }
+    }
 
-    if (alertFindings.length && result.status === "completed" && site.user_id) {
+    if (newFindings.length && site.user_id) {
       try {
         await alertNewFindings(db, {
           site,
-          findings: alertFindings,
+          findings: newFindings,
           userId: site.user_id,
           appUrl: process.env.BULWARK_APP_URL ?? "http://localhost:8443",
         });
@@ -93,9 +118,11 @@ export async function scanSite(db, site) {
     return {
       scanId,
       findings: result.findings.length,
-      newFindings: alertFindings.length,
+      newFindings: newFindings.length,
       reopenedFindings: 0,
       status: result.status,
+      coverage: result.coverage,
+      error: result.error,
     };
   } finally {
     await releaseSiteScan(db, site.id, claimToken);
@@ -159,6 +186,21 @@ if (process.argv[1]?.endsWith("worker.mjs")) {
           result.ok
             ? `scanned ${result.domain}: ${result.findings} finding(s), ${result.newFindings} new, ${result.reopenedFindings} reopened (${result.status})`
             : `failed ${result.domain}: ${result.error}`,
+        );
+      }
+
+      let jobs = [];
+      try {
+        jobs = await runPlatformScanJobs(db);
+      } catch (err) {
+        // The jobs table may not exist until the platform migration runs.
+        console.error("platform jobs tick failed:", err.message);
+      }
+      for (const job of jobs) {
+        console.log(
+          job.ok
+            ? `platform job ${job.jobId}: ${job.status}, ${job.newFindings ?? 0} new finding(s)`
+            : `platform job ${job.jobId} failed: ${job.error}`,
         );
       }
     } catch (err) {

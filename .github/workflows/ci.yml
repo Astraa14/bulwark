@@ -25,5 +25,11 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      - name: Verify generated migration bundle
+        run: npm run db:check
+
       - name: Run tests
         run: npm test
+
+      - name: Build
+        run: npm run build

@@ -14,6 +14,14 @@ services:
         sync: false
       - key: BULWARK_ENCRYPTION_KEY
         generateValue: true
+      # Build-time values for the SPA. Vite inlines these into dist/, so they
+      # must be present when `npm run build` runs on Render.
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false
+      - key: VITE_API_URL
+        sync: false
       - key: SCAN_POLL_SECONDS
         value: 60
       - key: API_PORT
