@@ -2330,29 +2330,6 @@ function ConnectionsSection({
   const scanTone = (status?: ScanStatus | null) =>
     status === "failed" ? "critical" : status === "partial" ? "medium" : "healthy";
 
-  const modalStyle = {
-    position: "fixed",
-    top: 0,
-    left: 0,
-    width: "100%",
-    height: "100%",
-    background: "rgba(0,0,0,0.5)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 50,
-  } as React.CSSProperties;
-
-  const modalCardStyle = {
-    background: "var(--surface)",
-    border: "1px solid var(--border-strong)",
-    borderRadius: "10px",
-    padding: "24px",
-    width: "min(500px, 90vw)",
-    maxHeight: "90vh",
-    overflow: "auto",
-  } as React.CSSProperties;
-
   return (
     <>
       <section className="card setting-list">
@@ -2404,55 +2381,66 @@ function ConnectionsSection({
             const coverage = coverageSummary(c);
             const webhookUrl = apiUrl(`/api/webhooks/github/${c.id}`);
             return (
-              <div className="key-row" key={c.id}>
-                <div className="key-body">
-                  <div className="provider-name">
-                    <div>
-                      <h3>{c.type === "github" ? "GitHub" : "Supabase"}</h3>
-                      <p>
-                        {subject} · {c.preview}
-                      </p>
-                    </div>
-                    <span>
-                      <Dot tone={scanTone(c.lastScanStatus)} />
-                      {c.lastScanStatus
-                        ? `${c.lastScanStatus[0].toUpperCase()}${c.lastScanStatus.slice(1)}`
-                        : "Connected"}
-                    </span>
+              <div className="record" key={c.id}>
+                <div className="record-head">
+                  <div className="record-title">
+                    <h3>{c.type === "github" ? "GitHub" : "Supabase"}</h3>
+                    <p>{subject}</p>
                   </div>
-                  <div className="key-field">
-                    <code>
-                      {c.lastCheckedAt
-                        ? `Last scan: ${shortDate(c.lastCheckedAt)}`
-                        : "Never scanned"}
-                    </code>
-                    {coverage && <span className="muted">{coverage}</span>}
-                    {c.lastScanError && (
-                      <span className="muted">Last scan note: {c.lastScanError}</span>
-                    )}
-                    <span className="muted">Added {shortDate(c.createdAt)}</span>
+                  <span className="record-status">
+                    <Dot tone={scanTone(c.lastScanStatus)} />
+                    {c.lastScanStatus
+                      ? `${c.lastScanStatus[0].toUpperCase()}${c.lastScanStatus.slice(1)}`
+                      : "Connected"}
+                  </span>
+                </div>
+                <dl className="record-facts">
+                  <div>
+                    <dt>Credential</dt>
+                    <dd>
+                      <code>{c.preview}</code>
+                    </dd>
                   </div>
-                  {c.type === "github" && (
-                    <div className="key-field">
-                      <span className="muted">
-                        Webhook URL for this connection (use the secret you set here):
-                      </span>
-                      <code style={{ fontSize: "0.75rem", wordBreak: "break-all" }}>
-                        {webhookUrl}
-                      </code>
-                      <button
-                        type="button"
-                        className="link-button"
-                        onClick={() => void copyText(`url-${c.id}`, webhookUrl)}
-                        disabled={busy !== null}
-                      >
-                        {copiedId === `url-${c.id}` ? "Copied" : "Copy URL"}
-                      </button>
+                  <div>
+                    <dt>Last scan</dt>
+                    <dd>{c.lastCheckedAt ? shortDate(c.lastCheckedAt) : "Never scanned"}</dd>
+                  </div>
+                  <div>
+                    <dt>Added</dt>
+                    <dd>{shortDate(c.createdAt)}</dd>
+                  </div>
+                  {coverage && (
+                    <div className="record-fact-wide">
+                      <dt>Last scan coverage</dt>
+                      <dd>{coverage}</dd>
                     </div>
                   )}
-                </div>
-                <div className="key-actions">
+                  {c.lastScanError && (
+                    <div className="record-fact-wide">
+                      <dt>Last scan note</dt>
+                      <dd>{c.lastScanError}</dd>
+                    </div>
+                  )}
+                  {c.type === "github" && (
+                    <div className="record-fact-wide">
+                      <dt>Webhook URL</dt>
+                      <dd className="record-url">
+                        <code>{webhookUrl}</code>
+                        <button
+                          type="button"
+                          className="link-button"
+                          onClick={() => void copyText(`url-${c.id}`, webhookUrl)}
+                          disabled={busy !== null}
+                        >
+                          {copiedId === `url-${c.id}` ? "Copied" : "Copy URL"}
+                        </button>
+                      </dd>
+                    </div>
+                  )}
+                </dl>
+                <div className="record-actions">
                   <button
+                    type="button"
                     className="button dark"
                     onClick={() => {
                       if (c.type === "supabase") {
@@ -2471,6 +2459,7 @@ function ConnectionsSection({
                   </button>
                   {c.type === "github" && (
                     <button
+                      type="button"
                       className="button"
                       onClick={() => {
                         setWebhookId(c.id);
@@ -2506,16 +2495,19 @@ function ConnectionsSection({
               advisories, and container/workflow configuration. Only repositories this token
               can read are listed.
             </p>
-            <button
-              className="button"
-              onClick={() => {
-                setReposConnectionId(null);
-                setRepos([]);
-                setReposError(null);
-              }}
-            >
-              Close
-            </button>
+            <div className="title-actions">
+              <button
+                type="button"
+                className="button"
+                onClick={() => {
+                  setReposConnectionId(null);
+                  setRepos([]);
+                  setReposError(null);
+                }}
+              >
+                Close
+              </button>
+            </div>
           </div>
           {reposLoading && <p className="muted pad">Loading repositories…</p>}
           {reposError && <p className="modal-error">{reposError}</p>}
@@ -2529,28 +2521,25 @@ function ConnectionsSection({
             </div>
           )}
           {repos.map((repo) => (
-            <div className="key-row" key={repo.full_name}>
-              <div className="key-body">
-                <div className="provider-name">
-                  <div>
-                    <h3>{repo.name}</h3>
-                    <p>
-                      {repo.owner}/{repo.name} · {repo.private ? "Private" : "Public"}
-                    </p>
-                  </div>
+            <div className="record record-compact" key={repo.full_name}>
+              <div className="record-head">
+                <div className="record-title">
+                  <h3>{repo.name}</h3>
+                  <p>
+                    {repo.owner}/{repo.name} · {repo.private ? "Private" : "Public"}
+                  </p>
                 </div>
-                <div className="key-actions">
-                  <button
-                    className="button dark"
-                    onClick={() => {
-                      const [owner, name] = repo.full_name.split("/");
-                      void runScan(reposConnectionId, "github", { owner, repo: name });
-                    }}
-                    disabled={busy !== null}
-                  >
-                    {busy === reposConnectionId ? "Scanning…" : "Scan"}
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  className="button dark"
+                  onClick={() => {
+                    const [owner, name] = repo.full_name.split("/");
+                    void runScan(reposConnectionId, "github", { owner, repo: name });
+                  }}
+                  disabled={busy !== null}
+                >
+                  {busy === reposConnectionId ? "Scanning…" : "Scan"}
+                </button>
               </div>
             </div>
           ))}
@@ -2558,19 +2547,30 @@ function ConnectionsSection({
       )}
 
       {addType === "github" && (
-        <div style={modalStyle}>
-          <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
-            <h3>Connect GitHub</h3>
-            <p>
-              Signing in with GitHub only identifies you; it does not grant repository access.
-              Paste a separate personal access token here. A fine-grained token with
-              <strong> Contents: Read-only</strong> and <strong>Metadata: Read-only</strong> is
-              enough. Bulwark never writes to your repositories, encrypts the token at rest, and
-              never shows it again.
-            </p>
+        <div className="modal-wrap">
+          <button type="button" className="modal-scrim" onClick={closeAddForm} aria-label="Close" />
+          <div
+            className="modal card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="connect-github-title"
+          >
+            <div className="modal-head">
+              <div>
+                <h2 id="connect-github-title">Connect GitHub</h2>
+                <p>
+                  Read-only access to the repositories you choose. Bulwark never writes to them and
+                  the token is encrypted at rest.
+                </p>
+              </div>
+              <button type="button" className="modal-close" onClick={closeAddForm} aria-label="Close">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" /></svg>
+              </button>
+            </div>
             <div className="field-block">
-              <label>GitHub username or organization</label>
+              <label htmlFor="gh-username">GitHub username or organization</label>
               <input
+                id="gh-username"
                 autoComplete="off"
                 value={ghUsername}
                 onChange={(e) => setGhUsername(e.target.value)}
@@ -2578,8 +2578,9 @@ function ConnectionsSection({
               />
             </div>
             <div className="field-block">
-              <label>Personal access token (read-only)</label>
+              <label htmlFor="gh-token">Personal access token (read-only)</label>
               <input
+                id="gh-token"
                 type="password"
                 autoComplete="off"
                 value={ghToken}
@@ -2587,14 +2588,17 @@ function ConnectionsSection({
                 placeholder="github_pat_…"
               />
               <small className="field-help">
-                Create it in GitHub under Settings → Developer settings → Personal access
-                tokens. Do not paste it anywhere except this form.
+                A fine-grained token with Contents and Metadata read-only is enough. Create it in
+                GitHub under Settings → Developer settings → Personal access tokens.
               </small>
             </div>
             {localError && <p className="modal-error">{localError}</p>}
             <div className="modal-actions">
-              <button className="button" onClick={closeAddForm}>Cancel</button>
+              <button type="button" className="button" onClick={closeAddForm}>
+                Cancel
+              </button>
               <button
+                type="button"
                 className="button dark"
                 onClick={() => void submitConnection()}
                 disabled={busy !== null}
@@ -2607,18 +2611,30 @@ function ConnectionsSection({
       )}
 
       {addType === "supabase" && (
-        <div style={modalStyle}>
-          <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
-            <h3>Connect Supabase</h3>
-            <p>
-              Bulwark checks storage buckets, API connectivity, and Row Level Security
-              metadata. Use the project's publishable (anon) key: service-role and
-              <code> sb_secret_ </code> keys are refused. Credentials are encrypted at rest and
-              used read-only.
-            </p>
+        <div className="modal-wrap">
+          <button type="button" className="modal-scrim" onClick={closeAddForm} aria-label="Close" />
+          <div
+            className="modal card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="connect-supabase-title"
+          >
+            <div className="modal-head">
+              <div>
+                <h2 id="connect-supabase-title">Connect Supabase</h2>
+                <p>
+                  Checks storage buckets, API connectivity and Row Level Security metadata.
+                  Credentials are encrypted at rest and used read-only.
+                </p>
+              </div>
+              <button type="button" className="modal-close" onClick={closeAddForm} aria-label="Close">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" /></svg>
+              </button>
+            </div>
             <div className="field-block">
-              <label>Project ref</label>
+              <label htmlFor="sb-ref">Project ref</label>
               <input
+                id="sb-ref"
                 autoComplete="off"
                 value={sbRef}
                 onChange={(e) => setSbRef(e.target.value)}
@@ -2629,8 +2645,9 @@ function ConnectionsSection({
               </small>
             </div>
             <div className="field-block">
-              <label>Project name (optional)</label>
+              <label htmlFor="sb-name">Project name (optional)</label>
               <input
+                id="sb-name"
                 autoComplete="off"
                 value={sbName}
                 onChange={(e) => setSbName(e.target.value)}
@@ -2638,8 +2655,9 @@ function ConnectionsSection({
               />
             </div>
             <div className="field-block">
-              <label>Publishable (anon) key</label>
+              <label htmlFor="sb-key">Publishable (anon) key</label>
               <input
+                id="sb-key"
                 type="password"
                 autoComplete="off"
                 value={sbKey}
@@ -2647,14 +2665,18 @@ function ConnectionsSection({
                 placeholder="sb_publishable_… or eyJ…"
               />
               <small className="field-help">
-                RLS inspection needs the helper at supabase/customer/bulwark_check_rls.sql.
-                Without it, RLS is reported as not checked rather than safe.
+                Service-role and sb_secret_ keys are refused. RLS inspection needs the helper at
+                supabase/customer/bulwark_check_rls.sql; without it, RLS is reported as not
+                checked rather than safe.
               </small>
             </div>
             {localError && <p className="modal-error">{localError}</p>}
             <div className="modal-actions">
-              <button className="button" onClick={closeAddForm}>Cancel</button>
+              <button type="button" className="button" onClick={closeAddForm}>
+                Cancel
+              </button>
               <button
+                type="button"
                 className="button dark"
                 onClick={() => void submitConnection()}
                 disabled={busy !== null}
@@ -2667,20 +2689,44 @@ function ConnectionsSection({
       )}
 
       {webhookId && (
-        <div style={modalStyle}>
-          <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
-            <h3>GitHub Webhook Secret</h3>
-            <p>
-              Use the per-connection webhook URL shown on this connection, then paste the same
-              secret here. GitHub signs each delivery with it, so unsigned or mismatched
-              requests are rejected. Deliveries are de-duplicated by delivery ID.
-            </p>
-            <p className="muted" style={{ wordBreak: "break-all" }}>
-              {apiUrl(`/api/webhooks/github/${webhookId}`)}
-            </p>
+        <div className="modal-wrap">
+          <button
+            type="button"
+            className="modal-scrim"
+            onClick={() => setWebhookId(null)}
+            aria-label="Close"
+          />
+          <div
+            className="modal card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="webhook-title"
+          >
+            <div className="modal-head">
+              <div>
+                <h2 id="webhook-title">GitHub webhook secret</h2>
+                <p>
+                  GitHub signs each delivery with this secret, so unsigned or mismatched requests
+                  are rejected. Deliveries are de-duplicated by delivery ID.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() => setWebhookId(null)}
+                aria-label="Close"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" /></svg>
+              </button>
+            </div>
+            <div className="modal-url">
+              <span>Webhook URL</span>
+              <code>{apiUrl(`/api/webhooks/github/${webhookId}`)}</code>
+            </div>
             <div className="field-block">
-              <label>Webhook secret (at least 16 characters)</label>
+              <label htmlFor="webhook-secret">Webhook secret (at least 16 characters)</label>
               <input
+                id="webhook-secret"
                 type="password"
                 autoComplete="off"
                 value={webhookSecret}
@@ -2688,14 +2734,17 @@ function ConnectionsSection({
                 placeholder="Enter a random secret string"
               />
               <small className="field-help">
-                If two connections share one secret, deliveries sent to the shared URL are
-                refused as ambiguous. Use each connection's own URL.
+                Use each connection's own URL. Two connections sharing one secret make deliveries
+                ambiguous, so those requests are refused.
               </small>
             </div>
             {localError && <p className="modal-error">{localError}</p>}
             <div className="modal-actions">
-              <button className="button" onClick={() => setWebhookId(null)}>Cancel</button>
+              <button type="button" className="button" onClick={() => setWebhookId(null)}>
+                Cancel
+              </button>
               <button
+                type="button"
                 className="button dark"
                 onClick={() => void setWebhookSecret(webhookId, webhookSecret)}
                 disabled={busy !== null || webhookSecret.trim().length < 16}
@@ -2741,39 +2790,69 @@ function PlatformFindingsSection({
   };
 
   const renderFinding = (f: FindingRow) => (
-    <div className="key-row" key={f.id}>
-      <div className="key-body">
-        <div className="provider-name">
-          <div>
-            <h3>{f.title}</h3>
-            <p>
-              {f.resource ?? "—"} · {f.check_key} · {f.severity}{" "}
-              <span>
-                <Dot tone={f.severity === "critical" || f.severity === "high" ? "critical" : "healthy"} />
-                {f.status}
-              </span>
-            </p>
-          </div>
-          <div className="key-field">
-            <code>{f.evidence ?? "—"}</code>
-            {f.detail && <span className="muted">{f.detail}</span>}
-            {f.confidence && <span className="muted">Confidence: {f.confidence}</span>}
-            {f.what_it_does_not_prove && (
-              <span className="muted">Does not prove: {f.what_it_does_not_prove}</span>
-            )}
-            {f.remediation && <span className="muted">Fix: {f.remediation}</span>}
-            {f.commit_sha && (
-              <span className="muted">Commit {f.commit_sha.slice(0, 7)}</span>
-            )}
-          </div>
+    <div className="record" key={f.id}>
+      <div className="record-head">
+        <div className="record-title">
+          <h3>{f.title}</h3>
+          <p>
+            <code>{f.resource ?? "—"}</code> · {f.check_key}
+          </p>
         </div>
+        <span className="record-status">
+          <span className="severity">
+            <Dot tone={f.severity} />
+            {f.severity}
+          </span>
+          <span className={`tag status-tag status-${f.status}`}>{f.status}</span>
+        </span>
       </div>
-      <div className="key-actions">
+      <dl className="record-facts">
+        <div className="record-fact-wide">
+          <dt>Evidence</dt>
+          <dd>
+            <code>{f.evidence ?? "—"}</code>
+          </dd>
+        </div>
+        {f.confidence && (
+          <div>
+            <dt>Confidence</dt>
+            <dd>{f.confidence}</dd>
+          </div>
+        )}
+        {f.commit_sha && (
+          <div>
+            <dt>Commit</dt>
+            <dd>
+              <code>{f.commit_sha.slice(0, 7)}</code>
+            </dd>
+          </div>
+        )}
+        {f.detail && (
+          <div className="record-fact-wide">
+            <dt>Detail</dt>
+            <dd>{f.detail}</dd>
+          </div>
+        )}
+        {f.what_it_does_not_prove && (
+          <div className="record-fact-wide">
+            <dt>Does not prove</dt>
+            <dd>{f.what_it_does_not_prove}</dd>
+          </div>
+        )}
+        {f.remediation && (
+          <div className="record-fact-wide">
+            <dt>Suggested fix</dt>
+            <dd>{f.remediation}</dd>
+          </div>
+        )}
+      </dl>
+      <div className="record-actions">
         <select
           value={f.status}
           onChange={(e) => setStatus(f.id, e.target.value as FindingStatus)}
           disabled={busyIds.has(f.id)}
           className="status-select"
+          aria-label={`Status for ${f.title}`}
         >
           <option value="open">Open</option>
           <option value="acknowledged">Acknowledged</option>
@@ -2781,8 +2860,8 @@ function PlatformFindingsSection({
           <option value="ignored">Ignored</option>
         </select>
         {f.url && (
-          <a href={f.url} target="_blank" rel="noopener noreferrer" className="button dark" style={{ fontSize: "0.85rem", padding: "4px 10px" }}>
-            View
+          <a href={f.url} target="_blank" rel="noopener noreferrer" className="button">
+            View source ↗
           </a>
         )}
       </div>
@@ -2812,30 +2891,27 @@ function PlatformFindingsSection({
           <>
             {githubFindings.length > 0 && (
               <>
-                <div className="setting-title" style={{ marginTop: "1rem" }}>
+                <div className="group-head">
                   <h3>GitHub</h3>
-                  <p>Repository scan findings (secrets, dependencies, configuration).</p>
+                  <p>Secrets, dependencies and configuration</p>
                 </div>
                 {githubFindings.map(renderFinding)}
               </>
             )}
             {supabaseFindings.length > 0 && (
               <>
-                <div className="setting-title" style={{ marginTop: "1rem" }}>
+                <div className="group-head">
                   <h3>Supabase</h3>
-                  <p>Project scan findings (public storage, RLS coverage).</p>
+                  <p>Public storage and RLS coverage</p>
                 </div>
                 {supabaseFindings.map(renderFinding)}
               </>
             )}
             {unclassifiedFindings.length > 0 && (
               <>
-                <div className="setting-title" style={{ marginTop: "1rem" }}>
-                  <h3>Unclassified platform findings</h3>
-                  <p>
-                    Legacy rows whose platform could not be established. They are visible only
-                    to their owner and can be reviewed or ignored.
-                  </p>
+                <div className="group-head">
+                  <h3>Unclassified</h3>
+                  <p>Legacy rows whose platform could not be established</p>
                 </div>
                 {unclassifiedFindings.map(renderFinding)}
               </>
@@ -2962,6 +3038,7 @@ function Integrations({
         ))}
       </div>
       {tab === "alerts" && (
+      <div className="integration-body">
       <div className="api-grid">
         <div>
           <section className="card setting-list">
@@ -3024,6 +3101,8 @@ function Integrations({
                 ))}
               </select>
             </div>
+            {slackError && <p className="modal-error" role="alert">{slackError}</p>}
+            {message && <p className="save-note" role="status" aria-live="polite">{message}</p>}
             <div className="setting-actions">
               <Button dark onClick={() => save("save")} disabled={busy !== null}>
                 {busy === "save" ? "Saving…" : "Save changes"}
@@ -3032,8 +3111,6 @@ function Integrations({
                 {busy === "test" ? "Sending…" : "Send test message"}
               </Button>
             </div>
-            {slackError && <p className="modal-error" role="alert">{slackError}</p>}
-            {message && <p className="save-note" role="status" aria-live="polite">{message}</p>}
           </section>
         </div>
         <div>
@@ -3063,9 +3140,11 @@ _Open Bulwark for the fix_`}</pre>
           </section>
         </div>
       </div>
+      </div>
       )}
 
       {tab === "platforms" && (
+      <div className="integration-body">
       <ConnectionsSection
         connections={connections}
         loading={loading}
@@ -3075,14 +3154,17 @@ _Open Bulwark for the fix_`}</pre>
         onScan={onScanConnection}
         onSetWebhookSecret={(id, secret) => onSetWebhookSecret(id, secret)}
       />
+      </div>
       )}
 
       {tab === "findings" && (
+      <div className="integration-body">
       <PlatformFindingsSection
         findings={platformFindings}
         loading={platformFindingsLoading}
         onSetStatus={onSetPlatformFindingStatus}
       />
+      </div>
       )}
     </>
   );
