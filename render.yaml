@@ -5,6 +5,7 @@ services:
     plan: starter
     buildCommand: npm install && npm run build
     startCommand: node server/start.mjs
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
         value: 22

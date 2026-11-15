@@ -85,7 +85,22 @@ function intervalLabel(minutes: number) {
 }
 
 function csvCell(value: unknown) {
-  return `"${String(value ?? "").replace(/"/g, '""')}"`;
+  let text = String(value ?? "");
+  // Spreadsheet formula injection: a leading =, +, -, @, tab or CR makes
+  // Excel/Sheets evaluate the cell. Prefix with an apostrophe, then quote.
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+/** Only http(s) links may be rendered as hrefs; anything else is ignored. */
+function safeExternalUrl(value: string | null | undefined) {
+  if (!value) return null;
+  try {
+    const url = new URL(value, window.location.origin);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
 }
 
 function downloadCsv(name: string, header: string[], rows: unknown[][]) {
@@ -1229,10 +1244,10 @@ function ThreatDetail({
           <small>WHAT BULWARK FOUND</small>
           <h2>{site ? `On ${site.domain}` : "Finding detail"}</h2>
           <p>{finding.detail ?? "No extra detail was recorded for this finding."}</p>
-          {finding.url && (
+          {safeExternalUrl(finding.url) && (
             <p className="detail-url">
               Affected URL:{" "}
-              <a href={finding.url} target="_blank" rel="noreferrer">
+              <a href={safeExternalUrl(finding.url) as string} target="_blank" rel="noreferrer">
                 {finding.url}
               </a>
             </p>

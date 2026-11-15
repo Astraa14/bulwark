@@ -1,4 +1,8 @@
+import { decrypt, encrypt } from "./crypto.mjs";
+
 export const SEVERITY_RANK = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+
+const SLACK_TIMEOUT_MS = 8000;
 
 /** Only Slack incoming-webhook URLs may be called by the server. */
 export const SLACK_WEBHOOK_RE = /^https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9/_-]+$/;
@@ -15,14 +19,46 @@ export const DEFAULT_SETTINGS = {
   alerts_enabled: true,
 };
 
-function shape(row) {
+function shape(row, slackWebhookUrl = null) {
   return {
     scanIntervalMinutes: row.scan_interval_minutes ?? 60,
     autonomy: row.autonomy ?? "suggest",
-    slackWebhookUrl: row.slack_webhook_url ?? null,
+    slackWebhookUrl,
     slackMinSeverity: row.slack_min_severity ?? "high",
     alertsEnabled: row.alerts_enabled ?? true,
   };
+}
+
+/**
+ * Webhook URLs are bearer secrets: anyone holding one can post to the channel.
+ * They are encrypted at rest. Rows written before encryption existed are
+ * adopted (encrypted, plaintext cleared) the first time they are read.
+ */
+async function readSlackWebhook(db, userId, row) {
+  if (row?.slack_webhook_encrypted) {
+    try {
+      return decrypt(row.slack_webhook_encrypted);
+    } catch {
+      // Wrong or rotated key: treat as unconfigured rather than sending an
+      // unreadable ciphertext to Slack.
+      return null;
+    }
+  }
+
+  const legacy = String(row?.slack_webhook_url ?? "").trim();
+  if (!legacy) return null;
+
+  try {
+    const encrypted = encrypt(legacy);
+    await db
+      .from("user_settings")
+      .update({ slack_webhook_encrypted: encrypted, slack_webhook_url: null })
+      .eq("user_id", userId);
+  } catch {
+    // No encryption key available: keep serving the legacy value so alerts
+    // still work, but do not pretend the row is encrypted.
+  }
+  return legacy;
 }
 
 /** Returns defaults when the settings row (or table) does not exist yet. */
@@ -38,7 +74,7 @@ export async function getSettings(db, userId) {
     return { ...shape(DEFAULT_SETTINGS), missing: true };
   }
   if (!data) return shape(DEFAULT_SETTINGS);
-  return shape(data);
+  return shape(data, await readSlackWebhook(db, userId, data));
 }
 
 export async function saveSettings(db, userId, patch) {
@@ -55,12 +91,25 @@ export async function saveSettings(db, userId, patch) {
     if (!["suggest", "auto_fix"].includes(patch.autonomy)) throw new Error("Invalid autonomy value.");
     update.autonomy = patch.autonomy;
   }
+  let slackWebhookUrl = null;
   if (patch.slackWebhookUrl !== undefined) {
     const url = String(patch.slackWebhookUrl ?? "").trim();
     if (url && !isSlackWebhookUrl(url)) {
       throw new Error("That does not look like a Slack incoming webhook URL.");
     }
-    update.slack_webhook_url = url || null;
+    slackWebhookUrl = url || null;
+    update.slack_webhook_url = null;
+    if (url) {
+      try {
+        update.slack_webhook_encrypted = encrypt(url);
+      } catch {
+        throw new Error(
+          "Server encryption is not configured, so the webhook cannot be stored safely.",
+        );
+      }
+    } else {
+      update.slack_webhook_encrypted = null;
+    }
   }
   if (patch.slackMinSeverity !== undefined) {
     if (!Object.keys(SEVERITY_RANK).includes(patch.slackMinSeverity)) {
@@ -82,7 +131,7 @@ export async function saveSettings(db, userId, patch) {
     }
     throw new Error(`save settings: ${error.message}`);
   }
-  return shape(data);
+  return shape(data, slackWebhookUrl);
 }
 
 export async function sendSlack(url, text) {
@@ -94,7 +143,12 @@ export async function sendSlack(url, text) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ text }),
+    redirect: "manual",
+    signal: AbortSignal.timeout(SLACK_TIMEOUT_MS),
   });
+  if (res.status >= 300 && res.status < 400) {
+    throw new Error("Slack redirected the webhook request, so it was not followed.");
+  }
   if (!res.ok) {
     // Do not echo the response body: this is an outbound request to a
     // user-influenced URL, so the body could leak internal data.

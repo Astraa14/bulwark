@@ -37,6 +37,35 @@ test("ensureSafeFetchUrl rejects private and loopback literals", async () => {
   await assert.rejects(() => ensureSafeFetchUrl("http://169.254.169.254/", { lookup: publicLookup }), /Blocked/);
 });
 
+test("ensureSafeFetchUrl blocks unspecified, CGNAT, reserved and multicast ranges", async () => {
+  const blocked = [
+    "http://0.0.0.0/",
+    "http://0/",
+    "http://[::]/",
+    "http://100.64.0.1/",
+    "http://192.0.0.10/",
+    "http://198.18.0.1/",
+    "http://224.0.0.1/",
+    "http://240.0.0.1/",
+    "http://[fe80::1]/",
+    "http://[fc00::1]/",
+    "http://[::ffff:127.0.0.1]/",
+    "http://metadata/",
+  ];
+
+  for (const url of blocked) {
+    await assert.rejects(() => ensureSafeFetchUrl(url, { lookup: publicLookup }), /Blocked/, url);
+  }
+
+  await assert.rejects(
+    () =>
+      ensureSafeFetchUrl("https://rebind.example.com/", {
+        lookup: async () => [{ address: "0.0.0.0", family: 4 }],
+      }),
+    /Blocked/,
+  );
+});
+
 test("ensureSafeFetchUrl rejects a hostname that resolves to a private address", async () => {
   await assert.rejects(
     () => ensureSafeFetchUrl("https://rebind.example.com/", {

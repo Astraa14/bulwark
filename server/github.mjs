@@ -44,7 +44,47 @@ function isTextFile(filePath) {
   return TEXT_EXTENSIONS.has(base.slice(dot));
 }
 
-async function githubFetch(token, path, { fetchImpl = fetch, timeout = GITHUB_REQUEST_TIMEOUT_MS } = {}) {
+const MAX_GITHUB_RESPONSE_BYTES = 8_000_000;
+
+/** Reads a response body with a hard byte cap, then parses it as JSON. */
+async function readJsonBounded(res, maxBytes) {
+  if (res.body && typeof res.body.getReader === "function") {
+    const reader = res.body.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+        if (total > maxBytes) {
+          await reader.cancel().catch(() => {});
+          throw new Error(`GitHub response exceeds the ${maxBytes} byte limit.`);
+        }
+        chunks.push(Buffer.from(value));
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        // Already released after cancel.
+      }
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  }
+
+  const text = await res.text();
+  if (Buffer.byteLength(text) > maxBytes) {
+    throw new Error(`GitHub response exceeds the ${maxBytes} byte limit.`);
+  }
+  return JSON.parse(text);
+}
+
+async function githubFetch(
+  token,
+  path,
+  { fetchImpl = fetch, timeout = GITHUB_REQUEST_TIMEOUT_MS, maxBytes = MAX_GITHUB_RESPONSE_BYTES } = {},
+) {
   const res = await fetchImpl(`${GITHUB_API}${path}`, {
     headers: {
       authorization: `Bearer ${token}`,
@@ -52,8 +92,13 @@ async function githubFetch(token, path, { fetchImpl = fetch, timeout = GITHUB_RE
       accept: "application/vnd.github+json",
       "x-github-api-version": "2022-11-28",
     },
+    redirect: "manual",
     signal: AbortSignal.timeout(timeout),
   });
+
+  if (res.status >= 300 && res.status < 400) {
+    throw new Error("GitHub API redirected the request, so it was not followed.");
+  }
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -61,7 +106,13 @@ async function githubFetch(token, path, { fetchImpl = fetch, timeout = GITHUB_RE
     err.status = res.status;
     throw err;
   }
-  return res.json();
+
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new Error(`GitHub response exceeds the ${maxBytes} byte limit.`);
+  }
+
+  return readJsonBounded(res, maxBytes);
 }
 
 export async function listGitHubRepos(token, { fetchImpl = fetch, maxPages = 10 } = {}) {

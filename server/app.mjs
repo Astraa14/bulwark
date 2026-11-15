@@ -27,9 +27,102 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ---------------------------------------------------------------------------
+// Security middleware
+// ---------------------------------------------------------------------------
+
+function securityHeaders() {
+  const baseCsp = [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+    // Vite emits external module scripts only; no inline script is required.
+    "script-src 'self'",
+    // React sets style attributes, and Google Fonts serves the stylesheet.
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "img-src 'self' data:",
+    "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
+    "frame-src 'none'",
+  ];
+
+  return (req, res, next) => {
+    const secure = req.secure || req.headers["x-forwarded-proto"] === "https";
+    // Only ask for HTTPS upgrades on an HTTPS page; on plain-http localhost it
+    // would rewrite the dev server's own requests to https and break them.
+    const csp = [...baseCsp, ...(secure ? ["upgrade-insecure-requests"] : [])].join("; ");
+    res.setHeader("Content-Security-Policy", csp);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+    if (secure) {
+      res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    }
+    next();
+  };
+}
+
+/** Fixed-window in-memory limiter. Per process; front with an edge limiter for multi-instance. */
+function rateLimit({ windowMs, max, scope }) {
+  const buckets = new Map();
+
+  return (req, res, next) => {
+    const identity = req.user?.id ?? req.ip ?? "unknown";
+    const key = `${scope}:${identity}`;
+    const now = Date.now();
+    let bucket = buckets.get(key);
+
+    if (!bucket || now - bucket.start >= windowMs) {
+      bucket = { start: now, count: 0 };
+      buckets.set(key, bucket);
+    }
+    bucket.count += 1;
+
+    if (buckets.size > 10_000) {
+      for (const [entryKey, entry] of buckets) {
+        if (now - entry.start >= windowMs) buckets.delete(entryKey);
+      }
+    }
+
+    if (bucket.count > max) {
+      res.setHeader("Retry-After", String(Math.ceil((bucket.start + windowMs - now) / 1000)));
+      return res.status(429).json({ error: "Too many requests. Please slow down." });
+    }
+    next();
+  };
+}
+
+/** Bounds how many scans (each with ~40 outbound requests) run at once. */
+function createScanSemaphore(limit) {
+  let active = 0;
+  const waiting = [];
+
+  return async (task) => {
+    if (active >= limit) await new Promise((resolve) => waiting.push(resolve));
+    active += 1;
+    try {
+      return await task();
+    } finally {
+      active -= 1;
+      waiting.shift()?.();
+    }
+  };
+}
+
 const allowedOrigins = new Set(
   [
     process.env.BULWARK_APP_URL,
+    // Deployment-specific origins (e.g. a Vercel preview) go here, comma
+    // separated. Wildcarding *.vercel.app would let any Vercel tenant call
+    // this API from a browser with the user's bearer token in scope.
+    ...String(process.env.BULWARK_ALLOWED_ORIGINS ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
     "http://localhost:8443",
     "http://127.0.0.1:8443",
     "http://localhost:5173",
@@ -42,9 +135,7 @@ function createCors() {
     const origin = req.headers.origin;
     const allowed =
       origin &&
-      (allowedOrigins.has(origin) ||
-        /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin) ||
-        /^http:\/\/(localhost|127\.0\.0\.1):\d+$/i.test(origin));
+      (allowedOrigins.has(origin) || /^http:\/\/(localhost|127\.0\.0\.1):\d+$/i.test(origin));
 
     if (allowed) {
       res.setHeader("Access-Control-Allow-Origin", origin);
@@ -75,11 +166,33 @@ export function createApp({
   if (!db) throw new Error("createApp requires a database client.");
 
   const app = express();
+
+  // Behind Render's proxy, req.ip must come from X-Forwarded-For.
+  app.set("trust proxy", 1);
+  app.disable("x-powered-by");
+
   const wrap = (fn) => (req, res) =>
     fn(req, res).catch((err) => {
-      logger.error?.(err);
-      res.status(500).json({ error: err.message });
+      const requestId = randomUUID();
+      const status = Number.isInteger(err?.status) ? err.status : 500;
+      logger.error?.(`[${requestId}] ${req.method} ${req.originalUrl}`, err);
+      if (status >= 500) {
+        // Never leak table names, SQL fragments or provider errors.
+        return res
+          .status(status)
+          .json({ error: "Something went wrong. Please try again.", requestId });
+      }
+      res.status(status).json({ error: err?.message ?? "Request failed", requestId });
     });
+
+  const apiLimiter = rateLimit({ windowMs: 60_000, max: 240, scope: "api" });
+  const scanLimiter = rateLimit({ windowMs: 60_000, max: 6, scope: "scan" });
+  const explainLimiter = rateLimit({ windowMs: 60_000, max: 10, scope: "explain" });
+  const alertLimiter = rateLimit({ windowMs: 60_000, max: 5, scope: "alert" });
+  const webhookLimiter = rateLimit({ windowMs: 60_000, max: 120, scope: "webhook" });
+  const withScanSlot = createScanSemaphore(
+    Math.max(1, Number(process.env.BULWARK_SCAN_CONCURRENCY ?? 2)),
+  );
 
   async function requireUser(req, res, next) {
     try {
@@ -97,7 +210,9 @@ export function createApp({
     }
   }
 
+  app.use(securityHeaders());
   app.use(createCors());
+  app.use("/api", apiLimiter);
 
   app.get("/api/health", (_req, res) =>
     res.json({
@@ -204,8 +319,13 @@ export function createApp({
 
   // Webhook routes must be registered before express.json(): HMAC verification
   // needs the exact bytes GitHub signed, and the JSON parser consumes them.
-  app.post("/api/webhooks/github", webhookParser, handleGitHubWebhook);
-  app.post("/api/webhooks/github/:connectionId", webhookParser, handleGitHubWebhook);
+  app.post("/api/webhooks/github", webhookLimiter, webhookParser, handleGitHubWebhook);
+  app.post(
+    "/api/webhooks/github/:connectionId",
+    webhookLimiter,
+    webhookParser,
+    handleGitHubWebhook,
+  );
 
   app.use(express.json({ limit: "64kb" }));
 
@@ -305,6 +425,7 @@ export function createApp({
   app.post(
     "/api/connections/github/:id/scan",
     requireUser,
+    scanLimiter,
     wrap(async (req, res) => {
       const conn = await resolveConnection(db, req.user.id, req.params.id, "github_connections");
       if (!conn) return res.status(404).json({ error: "GitHub connection not found" });
@@ -335,19 +456,21 @@ export function createApp({
         });
       }
 
-      const out = await scanGitHubConnection({
-        db,
-        userId: req.user.id,
-        connection: conn,
-        owner,
-        repo,
-        sha: sha || null,
-        ref: ref || null,
-        fetchImpl,
-        osvFetchImpl,
-        appUrl,
-        logger,
-      });
+      const out = await withScanSlot(() =>
+        scanGitHubConnection({
+          db,
+          userId: req.user.id,
+          connection: conn,
+          owner,
+          repo,
+          sha: sha || null,
+          ref: ref || null,
+          fetchImpl,
+          osvFetchImpl,
+          appUrl,
+          logger,
+        }),
+      );
       res.json({ ok: true, ...out });
     }),
   );
@@ -355,18 +478,21 @@ export function createApp({
   app.post(
     "/api/connections/supabase/:id/scan",
     requireUser,
+    scanLimiter,
     wrap(async (req, res) => {
       const conn = await resolveConnection(db, req.user.id, req.params.id, "supabase_connections");
       if (!conn) return res.status(404).json({ error: "Supabase connection not found" });
 
-      const out = await scanSupabaseConnection({
-        db,
-        userId: req.user.id,
-        connection: conn,
-        fetchImpl,
-        appUrl,
-        logger,
-      });
+      const out = await withScanSlot(() =>
+        scanSupabaseConnection({
+          db,
+          userId: req.user.id,
+          connection: conn,
+          fetchImpl,
+          appUrl,
+          logger,
+        }),
+      );
       res.json({ ok: true, ...out });
     }),
   );
@@ -490,6 +616,7 @@ export function createApp({
   app.post(
     "/api/scan",
     requireUser,
+    scanLimiter,
     wrap(async (req, res) => {
       const site = await ownedSite(req.user.id, req.body?.siteId);
       if (!site) return res.status(404).json({ error: "Site not found" });
@@ -497,7 +624,7 @@ export function createApp({
         return res.status(409).json({ error: "Site is not verified yet" });
       }
 
-      const out = await scanSite(db, site);
+      const out = await withScanSlot(() => scanSite(db, site));
       res.json({ ok: true, ...out });
     }),
   );
@@ -555,6 +682,7 @@ export function createApp({
   app.post(
     "/api/explain",
     requireUser,
+    explainLimiter,
     wrap(async (req, res) => {
       const findingId = req.body?.findingId;
       if (!findingId) return res.status(400).json({ error: "Missing findingId" });
@@ -653,6 +781,7 @@ export function createApp({
   app.post(
     "/api/alerts/test",
     requireUser,
+    alertLimiter,
     wrap(async (req, res) => {
       const settings = await getSettings(db, req.user.id);
       const url = String(req.body?.webhookUrl ?? settings.slackWebhookUrl ?? "").trim();
@@ -695,8 +824,13 @@ export function createApp({
     if (err instanceof SyntaxError && "body" in err) {
       return res.status(400).json({ error: "Invalid JSON body." });
     }
-    logger.error?.(err);
-    res.status(err?.status ?? 500).json({ error: err?.message ?? "Internal error" });
+    const requestId = randomUUID();
+    logger.error?.(`[${requestId}] unhandled request error`, err);
+    const status = Number.isInteger(err?.status) ? err.status : 500;
+    res.status(status).json({
+      error: status >= 500 ? "Something went wrong. Please try again." : "Request failed.",
+      requestId,
+    });
   });
 
   return app;

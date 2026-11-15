@@ -278,7 +278,14 @@ export function useWorkspace() {
     }
 
     const [sitesRes, findingsRes, scansRes, countRes] = await Promise.all([
-      supabase.from("sites").select("*").order("created_at", { ascending: true }),
+      // Explicit columns: never ship a column the UI does not need to the
+      // browser just because it exists.
+      supabase
+        .from("sites")
+        .select(
+          "id,user_id,domain,display_name,status,verify_token,scan_interval_minutes,autonomy,last_scan_at,next_scan_at,page_sample,page_sample_at,created_at",
+        )
+        .order("created_at", { ascending: true }),
       supabase
         .from("findings")
         .select("*")

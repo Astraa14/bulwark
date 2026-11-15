@@ -3,6 +3,9 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 /** GitHub rejects payloads above 25 MB; Bulwark accepts a much smaller bound. */
 export const MAX_WEBHOOK_BYTES = 1_000_000;
 
+/** Upper bound on HMAC comparisons for the global (non per-connection) URL. */
+export const MAX_GLOBAL_WEBHOOK_SECRETS = 200;
+
 /**
  * Verify X-Hub-Signature-256 against the exact request bytes. Never pass a
  * parsed object here: re-serialising JSON changes the bytes and breaks HMAC.
@@ -89,11 +92,14 @@ export async function findWebhookConnection({
     }
   }
 
+  // The per-connection URL is the documented path. The global endpoint still
+  // works, but only ever inspects a bounded number of secrets per delivery.
   const { data, error } = await db
     .from("github_connections")
     .select(columns)
     .not("webhook_secret_encrypted", "is", null)
-    .limit(500);
+    .order("created_at", { ascending: true })
+    .limit(MAX_GLOBAL_WEBHOOK_SECRETS);
   if (error) throw new Error(`load webhook connections: ${error.message}`);
 
   const matches = [];

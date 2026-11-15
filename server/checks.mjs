@@ -1,33 +1,95 @@
 import { connect } from "node:tls";
+import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 
 const UA = "BulwarkBot/0.3 (+https://bulwark.app/bot)";
+
+/** Captured once so a test stub can be told apart from undici's real fetch. */
+const nativeFetch = globalThis.fetch;
 
 // ============================================================================
 // SSRF / outbound network safety
 // ============================================================================
 
-const BLOCKED_PRIVATE_PREFIXES = [
-  "10.", "127.", "169.254.", "172.16.", "172.17.", "172.18.", "172.19.",
-  "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.",
-  "172.27.", "172.28.", "172.29.", "172.30.", "172.31.", "192.168.",
-  "::1", "fc", "fd", "fe80:", "fe9", "fea", "feb", "::ffff:",
+/**
+ * Every non-public address family we refuse to connect to. Prefix lengths are
+ * exact, so 100.64.0.0/10 (CGNAT) is not accidentally read as 100.0.0.0/8 and
+ * 172.16.0.0/12 does not spill into 172.32.0.0.
+ */
+const BLOCKED_V4_RANGES = [
+  ["0.0.0.0", 8], // "this network", includes 0.0.0.0 and 0.x.y.z
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10], // carrier-grade NAT
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16], // link-local, cloud metadata
+  ["172.16.0.0", 12],
+  ["192.0.0.0", 24], // IETF protocol assignments
+  ["192.0.2.0", 24],
+  ["192.168.0.0", 16],
+  ["198.18.0.0", 15], // benchmarking
+  ["198.51.100.0", 24],
+  ["203.0.113.0", 24],
+  ["224.0.0.0", 4], // multicast
+  ["240.0.0.0", 4], // reserved, includes 255.255.255.255
 ];
 
 const ALLOWED_PORTS = new Set([80, 443]);
 
-function isBlockedIpAddress(ip) {
-  const value = String(ip ?? "").trim().toLowerCase();
-  if (!value) return false;
-  if (value === "localhost") return true;
-  if (value.startsWith("::ffff:")) return true;
-  if (value.startsWith("127.") || value === "::1") return true;
-  if (value.startsWith("10.") || value.startsWith("192.168.")) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(value)) return true;
-  if (value.startsWith("169.254.") || value.startsWith("fc") || value.startsWith("fd")) return true;
-  if (value.startsWith("fe8") || value.startsWith("fe9") || value.startsWith("fea") || value.startsWith("feb")) return true;
+function ipv4ToInt(value) {
+  const parts = String(value ?? "").split(".");
+  if (parts.length !== 4) return null;
+  let total = 0;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const octet = Number(part);
+    if (octet > 255) return null;
+    total = total * 256 + octet;
+  }
+  return total >>> 0;
+}
+
+function isBlockedV4(value) {
+  const ip = ipv4ToInt(value);
+  if (ip === null) return true;
+  return BLOCKED_V4_RANGES.some(([base, bits]) => {
+    const baseInt = ipv4ToInt(base);
+    if (baseInt === null) return true;
+    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+    return (ip & mask) === (baseInt & mask);
+  });
+}
+
+function isBlockedV6(value) {
+  const ip = String(value ?? "").toLowerCase();
+  if (!ip) return true;
+  if (ip === "::" || ip === "::1" || ip === "0:0:0:0:0:0:0:0" || ip === "0:0:0:0:0:0:0:1") {
+    return true;
+  }
+  if (ip.startsWith("::ffff:")) return true; // IPv4-mapped
+  if (ip.startsWith("64:ff9b:") || ip.startsWith("64:ff9b::")) return true; // NAT64
+  if (/^f[cd]/.test(ip)) return true; // unique local fc00::/7
+  if (/^fe[89ab]/.test(ip)) return true; // link-local fe80::/10
+  if (/^ff/.test(ip)) return true; // multicast
   return false;
+}
+
+/** True for any address that must never be dialled by this service. */
+function isBlockedIpAddress(ip) {
+  let value = String(ip ?? "").trim().toLowerCase();
+  if (value.startsWith("[") && value.endsWith("]")) value = value.slice(1, -1);
+  const zone = value.indexOf("%");
+  if (zone >= 0) value = value.slice(0, zone);
+  if (!value) return true;
+  if (value === "localhost") return true;
+  const family = isIP(value);
+  if (family === 4) return isBlockedV4(value);
+  if (family === 6) return isBlockedV6(value);
+  // Not an IP literal. Hostnames are checked by isBlockedOutboundHost and by
+  // the resolver; an unparsable value must not be treated as safe to dial.
+  return true;
 }
 
 export function isBlockedOutboundHost(hostname) {
@@ -37,13 +99,21 @@ export function isBlockedOutboundHost(hostname) {
     .replace(/\.$/, "")
     .replace(/^\[|\]$/g, "");
   if (!value) return true;
-  if (value === "localhost" || value.endsWith(".localhost") || value.endsWith(".local")) return true;
+  if (value === "localhost" || value.endsWith(".localhost") || value.endsWith(".local")) {
+    return true;
+  }
   if (isIP(value)) return isBlockedIpAddress(value);
+  // Public DNS names always contain a dot. "0", "metadata" and "intranet"
+  // resolve through search domains or /etc/hosts, never through public DNS.
+  if (!value.includes(".")) return true;
+  if (value.endsWith(".internal") || value.endsWith(".home.arpa")) return true;
   return false;
 }
 
 export function isUnsafeIp(ip) {
-  return isBlockedIpAddress(ip);
+  // Used on hostnames as well as literals (redirect targets), so this covers
+  // blocked literals, local names and single-label hosts.
+  return isBlockedOutboundHost(ip);
 }
 
 async function resolvePublicAddresses(hostname, lookupFn = lookup) {
@@ -57,6 +127,8 @@ async function resolvePublicAddresses(hostname, lookupFn = lookup) {
 export async function hasUnsafeDns(hostname, lookupFn = lookup) {
   try {
     const addrs = await resolvePublicAddresses(hostname, lookupFn);
+    // No addresses is not "safe": it means the host is blocked or DNS failed.
+    if (addrs.length === 0) return true;
     return addrs.some((addr) => isBlockedIpAddress(addr));
   } catch {
     return true;
@@ -127,6 +199,128 @@ async function readBodyBounded(res, maxBytes = MAX_BODY_BYTES) {
  * @param {{timeout?:number, method?:string, headers?:Object, maxRedirects?:number}} opts
  * @returns {Promise<FetchResult>}
  */
+/**
+ * A DNS lookup for sockets that refuses to hand back a blocked address. The
+ * socket is therefore pinned to the address that was validated here, which
+ * closes the resolve-check-then-connect gap a TTL-0 rebind would exploit.
+ */
+function validatingLookup(hostname, options, callback) {
+  lookup(hostname, { ...options, all: true })
+    .then((addresses) => {
+      if (!Array.isArray(addresses) || addresses.length === 0) {
+        return callback(new Error(`DNS resolution failed for ${hostname}`));
+      }
+      if (addresses.some((entry) => isBlockedIpAddress(entry.address))) {
+        return callback(new Error(`Blocked outbound target: ${hostname}`));
+      }
+      if (options?.all) return callback(null, addresses);
+      return callback(null, addresses[0].address, addresses[0].family);
+    })
+    .catch((err) => callback(err));
+}
+
+/** One HTTP(S) request whose socket lookup is validated. No redirect following. */
+function pinnedRequest(urlString, { method, headers, body, timeout, maxBytes }) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlString);
+    const secure = url.protocol === "https:";
+    const bareHost = url.hostname.replace(/^\[|\]$/g, "");
+    const requestFn = secure ? httpsRequest : httpRequest;
+
+    const req = requestFn(
+      {
+        protocol: url.protocol,
+        hostname: bareHost,
+        port: url.port || (secure ? 443 : 80),
+        path: `${url.pathname}${url.search}`,
+        method,
+        headers: { host: url.host, "user-agent": UA, accept: "*/*", ...headers },
+        lookup: validatingLookup,
+        ...(secure && !isIP(bareHost) ? { servername: bareHost } : {}),
+        timeout,
+      },
+      (res) => {
+        const headerList = {};
+        for (const [key, value] of Object.entries(res.headers)) {
+          if (value === undefined) continue;
+          headerList[key.toLowerCase()] = Array.isArray(value) ? value.join(", ") : String(value);
+        }
+
+        const chunks = [];
+        let total = 0;
+        let settled = false;
+        const fail = (err) => {
+          if (settled) return;
+          settled = true;
+          res.destroy();
+          reject(err);
+        };
+
+        res.on("data", (chunk) => {
+          total += chunk.length;
+          if (total > maxBytes) {
+            fail(new Error(`Response body exceeds ${maxBytes} byte limit`));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on("end", () => {
+          if (settled) return;
+          settled = true;
+          resolve({
+            status: res.statusCode ?? null,
+            headers: headerList,
+            body: Buffer.concat(chunks).toString("utf8"),
+            url: urlString,
+          });
+        });
+        res.on("error", fail);
+      },
+    );
+
+    req.on("timeout", () => req.destroy(new Error("Request timed out")));
+    req.on("error", reject);
+    if (body !== null && body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
+/**
+ * One request, either through an injected fetch (tests, fixtures) or through a
+ * DNS-pinned socket (production). Redirects are always handled by the caller.
+ */
+async function sendOnce(urlString, { method, headers, body, timeout, maxBytes, controller, fetchFn }) {
+  if (fetchFn !== nativeFetch) {
+    const res = await fetchFn(urlString, {
+      method,
+      redirect: "manual",
+      signal: controller?.signal,
+      headers: { "user-agent": UA, accept: "*/*", ...headers },
+      ...(body !== null && method !== "GET" && method !== "HEAD" ? { body } : {}),
+    });
+
+    const headerList = {};
+    res.headers.forEach((value, key) => {
+      headerList[key.toLowerCase()] = value;
+    });
+    const isRedirect = res.status >= 300 && res.status < 400;
+    let text = null;
+    try {
+      text = await readBodyBounded(res, maxBytes);
+    } catch (err) {
+      if (!isRedirect) throw err;
+    }
+    return {
+      status: res.status,
+      headers: headerList,
+      body: isRedirect ? null : text,
+      url: res.url || urlString,
+    };
+  }
+
+  return pinnedRequest(urlString, { method, headers, body, timeout, maxBytes });
+}
+
 async function fetchWithTimeout(urlString, opts = {}) {
   let {
     timeout = 15000,
@@ -148,28 +342,24 @@ async function fetchWithTimeout(urlString, opts = {}) {
   try {
     let redirectCount = 0;
     while (true) {
-      const res = await fetchFn(current, {
+      const res = await sendOnce(current, {
         method,
-        redirect: "manual",
-        signal: controller.signal,
-        headers: { "user-agent": UA, accept: "*/*", ...headers },
-        ...(body !== null && method !== "GET" && method !== "HEAD" ? { body } : {}),
+        headers,
+        body,
+        timeout,
+        maxBytes,
+        controller,
+        fetchFn,
       });
 
-      const headerList = {};
-      res.headers.forEach((value, key) => {
-        headerList[key] = value;
-      });
-
-      if (res.status >= 300 && res.status < 400) {
-        const location = res.headers.get("location");
+      if (res.status !== null && res.status >= 300 && res.status < 400) {
+        const location = res.headers.location;
         if (location && redirectCount < maxRedirects) {
           redirectCount += 1;
           redirected = true;
           current = await ensureSafeFetchUrl(new URL(location, current).toString(), {
             lookup: lookupFn,
           });
-          await res.body?.cancel();
           // 303 always becomes GET; 301/302 commonly do for POST. 307/308
           // preserve the method and body.
           if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === "POST")) {
@@ -178,16 +368,10 @@ async function fetchWithTimeout(urlString, opts = {}) {
           }
           continue;
         }
-        // Consume and discard the redirect response body.
-        try {
-          await readBodyBounded(res, maxBytes);
-        } catch {
-          // Ignore body read errors on terminal redirect responses.
-        }
         return {
-          ok: res.ok,
+          ok: false,
           status: res.status,
-          headers: headerList,
+          headers: res.headers,
           body: null,
           url: res.url,
           error: null,
@@ -195,12 +379,11 @@ async function fetchWithTimeout(urlString, opts = {}) {
         };
       }
 
-      const responseBody = await readBodyBounded(res, maxBytes);
       return {
-        ok: res.ok,
+        ok: res.status !== null && res.status >= 200 && res.status < 300,
         status: res.status,
-        headers: headerList,
-        body: responseBody,
+        headers: res.headers,
+        body: res.body,
         url: res.url,
         error: null,
         redirected,
@@ -399,12 +582,21 @@ function finding(check_key, title, severity, detail, extra = {}) {
 }
 
 function normalizeDomain(input) {
-  return String(input || "")
-    .trim()
-    .replace(/^https?:\/\//i, "")
-    .replace(/\/.*$/, "")
-    .replace(/:\d+$/, "")
-    .toLowerCase();
+  const raw = String(input ?? "").trim();
+  if (!raw) return "";
+
+  // Accept a bare host, host:port or full URL. WHATWG URL canonicalises
+  // numeric IPv4 forms and keeps IPv6 literals bracketed, so a trailing
+  // ":digits" strip cannot corrupt an IPv6 host.
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return "";
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) return "";
+  return parsed.hostname.toLowerCase().replace(/\.$/, "");
 }
 
 function registrableDomain(domain) {
@@ -1020,8 +1212,32 @@ function visibleText(html) {
     .toLowerCase();
 }
 
-function tokenSet(text) {
-  return new Set((text.match(/[a-z0-9]{3,}/g) ?? []).slice(0, 5000));
+const MAX_SAMPLE_TOKENS = 1200;
+
+function hashToken(token) {
+  return createHash("sha256").update(token).digest("hex").slice(0, 16);
+}
+
+/**
+ * Defacement detection only needs token overlap, never readable page text.
+ * Storing hashed tokens means a secret that appears in visible copy is not
+ * persisted (or shipped to the browser) in a usable form.
+ */
+function hashedTokens(text) {
+  const tokens = String(text ?? "").match(/[a-z0-9]{3,}/g) ?? [];
+  const unique = new Set();
+  for (const token of tokens) {
+    unique.add(hashToken(token));
+    if (unique.size >= MAX_SAMPLE_TOKENS) break;
+  }
+  return [...unique];
+}
+
+/** Supports v2 hashed samples and legacy `{text}` baselines. */
+function tokenSet(value) {
+  if (Array.isArray(value?.tokens)) return new Set(value.tokens);
+  if (typeof value?.text === "string") return new Set(hashedTokens(value.text));
+  return new Set();
 }
 
 function jaccard(a, b) {
@@ -1036,8 +1252,12 @@ export function pageSampleFromHtml(html) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 200);
-  const text = visibleText(html).slice(0, 6000);
-  return JSON.stringify({ title, text, at: new Date().toISOString() });
+  return JSON.stringify({
+    v: 2,
+    title,
+    tokens: hashedTokens(visibleText(html)),
+    at: new Date().toISOString(),
+  });
 }
 
 function checkDefacement(html, baselineJson) {
@@ -1057,14 +1277,15 @@ function checkDefacement(html, baselineJson) {
   }
 
   const sample = JSON.parse(pageSampleFromHtml(html));
-  if (sample.text.length < 60) return { findings: out, sample, similarity: 1 };
+  if ((sample.tokens?.length ?? 0) < 30) return { findings: out, sample, similarity: 1 };
 
   let similarity = 1;
   if (baselineJson) {
     try {
       const baseline = JSON.parse(baselineJson);
-      if (baseline?.text && baseline.text.length >= 60) {
-        similarity = jaccard(tokenSet(baseline.text), tokenSet(sample.text));
+      const baselineTokens = tokenSet(baseline);
+      if (baselineTokens.size >= 30) {
+        similarity = jaccard(baselineTokens, new Set(sample.tokens));
         if (similarity < 0.55) {
           out.push(
             finding(
@@ -1121,47 +1342,61 @@ export async function checkUptime(domain) {
 
 export function checkTls(domain) {
   return new Promise((resolve) => {
-    const normalized = String(domain ?? "").trim().toLowerCase().replace(/\.$/, "");
+    const normalized = String(domain ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/\.$/, "")
+      .replace(/^\[|\]$/g, "");
     if (isBlockedOutboundHost(normalized)) {
       return resolve({ error: `Blocked TLS target: ${normalized}` });
     }
-    // Pre-resolve and validate addresses before opening the socket so the
-    // connection cannot be redirected to a blocked address via DNS changes.
+
     let done = false;
     const finish = (value) => {
       if (done) return;
       done = true;
       resolve(value);
     };
-    lookup(normalized, { all: true })
-      .then((results) => {
-        const blocked = results.some((entry) => isBlockedIpAddress(entry.address));
-        if (blocked) {
-          return finish({ error: `Blocked TLS target: ${normalized}` });
-        }
-        const socket = connect(
-          { host: normalized, port: 443, servername: normalized, timeout: 10000 },
-          () => {
-            const cert = socket.getPeerCertificate();
-            socket.end();
-            if (!cert?.valid_to) return finish(null);
-            const expires = new Date(cert.valid_to);
-            const days = Math.round((expires.getTime() - Date.now()) / 86_400_000);
-            finish({
-              days,
-              validTo: cert.valid_to,
-              issuer: cert.issuer?.O ?? cert.issuer?.CN ?? "unknown",
-              subject: cert.subject?.CN ?? domain,
-            });
-          },
-        );
-        socket.on("error", () => finish(null));
-        socket.on("timeout", () => {
-          socket.destroy();
-          finish(null);
-        });
-      })
-      .catch(() => finish({ error: `DNS resolution failed for: ${normalized}` }));
+
+    let socket;
+    try {
+      socket = connect(
+        {
+          host: normalized,
+          port: 443,
+          timeout: 10000,
+          lookup: validatingLookup,
+          ...(isIP(normalized) ? {} : { servername: normalized }),
+        },
+        () => {
+          // The lookup above is the one the socket used, but check the peer
+          // address too so any future transport change cannot regress this.
+          if (isBlockedIpAddress(socket.remoteAddress ?? "")) {
+            socket.destroy();
+            return finish({ error: `Blocked TLS target: ${normalized}` });
+          }
+          const cert = socket.getPeerCertificate();
+          socket.end();
+          if (!cert?.valid_to) return finish(null);
+          const expires = new Date(cert.valid_to);
+          const days = Math.round((expires.getTime() - Date.now()) / 86_400_000);
+          finish({
+            days,
+            validTo: cert.valid_to,
+            issuer: cert.issuer?.O ?? cert.issuer?.CN ?? "unknown",
+            subject: cert.subject?.CN ?? domain,
+          });
+        },
+      );
+    } catch (err) {
+      return finish({ error: err?.message ?? `TLS connection failed for: ${normalized}` });
+    }
+
+    socket.on("error", () => finish(null));
+    socket.on("timeout", () => {
+      socket.destroy();
+      finish(null);
+    });
   });
 }
 
