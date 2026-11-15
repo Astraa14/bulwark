@@ -418,6 +418,21 @@ a:focus:not(:focus-visible) {
   background: var(--text-primary);
 }
 
+.monitor-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.monitor-line .dot {
+  width: 6px;
+  height: 6px;
+  animation: none;
+}
+
 .sidebar-bottom a {
   padding: 0 10px;
   font-size: 12px;

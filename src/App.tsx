@@ -257,6 +257,8 @@ function Sidebar({
   close,
   threatCount,
   siteCount,
+  monitoringState,
+  monitoringLabel,
 }: {
   page: Page;
   setPage: (p: Page) => void;
@@ -264,6 +266,8 @@ function Sidebar({
   close: () => void;
   threatCount: number;
   siteCount: number;
+  monitoringState: "active" | "setup" | "paused";
+  monitoringLabel: string;
 }) {
   // Grouped so a long list of pages reads as three short, obvious sections.
   const groups: { label: string; items: Page[] }[] = [
@@ -324,6 +328,18 @@ function Sidebar({
               <i style={{ width: `${Math.max(2, (siteCount / PLAN_SITE_LIMIT) * 100)}%` }} />
             </div>
           </div>
+          <span className={`monitor-line ${monitoringState}`}>
+            <Dot
+              tone={
+                monitoringState === "active"
+                  ? "healthy"
+                  : monitoringState === "setup"
+                    ? "medium"
+                    : "low"
+              }
+            />
+            {monitoringLabel}
+          </span>
           <a href="https://docs.bulwarksecure.app" target="_blank" rel="noreferrer">Documentation ↗</a>
         </div>
       </aside>
@@ -3653,6 +3669,13 @@ export default function App() {
 function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
   const { user, signOut } = useAuth();
   const { sites, findings, scans, scanCount, refresh } = useWorkspace();
+  const activeSiteCount = sites.filter((site) => site.status === "verified").length;
+  const pendingSiteCount = sites.filter((site) => site.status === "pending").length;
+  const monitoringState: "active" | "setup" | "paused" =
+    activeSiteCount > 0 ? "active" : pendingSiteCount > 0 || sites.length === 0 ? "setup" : "paused";
+  const monitoringLabel =
+    monitoringState === "active" ? "Monitoring active" :
+    monitoringState === "paused" ? "Monitoring paused" : "Setup required";
   const settingsState = useSettings();
   const keysState = useApiKeys();
   const connectionsState = useConnections();
@@ -3834,6 +3857,8 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
         close={() => setMobileNav(false)}
         threatCount={findings.filter((f) => f.status === "open").length}
         siteCount={sites.length}
+        monitoringState={monitoringState}
+        monitoringLabel={monitoringLabel}
       />
       <div className="main-shell">
         <Header
