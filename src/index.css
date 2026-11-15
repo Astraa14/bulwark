@@ -1943,18 +1943,6 @@ main {
   font-weight: 600;
 }
 
-.check-outcome.passed b {
-  color: var(--status-healthy);
-}
-.check-outcome.finding b {
-  color: var(--status-high);
-}
-.check-outcome.error b {
-  color: var(--status-critical);
-}
-.check-outcome.not_checked {
-  color: var(--text-subtle);
-}
 .scan-outcomes.unavailable .check-outcome {
   font-style: italic;
 }
