@@ -3400,6 +3400,131 @@ pre.explanation {
   }
 }
 
+/* Below the sidebar breakpoint, data tables become stacked records: every
+   value stays visible without sideways scrolling or clipped columns. */
+@media (max-width: 860px) {
+  .site-row.table-head,
+  .threat-row.table-head,
+  .scan-row.table-head,
+  .table .th {
+    display: none;
+  }
+
+  .site-row,
+  .threat-row,
+  .scan-row,
+  .table .tr {
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    row-gap: 5px;
+    column-gap: 14px;
+    padding: 12px 15px;
+  }
+
+  /* Sites */
+  .site-row > :nth-child(1) {
+    grid-column: 1 / -1;
+  }
+  .site-row > :nth-child(2) {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .site-row > :nth-child(3) {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+  }
+  .site-row > :nth-child(4) {
+    grid-column: 1;
+    grid-row: 3;
+  }
+  .site-row > :nth-child(4)::before {
+    content: "open threats ";
+    color: var(--text-subtle);
+    font-size: 11px;
+  }
+  .site-row > :nth-child(5) {
+    grid-column: 2;
+    grid-row: 3;
+    justify-self: end;
+  }
+  .site-row > :nth-child(6) {
+    grid-column: 1 / -1;
+    grid-row: 4;
+    justify-self: start;
+  }
+  .site-row .site-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  /* Threats and report rows */
+  .threat-row > :nth-child(1) {
+    grid-column: 1 / -1;
+  }
+  .threat-row > :nth-child(2) {
+    grid-column: 1;
+  }
+  .threat-row > :nth-child(3) {
+    grid-column: 2;
+    justify-self: end;
+  }
+  .threat-row > :nth-child(4) {
+    grid-column: 1;
+  }
+  .threat-row > :nth-child(5) {
+    grid-column: 2;
+    justify-self: end;
+  }
+  .threat-row > :nth-child(6) {
+    grid-column: 1 / -1;
+  }
+
+  /* Scans */
+  .scan-row > :nth-child(2) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .scan-row > :nth-child(3) {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+  .scan-row > :nth-child(4),
+  .scan-row > :nth-child(5) {
+    grid-column: 1 / -1;
+  }
+
+  /* Overview sites-health strip */
+  .sites-health .table {
+    display: block;
+    width: 100%;
+  }
+  .table .tr > :nth-child(1) {
+    grid-column: 1 / -1;
+  }
+  .table .tr > :nth-child(2) {
+    grid-column: 1;
+  }
+  .table .tr > :nth-child(3) {
+    grid-column: 2;
+    justify-self: end;
+  }
+  .table .tr > :nth-child(4) {
+    grid-column: 1;
+  }
+  .table .tr > :nth-child(4)::before {
+    content: "open threats ";
+    color: var(--text-subtle);
+    font-size: 11px;
+  }
+  .table .tr > :nth-child(5) {
+    grid-column: 2;
+    justify-self: end;
+  }
+}
+
 @media (max-width: 620px) {
   .topbar {
     height: 56px;
