@@ -423,9 +423,19 @@ const CHECK_OUTCOME_LABEL: Record<CheckOutcome, string> = {
 
 const CHECK_OUTCOME_ORDER: CheckOutcome[] = ["passed", "finding", "not_checked", "error"];
 
+const CHECK_OUTCOME_PLURAL: Record<CheckOutcome, string> = {
+  passed: "passed",
+  finding: "findings",
+  not_checked: "not checked",
+  error: "errors",
+};
+
+function outcomeLabel(outcome: CheckOutcome, count: number) {
+  return count === 1 ? CHECK_OUTCOME_LABEL[outcome].toLowerCase() : CHECK_OUTCOME_PLURAL[outcome];
+}
+
 function outcomeText(outcome: CheckOutcome, count: number) {
-  const label = CHECK_OUTCOME_LABEL[outcome].toLowerCase();
-  return `${count} ${label}${count === 1 ? "" : "s"}`;
+  return `${count} ${outcomeLabel(outcome, count)}`;
 }
 
 function numberOrNull(value: unknown) {
@@ -1943,11 +1953,15 @@ function Scans({
                 }
               >
                 {summary.detailed ? (
-                  CHECK_OUTCOME_ORDER.map((outcome) => (
-                    <span className={`check-outcome ${outcome}`} key={outcome}>
-                      <b>{summary[outcome]}</b> {CHECK_OUTCOME_LABEL[outcome]}
-                    </span>
-                  ))
+                  CHECK_OUTCOME_ORDER.some((outcome) => summary[outcome] > 0) ? (
+                    CHECK_OUTCOME_ORDER.filter((outcome) => summary[outcome] > 0).map((outcome) => (
+                      <span className={`check-outcome ${outcome}`} key={outcome}>
+                        <b>{summary[outcome]}</b> {outcomeLabel(outcome, summary[outcome])}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="check-outcome not_checked">No outcomes recorded</span>
+                  )
                 ) : (
                   <span className="check-outcome not_checked">Not recorded</span>
                 )}

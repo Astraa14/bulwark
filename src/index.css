@@ -1920,22 +1920,23 @@ main {
 .scan-outcomes {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
-  align-items: center;
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 1px;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .check-outcome {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 8px;
-  border: 1px solid var(--border);
-  border-radius: 99px;
-  background: var(--surface-subtle);
-  color: var(--text-muted);
-  font-size: 11.5px;
-  line-height: 18px;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A quiet middot between counts instead of a chip around every outcome. */
+.check-outcome + .check-outcome::before {
+  content: "·";
+  margin-right: 8px;
+  color: var(--text-subtle);
 }
 
 .check-outcome b {
