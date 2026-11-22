@@ -479,3 +479,106 @@ test("changed evidence on recurrence updates severity and evidence", async () =>
     global.fetch = originalFetch;
   }
 });
+
+test("detects missing SPF/DMARC, public JS source maps, exposed OpenAPI docs, and GraphQL introspection", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async (input, init = {}) => {
+    const url = String(input);
+    if (url === "https://example.com/") {
+      return new Response(
+        '<!doctype html><html><head><title>App</title><script src="/assets/app.js"></script></head><body>ok</body></html>',
+        {
+          status: 200,
+          headers: {
+            "content-type": "text/html",
+            "strict-transport-security": "max-age=31536000; includeSubDomains",
+            "content-security-policy": "default-src 'self'",
+            "x-content-type-options": "nosniff",
+            "referrer-policy": "no-referrer",
+          },
+        },
+      );
+    }
+    if (url === "https://example.com/assets/app.js") {
+      return new Response("console.log('hi');\n//# sourceMappingURL=app.js.map\n", {
+        status: 200,
+        headers: { "content-type": "application/javascript" },
+      });
+    }
+    if (url === "https://example.com/assets/app.js.map") {
+      return new Response(
+        JSON.stringify({ version: 3, sources: ["src/App.tsx", "src/secret.ts"], mappings: "AAAA" }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url === "https://example.com/openapi.json") {
+      return new Response(
+        JSON.stringify({ openapi: "3.0.0", paths: { "/admin/users": {}, "/billing": {} } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url === "https://example.com/swagger.json") {
+      return new Response(null, { status: 404 });
+    }
+    if (url === "https://example.com/graphql" && init.method === "POST") {
+      return new Response(
+        JSON.stringify({ data: { __schema: { queryType: { name: "Query" } } } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.startsWith("https://cloudflare-dns.com/dns-query")) {
+      const parsed = new URL(url);
+      const type = parsed.searchParams.get("type");
+      const name = parsed.searchParams.get("name");
+      if (type === "NS") {
+        return new Response(JSON.stringify({ Status: 0, Answer: [{ data: "ns1.example.com" }] }), {
+          status: 200,
+        });
+      }
+      if (type === "MX") {
+        return new Response(JSON.stringify({ Status: 0, Answer: [{ data: "10 mail.example.com" }] }), {
+          status: 200,
+        });
+      }
+      if (type === "TXT" && name === "example.com") {
+        return new Response(
+          JSON.stringify({ Status: 0, Answer: [{ data: '"google-site-verification=123"' }] }),
+          { status: 200 },
+        );
+      }
+      if (type === "TXT" && name === "_dmarc.example.com") {
+        return new Response(
+          JSON.stringify({
+            Status: 0,
+            Answer: [{ data: '"v=DMARC1; p=none; rua=mailto:sec@example.com"' }],
+          }),
+          { status: 200 },
+        );
+      }
+    }
+    if (/(\/\.env|\/\.git\/config|\/\.DS_Store|\/backup\.sql|\/db\.sql|\/phpinfo\.php)$/.test(url)) {
+      return new Response(null, { status: 404 });
+    }
+    if (
+      url.endsWith("/robots.txt") ||
+      url.endsWith("/sitemap.xml") ||
+      url.endsWith("/.well-known/security.txt")
+    ) {
+      return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } });
+    }
+    throw new Error("Unexpected fetch: " + url);
+  };
+  try {
+    const result = await runChecks("example.com");
+    const keys = result.findings.map((f) => f.check_key);
+    assert.ok(keys.includes("exposed_source_map"), "should detect public .js.map");
+    assert.ok(keys.includes("exposed_api_docs"), "should detect exposed openapi.json");
+    assert.ok(keys.includes("graphql_introspection_enabled"), "should detect GraphQL introspection");
+    assert.ok(keys.includes("dns_no_spf"), "should detect missing SPF");
+    assert.ok(keys.includes("dns_dmarc_monitor_only"), "should detect monitor-only DMARC p=none");
+    assert.equal(result.checkResults.api_exposure, "finding");
+    assert.equal(result.checkResults.dns, "finding");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

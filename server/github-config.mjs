@@ -11,6 +11,7 @@ export const OSV_API = "https://api.osv.dev/v1/querybatch";
 
 export const MAX_FILE_BYTES = 500_000;
 export const MAX_FILES_SCANNED = 500;
+export const MAX_HISTORY_COMMITS = 10;
 export const MAX_SECRET_MATCHES_PER_PATTERN_PER_FILE = 20;
 export const MAX_FINDINGS = 1_000;
 export const GITHUB_FETCH_CONCURRENCY = 6;
@@ -58,6 +59,31 @@ export const CONFIG_CHECKS = [
     detail:
       "A workflow runs on `pull_request_target` and also references untrusted pull-request content. That combination can expose repository write permissions. Prefer `pull_request`, or never run untrusted code in this workflow.",
     remediation: "Remove untrusted pull-request input from pull_request_target workflows.",
+  },
+  {
+    path: ".github/workflows/",
+    check: "workflow_write_all_permissions",
+    title: "GitHub Action grants write-all permissions",
+    severity: "high",
+    test: (content) => /^\s*permissions:\s*write-all\b/m.test(content),
+    detail:
+      "This workflow sets `permissions: write-all`, granting the GITHUB_TOKEN broad write access across repository contents, packages, and actions.",
+    remediation:
+      "Replace `permissions: write-all` with least-privilege scopes such as `permissions: { contents: read }`.",
+  },
+  {
+    path: ".github/workflows/",
+    check: "workflow_unpinned_action",
+    title: "GitHub Action pinned to a mutable branch",
+    severity: "medium",
+    test: (content) =>
+      /^\s*-?\s*uses:\s*[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+@(?:main|master|latest|dev|develop)\b/m.test(
+        content,
+      ),
+    detail:
+      "This workflow runs a GitHub Action referenced by a mutable branch (`@main`/`@master`/`@latest`). Upstream changes or a compromised repo can execute arbitrary code in CI.",
+    remediation:
+      "Pin the action to a full 40-character commit SHA (or at minimum a version tag).",
   },
   {
     path: "vercel.json",

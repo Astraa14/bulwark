@@ -9,6 +9,7 @@ import {
   MAX_FILES_SCANNED,
   MAX_FILE_BYTES,
   MAX_FINDINGS,
+  MAX_HISTORY_COMMITS,
   MAX_SECRET_MATCHES_PER_PATTERN_PER_FILE,
   OSV_API,
   SAFE_CLIENT_ENV_SUFFIX_RE,
@@ -905,10 +906,12 @@ export async function scanGitHubRepo(
   const skippedByCap = candidates.length - toScan.length;
 
   const secretFindings = [];
+  const historyFindings = [];
   const sensitiveFindings = [];
   const dependencyFindings = [];
   const configFindings = [];
   const secretErrors = [];
+  const historyErrors = [];
   const dependencyErrors = [];
   const configErrors = [];
   const lockfiles = [];
@@ -916,6 +919,7 @@ export async function scanGitHubRepo(
   const migrationSqlFiles = [];
   let filesRead = 0;
   let skippedUnreadable = 0;
+  let historyCommitsScanned = 0;
 
   const results = await mapLimit(toScan, GITHUB_FETCH_CONCURRENCY, async (blob) => {
     try {
@@ -1042,6 +1046,87 @@ export async function scanGitHubRepo(
     }
   }
 
+  // Bounded recent commit-history secret scan: checks added lines in up to
+  // MAX_HISTORY_COMMITS-1 prior commits for high-confidence provider secrets
+  // (catches leaked keys deleted in a follow-up commit without rotation).
+  const highConfidencePatterns = SECRET_PATTERNS.filter(
+    (pattern) => !pattern.key.startsWith("secret_generic_"),
+  );
+  let historyChecked = false;
+  try {
+    const commitList = await githubFetch(
+      token,
+      `/repos/${owner}/${repo}/commits?sha=${encodeURIComponent(target.commitSha)}&per_page=${MAX_HISTORY_COMMITS}`,
+      { fetchImpl },
+    );
+    const priorCommits = (Array.isArray(commitList) ? commitList : [])
+      .filter((entry) => entry?.sha && entry.sha !== target.commitSha)
+      .slice(0, MAX_HISTORY_COMMITS - 1);
+    historyChecked = true;
+
+    const commitDetails = await mapLimit(priorCommits, GITHUB_FETCH_CONCURRENCY, async (entry) => {
+      try {
+        const detail = await githubFetch(
+          token,
+          `/repos/${owner}/${repo}/commits/${encodeURIComponent(entry.sha)}`,
+          { fetchImpl },
+        );
+        return { sha: entry.sha, detail, error: null };
+      } catch (err) {
+        return { sha: entry.sha, detail: null, error: err?.message ?? String(err) };
+      }
+    });
+
+    for (const item of commitDetails) {
+      if (item.error || !item.detail) {
+        historyErrors.push(`${item.sha.slice(0, 7)}: ${item.error ?? "unreadable commit"}`);
+        continue;
+      }
+      historyCommitsScanned += 1;
+      const files = Array.isArray(item.detail.files) ? item.detail.files : [];
+      for (const file of files) {
+        if (!file?.patch || !file?.filename) continue;
+        const addedLines = String(file.patch)
+          .split("\n")
+          .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+          .map((line) => line.slice(1))
+          .join("\n");
+        if (!addedLines) continue;
+
+        for (const pattern of highConfidencePatterns) {
+          const flags = pattern.re.flags.includes("g") ? pattern.re.flags : `${pattern.re.flags}g`;
+          const re = new RegExp(pattern.re.source, flags);
+          let count = 0;
+          for (const match of addedLines.matchAll(re)) {
+            if (count >= 5) break;
+            count += 1;
+            const shortSha = item.sha.slice(0, 7);
+            historyFindings.push(
+              finding(
+                `history_${pattern.key}`,
+                `Historical ${pattern.name} in commit ${shortSha} (${file.filename})`,
+                pattern.severity,
+                `A high-confidence credential pattern was added in recent commit \`${shortSha}\`. Even if deleted in a later commit, anyone who can clone or read git history can still retrieve it.`,
+                {
+                  url: `https://github.com/${owner}/${repo}/commit/${item.sha}`,
+                  evidence: `${redactSecret(match[0])} · ${owner}/${repo}@${shortSha} (${file.filename})`,
+                  affected_resource: `history:${item.sha.slice(0, 12)}:${file.filename}:${count}`,
+                  confidence: "high",
+                  what_it_does_not_prove:
+                    "Only the most recent commits were inspected; matching a pattern does not prove the key is still active.",
+                  remediation:
+                    "Rotate/revoke the exposed credential immediately, and rewrite git history if the repository is or was public.",
+                },
+              ),
+            );
+          }
+        }
+      }
+    }
+  } catch (err) {
+    historyErrors.push(`Commit history lookup: ${err?.message ?? String(err)}`);
+  }
+
   const scanTruncated =
     treeTruncated || skippedByCap > 0 || skippedLarge > 0 || skippedUnreadable > 0;
   const notes = [];
@@ -1070,6 +1155,15 @@ export async function scanGitHubRepo(
   const checkResults = [
     { key: "repo_access", label: "Repository access", status: "pass", complete: true },
     checkOutcome("secrets", secretFindings, secretErrors),
+    historyChecked
+      ? checkOutcome("commit_history", historyFindings, historyErrors)
+      : {
+          key: "commit_history",
+          label: "commit_history",
+          status: "error",
+          complete: false,
+          error: historyErrors.slice(0, 3).join("; "),
+        },
     checkOutcome("sensitive_files", sensitiveFindings, []),
     checkOutcome("dependencies", dependencyFindings, dependencyErrors),
     checkOutcome("config_checks", configFindings, configErrors),
@@ -1077,6 +1171,7 @@ export async function scanGitHubRepo(
 
   const collectedFindings = [
     ...secretFindings,
+    ...historyFindings,
     ...sensitiveFindings,
     ...dependencyFindings,
     ...configFindings,
@@ -1089,12 +1184,15 @@ export async function scanGitHubRepo(
   }
 
   const hasErrors =
-    secretErrors.length > 0 || dependencyErrors.length > 0 || configErrors.length > 0;
+    secretErrors.length > 0 ||
+    historyErrors.length > 0 ||
+    dependencyErrors.length > 0 ||
+    configErrors.length > 0;
   const status =
     hasErrors || scanTruncated || collectedFindings.length > MAX_FINDINGS
       ? "partial"
       : "completed";
-  const errors = [...secretErrors, ...dependencyErrors, ...configErrors];
+  const errors = [...secretErrors, ...historyErrors, ...dependencyErrors, ...configErrors];
 
   const coverage = {
     commitSha: target.commitSha,
@@ -1102,6 +1200,7 @@ export async function scanGitHubRepo(
     filesScanned: toScan.length,
     filesRead,
     totalFiles: blobs.length,
+    historyCommitsScanned,
     skippedByCap,
     skippedNonText,
     skippedLarge,

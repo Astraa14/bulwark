@@ -23,6 +23,7 @@ export function createGitHubFetch({
   owner = "octocat",
   repo = "Hello-World",
   files = [],
+  commits = [],
   branch = "main",
   treeTruncated = false,
   exactSha = null,
@@ -33,6 +34,7 @@ export function createGitHubFetch({
   const requests = [];
   const headSha = exactSha ?? commitSha("branch-head");
   const treeSha = commitSha("tree");
+  const commitBySha = new Map(commits.map((c) => [c.sha, c]));
   const entries = files.map((file, index) => ({
     path: file.path,
     type: "blob",
@@ -84,6 +86,17 @@ export function createGitHubFetch({
         encoding: "base64",
         content: Buffer.from(contentBySha.get(sha), "utf8").toString("base64"),
       });
+    }
+
+    if (url.startsWith(`${GITHUB_API}/repos/${owner}/${repo}/commits?`)) {
+      return json([{ sha: headSha }, ...commits.map((c) => ({ sha: c.sha }))]);
+    }
+
+    if (url.startsWith(`${GITHUB_API}/repos/${owner}/${repo}/commits/`)) {
+      const sha = url.slice(url.lastIndexOf("/") + 1);
+      const entry = commitBySha.get(sha);
+      if (!entry) return json({ message: "Not Found" }, 404);
+      return json({ sha: entry.sha, files: entry.files ?? [] });
     }
 
     throw new Error(`Unexpected fetch: ${url}`);

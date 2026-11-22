@@ -456,3 +456,46 @@ test("checks supabase/migrations/*.sql across files for tables missing RLS", asy
   assert.equal(findings[0].affected_resource, "migration_table:invoices");
   assert.equal(findings[0].confidence, "medium");
 });
+
+test("scans bounded recent commit history for leaked secrets and flags workflow write-all / unpinned actions", async () => {
+  const oldSha = commitSha("old-leak-commit");
+  const fixture = createGitHubFetch({
+    files: [
+      { path: "README.md", content: "# clean head" },
+      {
+        path: ".github/workflows/deploy.yml",
+        content: [
+          "on: push",
+          "permissions: write-all",
+          "jobs:",
+          "  deploy:",
+          "    steps:",
+          "      - uses: thirdparty/deploy-action@main",
+        ].join("\n"),
+      },
+    ],
+    commits: [
+      {
+        sha: oldSha,
+        files: [
+          {
+            filename: "src/payments.ts",
+            patch: "@@ -0,0 +1,2 @@\n+const stripe = 'sk_live_ABCdef1234567890abcdef';\n",
+          },
+        ],
+      },
+    ],
+  });
+
+  const result = await scan(fixture);
+
+  const hist = result.findings.find((f) => f.check_key === "history_secret_stripe");
+  assert.ok(hist, "should detect Stripe key in recent commit history");
+  assert.equal(hist.severity, "critical");
+  assert.equal(hist.url, `https://github.com/${OWNER}/${REPO}/commit/${oldSha}`);
+  assert.ok(!hist.evidence.includes("sk_live_ABCdef1234567890abcdef"), "historical evidence redacted");
+  assert.equal(result.coverage.historyCommitsScanned, 1);
+
+  assert.ok(result.findings.some((f) => f.check_key === "workflow_write_all_permissions"));
+  assert.ok(result.findings.some((f) => f.check_key === "workflow_unpinned_action"));
+});

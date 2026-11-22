@@ -35,7 +35,7 @@ export async function addKey(db, userId, input) {
   const provider = String(input?.provider ?? "").toLowerCase();
   const secret = String(input?.key ?? "").trim();
 
-  if (!isProvider(provider)) throw new Error("Choose OpenAI or Anthropic.");
+  if (!isProvider(provider)) throw new Error("Choose OpenAI, Anthropic, or Gemini.");
   if (secret.length < 20) throw new Error("That key looks too short to be valid.");
   if (secret.length > 400) throw new Error("That key looks too long to be valid.");
 

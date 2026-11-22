@@ -10,7 +10,7 @@ Bulwark is an **external security posture monitor** for small products and "vibe
 
 | Layer | What's checked | What it does NOT prove |
 |-------|---------------|----------------------|
-| DNS | Nameservers (NS), mail records (MX), domain expiry via RDAP | That email actually works |
+| DNS | Nameservers (NS), mail records (MX), SPF, DMARC, domain expiry via RDAP | That email actually delivers or DKIM keys are valid |
 | TLS | Certificate validity, expiry, issuer | That the application logic is secure |
 | HTTP | Status codes, response time, security headers (HSTS, CSP, nosniff, referrer) | That headers are correctly enforced in all contexts |
 | Exposed files | `.env`, `.git/config`, `.DS_Store`, SQL dumps, phpinfo | That no other sensitive files exist |
@@ -20,7 +20,8 @@ Bulwark is an **external security posture monitor** for small products and "vibe
 | Directory listing | Index-of pages | That no other directories are exposed |
 | Defacement | Homepage text drift vs baseline, defacement markers | That no deeper compromise exists |
 | Discovery | robots.txt, sitemap.xml, security.txt | That no hidden routes exist |
-| Secrets | Hardcoded keys/tokens in homepage and same-host JS bundles | That no secrets exist in server code or other assets |
+| Secrets & source maps | Hardcoded keys/tokens in homepage and same-host JS bundles, plus publicly downloadable `.js.map` source maps | That no secrets exist in server code or other assets |
+| API exposure | Public `/openapi.json`, `/swagger.json`, and unauthenticated `/graphql` introspection | That other API routes are properly authorized |
 
 Every check reports one of `pass`, `finding`, `error`, or `not_checked`. A scan is `completed` only when every check reached a conclusion; otherwise it is `partial`, and the UI shows what was not checked.
 
@@ -32,14 +33,15 @@ A repository scan:
 
 - reads the repository tree at the default branch head, or at the exact commit named by a verified webhook delivery;
 - reads up to **500 text files** up to 500 KB each; larger files, binary files, unreadable blobs, and files beyond the cap are counted and disclosed;
-- flags hardcoded credentials in file contents (redacted evidence plus a line link);
+- flags hardcoded credentials in file contents (redacted evidence plus a line link) and scans added lines in up to **10 recent commits** for high-confidence provider secrets;
 - flags client-exposed secret environment variable names (`NEXT_PUBLIC_*`, `VITE_*`, `REACT_APP_*`, `NUXT_PUBLIC_*`, `PUBLIC_*` paired with secret/service-role/database variable names);
 - flags sensitive filenames (`.env`, private keys, database dumps, etc.);
 - flags unpinned dependency declarations;
 - queries [OSV](https://osv.dev) for **npm (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`) and Python (`requirements.txt`, `poetry.lock`, `uv.lock`)** lockfiles, sending only package names, ecosystems, and exact versions — never source code, paths, tokens, or credentials; other lockfiles are reported as unanalyzed;
-- flags container, CI, Vercel CORS, and Supabase SQL migration configuration risks (root Dockerfile user, `pull_request_target`, wildcard CORS with credentials, `supabase/migrations/*.sql` tables missing `ENABLE ROW LEVEL SECURITY`).
+- flags container, CI, Vercel CORS, and Supabase SQL migration configuration risks (root Dockerfile user, `pull_request_target`, `permissions: write-all`, Actions pinned to mutable branches like `@main`, wildcard CORS with credentials, `supabase/migrations/*.sql` tables missing `ENABLE ROW LEVEL SECURITY`);
+- supports optional per-repository scheduled scans (every 6 hours to weekly) in addition to push webhooks.
 
-It does **not** scan commit history, git objects, issues, pull requests, releases, or server-side authorization logic. It is not a SAST engine.
+It does **not** scan full historical git object packs beyond the recent commit window, issues, pull requests, releases, or server-side authorization logic. It is not a SAST engine.
 
 ## Supabase project checks (read-only)
 
@@ -86,7 +88,8 @@ A scan can be:
 - Email alerts are optional and sent via Resend when `RESEND_API_KEY` is configured on the server.
 - Webhook bodies are not stored; only delivery metadata (connection, commit, resource, delivery ID) is queued.
 - OSV receives only package names, ecosystems (`npm`/`PyPI`), and exact versions.
-- AI explanations run only when a user asks, using the user's own OpenAI/Anthropic key; the selected finding's text is sent to that provider.
+- AI explanations and weekly priority briefs run only when a user asks, using the user's own OpenAI, Anthropic, or Google Gemini key; only the selected finding/summary text is sent to that provider.
+- Alert deliveries are queued in `alert_deliveries` and retried automatically with backoff on transient Slack, Discord, or email provider failures.
 - Outbound scanner requests are SSRF-hardened: HTTP/HTTPS only, ports 80/443, public IPs only, every redirect hop re-validated, bounded response bodies. Supabase hosts are derived from the validated project reference instead of accepting arbitrary URLs.
 - Network-level egress restrictions are still recommended as defense in depth (see `render.yaml`).
 

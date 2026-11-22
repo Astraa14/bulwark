@@ -989,14 +989,33 @@ function collectScriptUrls(html, pageUrl) {
   return [...urls];
 }
 
+function extractSourceMapUrl(scriptBody, scriptUrl) {
+  if (!scriptBody) return null;
+  // Look near the end of the bundle for sourceMappingURL comments.
+  const tail = scriptBody.slice(-1024);
+  const match = tail.match(/\/\/[#@]\s*sourceMappingURL=([^\s*]+)\s*$/m);
+  if (!match) return null;
+  const raw = match[1].trim();
+  if (!raw || raw.startsWith("data:")) return null;
+  try {
+    const resolved = new URL(raw, scriptUrl);
+    if (!/^https?:$/.test(resolved.protocol)) return null;
+    if (resolved.host !== new URL(scriptUrl).host) return null;
+    return resolved.toString();
+  } catch {
+    return null;
+  }
+}
+
 async function checkLeakedSecretsInner(domain, page) {
   const findings = [];
   const errors = [];
   const seen = new Set();
   const add = (items) => {
     for (const item of items) {
-      if (seen.has(item.check_key)) continue;
-      seen.add(item.check_key);
+      const dedupKey = `${item.check_key}:${item.affected_resource ?? ""}`;
+      if (seen.has(dedupKey)) continue;
+      seen.add(dedupKey);
       findings.push(item);
     }
   };
@@ -1026,10 +1045,131 @@ async function checkLeakedSecretsInner(domain, page) {
     }),
   );
 
+  const mapUrls = new Set();
   for (const bundle of bundleResults) {
     if (!bundle) continue;
     add(scanTextForSecrets(bundle.body, bundle.url));
+    const mapUrl = extractSourceMapUrl(bundle.body, bundle.url);
+    if (mapUrl) mapUrls.add(mapUrl);
   }
+
+  // Probe referenced same-host JS source maps (.js.map) without extra fetches
+  // when bundles do not declare sourceMappingURL.
+  const mapTargets = [...mapUrls].slice(0, 4);
+  if (mapTargets.length) {
+    await Promise.all(
+      mapTargets.map(async (mapUrl) => {
+        const res = await safeFetch(mapUrl, 10000);
+        if (res.error || !res.found || !res.body) return;
+        try {
+          const parsed = JSON.parse(res.body);
+          if (parsed && parsed.version === 3 && (Array.isArray(parsed.sources) || typeof parsed.mappings === "string")) {
+            add([
+              finding(
+                "exposed_source_map",
+                "Public JavaScript source map exposed",
+                "high",
+                "A production JavaScript bundle links to a publicly downloadable `.map` file. Anyone can reconstruct your original frontend source code, comments, and internal file paths.",
+                {
+                  url: mapUrl,
+                  evidence: `${new URL(mapUrl).pathname} · ${res.body.length} bytes (${Array.isArray(parsed.sources) ? parsed.sources.length : "?"} source files)`,
+                  affected_resource: new URL(mapUrl).pathname,
+                  remediation:
+                    "Disable public source maps in production builds (e.g. `sourcemap: false` or hidden source maps uploaded only to error tracking).",
+                },
+              ),
+            ]);
+          }
+        } catch {
+          // Not valid source map JSON.
+        }
+      }),
+    );
+  }
+
+  return { findings, error: errors.length ? errors.join("; ") : null };
+}
+
+async function checkApiExposureInner(domain) {
+  const findings = [];
+  const errors = [];
+  const base = `https://${domain}`;
+
+  const docPaths = ["/openapi.json", "/swagger.json"];
+  await Promise.all([
+    ...docPaths.map(async (docPath) => {
+      const url = `${base}${docPath}`;
+      const res = await safeFetch(url, 8000);
+      if (res.error) {
+        errors.push(`${docPath}: ${res.error}`);
+        return;
+      }
+      if (!res.found || !res.body) return;
+      try {
+        const json = JSON.parse(res.body);
+        if (json && (json.openapi || json.swagger) && json.paths && typeof json.paths === "object") {
+          const pathCount = Object.keys(json.paths).length;
+          findings.push(
+            finding(
+              "exposed_api_docs",
+              `Public API specification exposed (${docPath})`,
+              "medium",
+              "Your OpenAPI / Swagger schema is publicly accessible without authentication, giving attackers a complete map of internal API endpoints and parameters.",
+              {
+                url,
+                evidence: `${docPath} · ${json.openapi ? `OpenAPI ${json.openapi}` : `Swagger ${json.swagger}`} · ${pathCount} route(s)`,
+                affected_resource: docPath,
+                remediation:
+                  "Disable or gate OpenAPI/Swagger documentation behind authentication in production unless the API is intentionally public.",
+              },
+            ),
+          );
+        }
+      } catch {
+        // Not valid OpenAPI/Swagger JSON.
+      }
+    }),
+    (async () => {
+      const url = `${base}/graphql`;
+      const res = await fetchWithTimeout(url, {
+        method: "POST",
+        timeout: 8000,
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+        },
+        body: JSON.stringify({ query: "{ __schema { queryType { name } } }" }),
+      });
+      if (res.error) {
+        errors.push(`/graphql: ${res.error}`);
+        return;
+      }
+      if (!res.ok || !res.body) return;
+      try {
+        const json = JSON.parse(res.body);
+        const queryType = json?.data?.__schema?.queryType?.name;
+        if (queryType) {
+          findings.push(
+            finding(
+              "graphql_introspection_enabled",
+              "GraphQL introspection enabled in production",
+              "medium",
+              "The `/graphql` endpoint answers unauthenticated schema introspection queries, exposing every query, mutation, and type in your API.",
+              {
+                url,
+                evidence: `queryType=${queryType}`,
+                affected_resource: "/graphql",
+                remediation:
+                  "Disable GraphQL introspection in production environments unless the API schema is intentionally public.",
+              },
+            ),
+          );
+        }
+      } catch {
+        // Not a GraphQL JSON response.
+      }
+    })(),
+  ]);
 
   return { findings, error: errors.length ? errors.join("; ") : null };
 }
@@ -1168,9 +1308,11 @@ async function checkDnsInner(domain) {
   if (isIpOrLocal(domain)) return { findings, error: null };
   const registrable = registrableDomain(domain);
 
-  const [nsResult, mxResult] = await Promise.all([
+  const [nsResult, mxResult, txtResult, dmarcResult] = await Promise.all([
     dohQuery(registrable, "NS"),
     dohQuery(registrable, "MX"),
+    dohQuery(registrable, "TXT"),
+    dohQuery(`_dmarc.${registrable}`, "TXT"),
   ]);
 
   if (nsResult.error) errors.push(`DNS NS lookup: ${nsResult.error}`);
@@ -1197,6 +1339,67 @@ async function checkDnsInner(domain) {
       ),
     );
   }
+
+  if (txtResult.error) {
+    errors.push(`DNS SPF lookup: ${txtResult.error}`);
+  } else {
+    const txtValues = (txtResult.records ?? []).map((r) => String(r.data ?? "").replace(/^"|"$/g, ""));
+    const spfRecord = txtValues.find((v) => /^v=spf1\b/i.test(v));
+    if (!spfRecord) {
+      findings.push(
+        finding(
+          "dns_no_spf",
+          "Missing SPF record (email spoofing risk)",
+          "low",
+          "No SPF TXT record was found on the root domain. Without SPF, mail providers have a weaker signal for rejecting spoofed emails sent from your domain.",
+          {
+            evidence: `${registrable} TXT (no v=spf1 record)`,
+            remediation:
+              "Add a TXT record at the root domain (e.g. `v=spf1 include:_spf.your-provider.com ~all`, or `v=spf1 -all` if the domain never sends email).",
+          },
+        ),
+      );
+    }
+  }
+
+  if (dmarcResult.error) {
+    errors.push(`DNS DMARC lookup: ${dmarcResult.error}`);
+  } else {
+    const dmarcValues = (dmarcResult.records ?? []).map((r) =>
+      String(r.data ?? "").replace(/^"|"$/g, ""),
+    );
+    const dmarcRecord = dmarcValues.find((v) => /^v=DMARC1\b/i.test(v));
+    if (!dmarcRecord) {
+      findings.push(
+        finding(
+          "dns_no_dmarc",
+          "Missing DMARC record (email spoofing risk)",
+          "low",
+          "No `_dmarc` TXT record was found. DMARC tells receiving mail servers how to handle spoofed emails claiming to come from your domain.",
+          {
+            evidence: `_dmarc.${registrable} TXT (missing)`,
+            remediation:
+              "Add a `_dmarc` TXT record such as `v=DMARC1; p=quarantine; pct=100; rua=mailto:dmarc@yourdomain.com` (or `p=reject` if you do not send email).",
+          },
+        ),
+      );
+    } else if (/;\s*p=none\b|\bp=none\b/i.test(dmarcRecord)) {
+      findings.push(
+        finding(
+          "dns_dmarc_monitor_only",
+          "DMARC policy is monitor-only (p=none)",
+          "info",
+          "DMARC is present with `p=none`, which only collects reports without quarantining or rejecting spoofed emails.",
+          {
+            evidence: dmarcRecord.slice(0, 180),
+            remediation:
+              "Once legitimate mail senders pass SPF/DKIM cleanly, tighten DMARC to `p=quarantine` or `p=reject`.",
+          },
+        ),
+      );
+    }
+  }
+
   return { findings, error: errors.length ? errors.join("; ") : null };
 }
 
@@ -1542,6 +1745,7 @@ export async function runChecks(rawDomain, { baseline = null } = {}) {
     corsResult,
     discoveryResult,
     secretsResult,
+    apiExposureResult,
     domainExpiryResult,
     dnsResult,
   ] = await Promise.all([
@@ -1549,11 +1753,20 @@ export async function runChecks(rawDomain, { baseline = null } = {}) {
     runCheck("cors", () => checkCorsInner(domain)),
     runCheck("public_discovery", () => checkDiscoveryInner(domain)),
     runCheck("secrets", () => checkLeakedSecretsInner(domain, page)),
+    runCheck("api_exposure", () => checkApiExposureInner(domain)),
     runCheck("domain_registration", () => checkDomainExpiryInner(domain)),
     runCheck("dns", () => checkDnsInner(domain)),
   ]);
 
-  for (const r of [exposedResult, corsResult, discoveryResult, secretsResult, domainExpiryResult, dnsResult]) {
+  for (const r of [
+    exposedResult,
+    corsResult,
+    discoveryResult,
+    secretsResult,
+    apiExposureResult,
+    domainExpiryResult,
+    dnsResult,
+  ]) {
     findings.push(...r.findings);
     register(r.key, r.outcome, r.error ?? null);
   }
