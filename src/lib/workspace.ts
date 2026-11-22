@@ -116,6 +116,11 @@ export type Settings = {
   slackWebhookUrl: string | null;
   slackMinSeverity: Severity;
   alertsEnabled: boolean;
+  discordWebhookUrl: string | null;
+  discordAlertsEnabled: boolean;
+  emailAlertsEnabled: boolean;
+  alertEmail: string | null;
+  emailConfigured: boolean;
 };
 
 export type ConnectionType = "github" | "supabase";
@@ -134,6 +139,9 @@ export type ConnectionRow = {
   githubUsername?: string | null;
   projectRef?: string | null;
   projectName?: string | null;
+  autoScanEnabled?: boolean;
+  scanIntervalMinutes?: number;
+  nextScanAt?: string | null;
 };
 
 export type ScanConnectionResult = {
@@ -466,6 +474,17 @@ export async function setWebhookSecret(id: string, secret: string) {
   await apiPost(`/api/connections/github/${id}/webhook-secret`, { secret });
 }
 
+export async function updateSupabaseSchedule(
+  id: string,
+  input: { autoScanEnabled?: boolean; scanIntervalMinutes?: number },
+): Promise<ConnectionRow> {
+  const res = await apiPut<{ connection: ConnectionRow }>(
+    `/api/connections/supabase/${id}/schedule`,
+    input,
+  );
+  return res.connection;
+}
+
 export function useConnections() {
   const [connections, setConnections] = useState<ConnectionRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -506,5 +525,14 @@ export function useConnections() {
     [],
   );
 
-  return { connections, loading, error, add, remove, scan, reload: load };
+  const updateSchedule = useCallback(
+    async (id: string, input: { autoScanEnabled?: boolean; scanIntervalMinutes?: number }) => {
+      const updated = await updateSupabaseSchedule(id, input);
+      setConnections((prev) => prev.map((c) => (c.id === id ? updated : c)));
+      return updated;
+    },
+    [],
+  );
+
+  return { connections, loading, error, add, remove, scan, updateSchedule, reload: load };
 }

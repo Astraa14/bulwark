@@ -3,6 +3,8 @@ import { useAuth } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import AuthScreen from "@/screens/AuthScreen";
 import { apiGet, apiPost, apiUrl } from "@/lib/api";
+import { buildFixPrompt } from "@/lib/fixPrompt";
+import { buildPath, parseLocation, type IntegrationTab, type Page } from "@/lib/router";
 import {
   acceptBaseline,
   addConnection,
@@ -39,17 +41,6 @@ import {
 
 type Theme = "dark" | "light";
 
-type Page =
-  | "Overview"
-  | "Sites"
-  | "Threats"
-  | "Scans"
-  | "AI Copilot"
-  | "Reports"
-  | "Integrations"
-  | "API Keys"
-  | "Settings";
-
 const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low", "info"];
 
 // Icon map for sidebar nav items
@@ -73,6 +64,22 @@ const INTERVAL_OPTIONS = [
   { value: 360, label: "Every 6 hours" },
   { value: 1440, label: "Once a day" },
 ];
+
+const SUPABASE_INTERVAL_OPTIONS = [
+  { value: 60, label: "Every hour" },
+  { value: 180, label: "Every 3 hours" },
+  { value: 360, label: "Every 6 hours" },
+  { value: 720, label: "Every 12 hours" },
+  { value: 1440, label: "Once a day" },
+  { value: 10080, label: "Once a week" },
+];
+
+function supabaseIntervalLabel(minutes: number) {
+  return (
+    SUPABASE_INTERVAL_OPTIONS.find((o) => o.value === minutes)?.label ??
+    `Every ${minutes} minutes`
+  );
+}
 
 const KEY_PROVIDERS = {
   openai: { label: "OpenAI", model: "gpt-4o-mini", placeholder: "sk-..." },
@@ -1258,12 +1265,16 @@ function ThreatDetail({
   const [cached, setCached] = useState(Boolean(finding.explanation));
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [promptCopied, setPromptCopied] = useState(false);
+
+  const targetLabel = site?.domain ?? finding.resource ?? "unknown target";
 
   useEffect(() => {
     setExplanation(finding.explanation ?? "");
     setModel(finding.explanation_model ?? "");
     setCached(Boolean(finding.explanation));
     setError(null);
+    setPromptCopied(false);
   }, [finding.id, finding.explanation, finding.explanation_model]);
 
   const run = async (label: string, fn: () => Promise<unknown>) => {
@@ -1287,6 +1298,17 @@ function ThreatDetail({
       onRefresh();
     });
 
+  const copyFixPrompt = async () => {
+    setError(null);
+    try {
+      await navigator.clipboard.writeText(buildFixPrompt(finding, targetLabel));
+      setPromptCopied(true);
+      window.setTimeout(() => setPromptCopied(false), 2000);
+    } catch {
+      setError("Could not access the clipboard. Check browser clipboard permissions.");
+    }
+  };
+
   return (
     <div className="detail-layout">
       <div className="threat-detail">
@@ -1296,7 +1318,7 @@ function ThreatDetail({
         <h1>{finding.title}</h1>
         <div className="threat-id">
           <code>
-            THR-{finding.id.slice(0, 8).toUpperCase()}　/　{site?.domain ?? "unknown site"}
+            THR-{finding.id.slice(0, 8).toUpperCase()}　/　{targetLabel}
           </code>
         </div>
         <div className="detail-meta">
@@ -1305,6 +1327,7 @@ function ThreatDetail({
             {finding.severity}
           </span>
           <span className="tag">{finding.status}</span>
+          {finding.platform && <span className="tag">{finding.platform}</span>}
           <span>
             First seen {shortDate(finding.first_seen_at)} · last seen {relTime(finding.last_seen_at)}
           </span>
@@ -1312,7 +1335,7 @@ function ThreatDetail({
 
         <section className="card meaning">
           <small>WHAT BULWARK FOUND</small>
-          <h2>{site ? `On ${site.domain}` : "Finding detail"}</h2>
+          <h2>{`On ${targetLabel}`}</h2>
           <p>{finding.detail ?? "No extra detail was recorded for this finding."}</p>
           {safeExternalUrl(finding.url) && (
             <p className="detail-url">
@@ -1349,7 +1372,7 @@ function ThreatDetail({
             title="Evidence"
             label={finding.check_key}
             code={finding.evidence}
-            footer={`Recorded by a scan on ${site?.domain ?? "this site"}`}
+            footer={`Recorded by a scan on ${targetLabel}`}
           />
         )}
 
@@ -1367,12 +1390,15 @@ function ThreatDetail({
             </p>
           )}
           <div className="ai-actions">
-            <Button dark onClick={() => explain(!explanation)}>
+            <Button dark onClick={() => explain(Boolean(explanation))} disabled={busy !== null}>
               {busy === "explain"
                 ? "Thinking…"
                 : explanation
                   ? "Regenerate explanation"
                   : "Explain with AI"}
+            </Button>
+            <Button onClick={() => void copyFixPrompt()}>
+              {promptCopied ? "Copied fix prompt" : "Copy fix prompt for AI editor"}
             </Button>
             {cached && <span>Loaded from cache · no tokens spent</span>}
           </div>
@@ -1425,8 +1451,22 @@ function ThreatDetail({
           <dd>
             <code>{finding.check_key}</code>
           </dd>
-          <dt>Site</dt>
-          <dd>{site?.domain ?? "—"}</dd>
+          <dt>{finding.platform ? "Resource" : "Site"}</dt>
+          <dd>{targetLabel}</dd>
+          {finding.platform && (
+            <>
+              <dt>Platform</dt>
+              <dd>{finding.platform === "github" ? "GitHub" : "Supabase"}</dd>
+            </>
+          )}
+          {finding.commit_sha && (
+            <>
+              <dt>Commit</dt>
+              <dd>
+                <code>{finding.commit_sha.slice(0, 7)}</code>
+              </dd>
+            </>
+          )}
           <dt>Status</dt>
           <dd>{finding.status}</dd>
           <dt>Confidence</dt>
@@ -1447,8 +1487,9 @@ function ThreatDetail({
         <div className="copilot-copy">
           <h3>How to use this</h3>
           <p>
-            Fix the issue on your site, then click <strong>Mark resolved</strong>. If the next scan
-            still sees it, Bulwark reopens the finding automatically.
+            Use <strong>Copy fix prompt for AI editor</strong> to paste the verified finding into
+            Cursor, Claude Code, or your coding assistant, then click <strong>Mark resolved</strong>{" "}
+            after deploying. If the next scan still sees it, Bulwark reopens the finding automatically.
           </p>
           <p>
             Explanations are generated by the AI provider you connected under API Keys. Your key
@@ -1711,16 +1752,16 @@ function Settings({
   goIntegrations: () => void;
 }) {
   const [interval, setIntervalMinutes] = useState(settings?.scanIntervalMinutes ?? 60);
-  const [autonomy, setAutonomy] = useState<Settings["autonomy"]>(settings?.autonomy ?? "suggest");
   const [applyAll, setApplyAll] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [alertBusy, setAlertBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [alertError, setAlertError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!settings) return;
     setIntervalMinutes(settings.scanIntervalMinutes);
-    setAutonomy(settings.autonomy);
   }, [settings]);
 
   const save = async () => {
@@ -1728,7 +1769,7 @@ function Settings({
     setError(null);
     setMessage(null);
     try {
-      await onSave({ scanIntervalMinutes: interval, autonomy });
+      await onSave({ scanIntervalMinutes: interval });
       if (applyAll && sites.length) {
         await Promise.all(sites.map((s) => setSiteInterval(s.id, interval)));
         onChanged();
@@ -1740,6 +1781,25 @@ function Settings({
       setBusy(false);
     }
   };
+
+  const toggleAlertChannel = async (channel: "slack" | "discord" | "email", next: boolean) => {
+    setAlertBusy(channel);
+    setAlertError(null);
+    try {
+      if (channel === "slack") await onSave({ alertsEnabled: next });
+      else if (channel === "discord") await onSave({ discordAlertsEnabled: next });
+      else await onSave({ emailAlertsEnabled: next });
+    } catch (err) {
+      setAlertError((err as Error).message);
+    } finally {
+      setAlertBusy(null);
+    }
+  };
+
+  const slackConfigured = Boolean(settings?.slackWebhookUrl);
+  const discordConfigured = Boolean(settings?.discordWebhookUrl);
+  const emailTarget = settings?.alertEmail ?? email ?? null;
+  const emailReady = Boolean(emailTarget && settings?.emailConfigured);
 
   return (
     <>
@@ -1785,17 +1845,13 @@ function Settings({
             </div>
             <div className="setting-row">
               <span>
-                <strong>Autonomy</strong>
-                <small>Bulwark only makes production changes when Auto-fix is selected. Suggest only keeps every change under your control.</small>
+                <strong>Operating mode</strong>
+                <small>
+                  Bulwark inspects and explains findings — it never edits your code or changes
+                  production settings.
+                </small>
               </span>
-              <select
-                className="inline-select"
-                value={autonomy}
-                onChange={(e) => setAutonomy(e.target.value as Settings["autonomy"])}
-              >
-                <option value="suggest">Suggest only</option>
-                <option value="auto_fix">Auto-fix</option>
-              </select>
+              <code>Read-only</code>
             </div>
             {error && <p className="modal-error" role="alert">{error}</p>}
             {message && <p className="save-note" role="status" aria-live="polite">{message}</p>}
@@ -1804,15 +1860,54 @@ function Settings({
           <section className="card setting-list alerts">
             <div className="setting-title">
               <h3>Notifications</h3>
-              <p>One Slack message per new finding above your threshold.</p>
+              <p>Send alerts for new findings above your threshold across Slack, Discord, and email.</p>
             </div>
             <div className="setting-row">
               <span>
                 <strong>Slack</strong>
-                <code>{settings?.slackWebhookUrl ? "Webhook configured" : "Not configured"}</code>
+                <code>{slackConfigured ? "Webhook configured" : "Not configured"}</code>
               </span>
-              <button onClick={goIntegrations}>Edit →</button>
-              <Toggle checked={Boolean(settings?.slackWebhookUrl && settings?.alertsEnabled)} />
+              <button type="button" onClick={goIntegrations}>Edit →</button>
+              <Toggle
+                checked={Boolean(slackConfigured && settings?.alertsEnabled)}
+                disabled={!slackConfigured || alertBusy !== null}
+                onChange={(next) => void toggleAlertChannel("slack", next)}
+                title={slackConfigured ? "Toggle Slack alerts" : "Configure a Slack webhook in Integrations first"}
+              />
+            </div>
+            <div className="setting-row">
+              <span>
+                <strong>Discord</strong>
+                <code>{discordConfigured ? "Webhook configured" : "Not configured"}</code>
+              </span>
+              <button type="button" onClick={goIntegrations}>Edit →</button>
+              <Toggle
+                checked={Boolean(discordConfigured && settings?.discordAlertsEnabled)}
+                disabled={!discordConfigured || alertBusy !== null}
+                onChange={(next) => void toggleAlertChannel("discord", next)}
+                title={discordConfigured ? "Toggle Discord alerts" : "Configure a Discord webhook in Integrations first"}
+              />
+            </div>
+            <div className="setting-row">
+              <span>
+                <strong>Email</strong>
+                <code>
+                  {settings?.emailConfigured
+                    ? emailTarget ?? "Not configured"
+                    : "Server email key not set"}
+                </code>
+              </span>
+              <button type="button" onClick={goIntegrations}>Edit →</button>
+              <Toggle
+                checked={Boolean(emailReady && settings?.emailAlertsEnabled)}
+                disabled={!emailReady || alertBusy !== null}
+                onChange={(next) => void toggleAlertChannel("email", next)}
+                title={
+                  emailReady
+                    ? "Toggle email alerts"
+                    : "Configure an alert email (and RESEND_API_KEY on the server) first"
+                }
+              />
             </div>
             <div className="setting-row">
               <span>
@@ -1821,13 +1916,7 @@ function Settings({
               </span>
               <code>{settings?.slackMinSeverity ?? "high"}</code>
             </div>
-            <div className="setting-row">
-              <span>
-                <strong>Email</strong>
-                <small>Email alerts are not available yet.</small>
-              </span>
-              <span className="tag">Coming later</span>
-            </div>
+            {alertError && <p className="modal-error" role="alert">{alertError}</p>}
           </section>
         </div>
         <div>
@@ -2261,6 +2350,7 @@ function ConnectionsSection({
   onRemove,
   onScan,
   onSetWebhookSecret,
+  onUpdateSupabaseSchedule,
 }: {
   connections: ConnectionRow[];
   loading: boolean;
@@ -2273,6 +2363,10 @@ function ConnectionsSection({
     repo?: { owner: string; repo: string },
   ) => Promise<ScanConnectionResult>;
   onSetWebhookSecret: (id: string, secret: string) => Promise<void>;
+  onUpdateSupabaseSchedule: (
+    id: string,
+    input: { autoScanEnabled?: boolean; scanIntervalMinutes?: number },
+  ) => Promise<void>;
 }) {
   const [addType, setAddType] = useState<ConnectionType | null>(null);
   const [ghUsername, setGhUsername] = useState("");
@@ -2420,6 +2514,27 @@ function ConnectionsSection({
     }
   };
 
+  const updateSchedule = async (
+    id: string,
+    input: { autoScanEnabled?: boolean; scanIntervalMinutes?: number },
+  ) => {
+    setBusy(`schedule-${id}`);
+    setLocalError(null);
+    setNotice(null);
+    try {
+      await onUpdateSupabaseSchedule(id, input);
+      setNotice(
+        input.autoScanEnabled === false
+          ? "Scheduled Supabase scans paused."
+          : "Supabase scan schedule updated.",
+      );
+    } catch (err) {
+      setLocalError((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const coverageSummary = (connection: ConnectionRow) => {
     const coverage = connection.lastScanCoverage;
     if (!coverage) return null;
@@ -2521,6 +2636,18 @@ function ConnectionsSection({
                     <dt>Added</dt>
                     <dd>{shortDate(c.createdAt)}</dd>
                   </div>
+                  {c.type === "supabase" && (
+                    <div>
+                      <dt>Scheduled scans</dt>
+                      <dd>
+                        {c.autoScanEnabled === false
+                          ? "Paused"
+                          : c.nextScanAt
+                            ? `${supabaseIntervalLabel(c.scanIntervalMinutes ?? 360)} · next ${shortDate(c.nextScanAt)}`
+                            : supabaseIntervalLabel(c.scanIntervalMinutes ?? 360)}
+                      </dd>
+                    </div>
+                  )}
                   {coverage && (
                     <div className="record-fact-wide">
                       <dt>Last scan coverage</dt>
@@ -2581,6 +2708,44 @@ function ConnectionsSection({
                     >
                       Webhook secret
                     </button>
+                  )}
+                  {c.type === "supabase" && (
+                    <>
+                      <select
+                        className="status-select schedule-select"
+                        aria-label={`Scan interval for ${subject}`}
+                        value={c.scanIntervalMinutes ?? 360}
+                        disabled={busy !== null}
+                        onChange={(e) =>
+                          void updateSchedule(c.id, {
+                            scanIntervalMinutes: Number(e.target.value),
+                            autoScanEnabled: c.autoScanEnabled ?? true,
+                          })
+                        }
+                      >
+                        {SUPABASE_INTERVAL_OPTIONS.map((option) => (
+                          <option value={option.value} key={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="button"
+                        disabled={busy !== null}
+                        onClick={() =>
+                          void updateSchedule(c.id, {
+                            autoScanEnabled: c.autoScanEnabled === false,
+                          })
+                        }
+                      >
+                        {busy === `schedule-${c.id}`
+                          ? "Saving…"
+                          : c.autoScanEnabled === false
+                            ? "Enable schedule"
+                            : "Pause schedule"}
+                      </button>
+                    </>
                   )}
                   <Button onClick={() => removeConnection(c.id, c.type)}>
                     {busy === c.id ? "Removing…" : "Remove"}
@@ -2875,12 +3040,15 @@ function PlatformFindingsSection({
   findings,
   loading,
   onSetStatus,
+  onOpenFinding,
 }: {
   findings: FindingRow[];
   loading: boolean;
   onSetStatus: (id: string, status: FindingStatus) => Promise<void>;
+  onOpenFinding: (finding: FindingRow) => void;
 }) {
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+  const [copiedPromptId, setCopiedPromptId] = useState<string | null>(null);
 
   const githubFindings = findings.filter((f) => f.platform === "github");
   const supabaseFindings = findings.filter((f) => f.platform === "supabase");
@@ -2898,6 +3066,18 @@ function PlatformFindingsSection({
         next.delete(id);
         return next;
       });
+    }
+  };
+
+  const copyPrompt = async (finding: FindingRow) => {
+    try {
+      await navigator.clipboard.writeText(
+        buildFixPrompt(finding, finding.resource ?? finding.platform ?? "platform scan"),
+      );
+      setCopiedPromptId(finding.id);
+      window.setTimeout(() => setCopiedPromptId(null), 1800);
+    } catch {
+      // Ignore clipboard failures silently in inline list actions.
     }
   };
 
@@ -2971,6 +3151,12 @@ function PlatformFindingsSection({
           <option value="resolved">Resolved</option>
           <option value="ignored">Ignored</option>
         </select>
+        <button type="button" className="button" onClick={() => onOpenFinding(f)}>
+          View details →
+        </button>
+        <button type="button" className="button" onClick={() => void copyPrompt(f)}>
+          {copiedPromptId === f.id ? "Copied prompt" : "Copy fix prompt"}
+        </button>
         {f.url && (
           <a href={f.url} target="_blank" rel="noopener noreferrer" className="button">
             View source ↗
@@ -3036,6 +3222,8 @@ function PlatformFindingsSection({
 }
 
 function Integrations({
+  activeTab,
+  onTabChange,
   settings,
   onSave,
   onChanged,
@@ -3046,11 +3234,15 @@ function Integrations({
   onAddConnection,
   onRemoveConnection,
   onScanConnection,
+  onUpdateSupabaseSchedule,
   platformFindings,
   platformFindingsLoading,
   onSetPlatformFindingStatus,
+  onOpenFinding,
   onSetWebhookSecret,
 }: {
+  activeTab: IntegrationTab;
+  onTabChange: (tab: IntegrationTab) => void;
   settings: Settings | null;
   onSave: (patch: Partial<Settings>) => Promise<Settings>;
   onChanged: () => void;
@@ -3065,62 +3257,105 @@ function Integrations({
     type: ConnectionType,
     repo?: { owner: string; repo: string },
   ) => Promise<ScanConnectionResult>;
+  onUpdateSupabaseSchedule: (
+    id: string,
+    input: { autoScanEnabled?: boolean; scanIntervalMinutes?: number },
+  ) => Promise<void>;
   platformFindings: FindingRow[];
   platformFindingsLoading: boolean;
   onSetPlatformFindingStatus: (id: string, status: FindingStatus) => Promise<void>;
+  onOpenFinding: (finding: FindingRow) => void;
   onSetWebhookSecret: (id: string, secret: string) => Promise<void>;
 }) {
-  const [webhook, setWebhook] = useState(settings?.slackWebhookUrl ?? "");
-  const [showWebhook, setShowWebhook] = useState(false);
+  const [slackWebhook, setSlackWebhook] = useState(settings?.slackWebhookUrl ?? "");
+  const [showSlackWebhook, setShowSlackWebhook] = useState(false);
+  const [slackEnabled, setSlackEnabled] = useState(
+    Boolean(settings?.slackWebhookUrl && settings?.alertsEnabled),
+  );
+
+  const [discordWebhook, setDiscordWebhook] = useState(settings?.discordWebhookUrl ?? "");
+  const [showDiscordWebhook, setShowDiscordWebhook] = useState(false);
+  const [discordEnabled, setDiscordEnabled] = useState(
+    Boolean(settings?.discordWebhookUrl && settings?.discordAlertsEnabled),
+  );
+
+  const [alertEmail, setAlertEmail] = useState(settings?.alertEmail ?? email ?? "");
+  const [emailEnabled, setEmailEnabled] = useState(Boolean(settings?.emailAlertsEnabled));
+
   const [severity, setSeverity] = useState<Severity>(settings?.slackMinSeverity ?? "high");
-  const [enabled, setEnabled] = useState(Boolean(settings?.slackWebhookUrl && settings?.alertsEnabled));
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [slackError, setSlackError] = useState<string | null>(null);
-  const [tab, setTab] = useState<"alerts" | "platforms" | "findings">("alerts");
+  const [alertError, setAlertError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!settings) return;
-    setWebhook(settings.slackWebhookUrl ?? "");
+    setSlackWebhook(settings.slackWebhookUrl ?? "");
+    setSlackEnabled(Boolean(settings.slackWebhookUrl && settings.alertsEnabled));
+    setDiscordWebhook(settings.discordWebhookUrl ?? "");
+    setDiscordEnabled(Boolean(settings.discordWebhookUrl && settings.discordAlertsEnabled));
+    setAlertEmail(settings.alertEmail ?? email ?? "");
+    setEmailEnabled(Boolean(settings.emailAlertsEnabled));
     setSeverity(settings.slackMinSeverity);
-    setEnabled(Boolean(settings.slackWebhookUrl && settings.alertsEnabled));
-  }, [settings]);
+  }, [settings, email]);
 
-  const save = async (label: string) => {
-    setBusy(label);
-    setSlackError(null);
+  const saveAlerts = async () => {
+    setBusy("save");
+    setAlertError(null);
     setMessage(null);
     try {
       await onSave({
-        slackWebhookUrl: webhook,
+        slackWebhookUrl: slackWebhook,
+        alertsEnabled: slackEnabled && Boolean(slackWebhook.trim()),
+        discordWebhookUrl: discordWebhook,
+        discordAlertsEnabled: discordEnabled && Boolean(discordWebhook.trim()),
+        alertEmail: alertEmail.trim() || null,
+        emailAlertsEnabled: emailEnabled && Boolean(alertEmail.trim()),
         slackMinSeverity: severity,
-        alertsEnabled: enabled && Boolean(webhook.trim()),
       });
       onChanged();
-      setMessage("Saved.");
+      setMessage("Alert settings saved.");
     } catch (err) {
-      setSlackError((err as Error).message);
+      setAlertError((err as Error).message);
     } finally {
       setBusy(null);
     }
   };
 
-  const test = async () => {
-    setBusy("test");
-    setSlackError(null);
+  const testChannel = async (channel: "slack" | "discord" | "email") => {
+    setBusy(`test-${channel}`);
+    setAlertError(null);
     setMessage(null);
     try {
-      if (!webhook.trim()) throw new Error("Add a Slack webhook URL before sending a test message.");
-      await apiPost("/api/alerts/test", { webhookUrl: webhook });
-      setMessage("Test message sent. Save changes separately to keep this configuration.");
+      if (channel === "slack") {
+        if (!slackWebhook.trim()) {
+          throw new Error("Add a Slack webhook URL before sending a test message.");
+        }
+        await apiPost("/api/alerts/test", { channel: "slack", webhookUrl: slackWebhook });
+        setMessage("Slack test sent. Save changes separately to keep this configuration.");
+      } else if (channel === "discord") {
+        if (!discordWebhook.trim()) {
+          throw new Error("Add a Discord webhook URL before sending a test message.");
+        }
+        await apiPost("/api/alerts/test", { channel: "discord", webhookUrl: discordWebhook });
+        setMessage("Discord test sent. Save changes separately to keep this configuration.");
+      } else {
+        if (!alertEmail.trim()) {
+          throw new Error("Enter an alert email address before sending a test email.");
+        }
+        await apiPost("/api/alerts/test", { channel: "email", email: alertEmail.trim() });
+        setMessage("Test email sent. Save changes separately to keep this configuration.");
+      }
     } catch (err) {
-      setSlackError((err as Error).message);
+      setAlertError((err as Error).message);
     } finally {
       setBusy(null);
     }
   };
 
-  const configured = Boolean(webhook.trim());
+  const slackConfigured = Boolean(slackWebhook.trim());
+  const discordConfigured = Boolean(discordWebhook.trim());
+  const emailConfiguredOnServer = Boolean(settings?.emailConfigured);
+  const emailReady = Boolean(alertEmail.trim());
 
   return (
     <>
@@ -3131,7 +3366,7 @@ function Integrations({
       <div className="tabs" role="tablist" aria-label="Integration sections">
         {(
           [
-            { id: "alerts", label: "Slack alerts", count: undefined },
+            { id: "alerts", label: "Alerts", count: undefined },
             { id: "platforms", label: "Platform connections", count: connections.length },
             { id: "findings", label: "Platform findings", count: platformFindings.length },
           ] as const
@@ -3140,143 +3375,272 @@ function Integrations({
             type="button"
             role="tab"
             key={item.id}
-            aria-selected={tab === item.id}
-            className={tab === item.id ? "selected" : ""}
-            onClick={() => setTab(item.id)}
+            aria-selected={activeTab === item.id}
+            className={activeTab === item.id ? "selected" : ""}
+            onClick={() => onTabChange(item.id)}
           >
             {item.label}
             {item.count !== undefined && <small>{item.count}</small>}
           </button>
         ))}
       </div>
-      {tab === "alerts" && (
-      <div className="integration-body">
-      <div className="api-grid">
-        <div>
-          <section className="card setting-list">
-            <div className="setting-title">
-              <h3>Slack</h3>
-              <p>
-                Create an incoming webhook in Slack, then paste the URL here. Bulwark posts one
-                message per new finding.
-              </p>
+      {activeTab === "alerts" && (
+        <div className="integration-body">
+          <div className="api-grid">
+            <div className="alert-stack">
+              <section className="card setting-list">
+                <div className="setting-title">
+                  <h3>Delivery threshold</h3>
+                  <p>Applies across Slack, Discord, and email alerts. Every alert links directly to the finding.</p>
+                </div>
+                <div className="setting-row">
+                  <span>
+                    <strong>Minimum severity</strong>
+                    <small>Lower severities are still recorded in the app.</small>
+                  </span>
+                  <select
+                    className="inline-select"
+                    value={severity}
+                    onChange={(e) => setSeverity(e.target.value as Severity)}
+                  >
+                    {SEVERITY_ORDER.map((s) => (
+                      <option value={s} key={s}>
+                        {s[0].toUpperCase() + s.slice(1)} and above
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </section>
+
+              <section className="card setting-list">
+                <div className="setting-title">
+                  <h3>Slack</h3>
+                  <p>
+                    Create an incoming webhook in Slack, then paste the URL here. Stored encrypted at rest.
+                  </p>
+                </div>
+                <div className="field-block">
+                  <label htmlFor="slack-webhook">Incoming webhook URL</label>
+                  <div className="webhook-input-row">
+                    <input
+                      id="slack-webhook"
+                      type={showSlackWebhook ? "text" : "password"}
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={slackWebhook}
+                      onChange={(e) => setSlackWebhook(e.target.value)}
+                      placeholder="https://hooks.slack.com/services/T000/B000/xxxx"
+                      aria-label="Slack incoming webhook URL"
+                    />
+                    <button
+                      type="button"
+                      className="field-reveal"
+                      onClick={() => setShowSlackWebhook((visible) => !visible)}
+                      aria-pressed={showSlackWebhook}
+                    >
+                      {showSlackWebhook ? "Hide" : "Show"}
+                    </button>
+                  </div>
+                  <small className="field-help">Only https://hooks.slack.com/services/... URLs are accepted.</small>
+                </div>
+                <div className="setting-row">
+                  <span>
+                    <strong>Send Slack alerts</strong>
+                    <small>Off pauses delivery without deleting the webhook.</small>
+                  </span>
+                  <Toggle
+                    checked={slackEnabled && slackConfigured}
+                    onChange={setSlackEnabled}
+                    disabled={!slackConfigured}
+                    title={slackConfigured ? "Enable or pause Slack alerts" : "Add a Slack webhook URL first"}
+                  />
+                </div>
+                <div className="setting-actions">
+                  <Button onClick={() => void testChannel("slack")} disabled={!slackConfigured || busy !== null}>
+                    {busy === "test-slack" ? "Sending…" : "Send test Slack"}
+                  </Button>
+                </div>
+              </section>
+
+              <section className="card setting-list">
+                <div className="setting-title">
+                  <h3>Discord</h3>
+                  <p>
+                    In Discord, open Server Settings → Integrations → Webhooks, copy the URL, and paste it here.
+                  </p>
+                </div>
+                <div className="field-block">
+                  <label htmlFor="discord-webhook">Discord webhook URL</label>
+                  <div className="webhook-input-row">
+                    <input
+                      id="discord-webhook"
+                      type={showDiscordWebhook ? "text" : "password"}
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={discordWebhook}
+                      onChange={(e) => setDiscordWebhook(e.target.value)}
+                      placeholder="https://discord.com/api/webhooks/123456789012345678/..."
+                      aria-label="Discord webhook URL"
+                    />
+                    <button
+                      type="button"
+                      className="field-reveal"
+                      onClick={() => setShowDiscordWebhook((visible) => !visible)}
+                      aria-pressed={showDiscordWebhook}
+                    >
+                      {showDiscordWebhook ? "Hide" : "Show"}
+                    </button>
+                  </div>
+                  <small className="field-help">Only official discord.com webhook URLs are accepted.</small>
+                </div>
+                <div className="setting-row">
+                  <span>
+                    <strong>Send Discord alerts</strong>
+                    <small>Posts a severity-colored embed with a deep link to the finding.</small>
+                  </span>
+                  <Toggle
+                    checked={discordEnabled && discordConfigured}
+                    onChange={setDiscordEnabled}
+                    disabled={!discordConfigured}
+                    title={discordConfigured ? "Enable or pause Discord alerts" : "Add a Discord webhook URL first"}
+                  />
+                </div>
+                <div className="setting-actions">
+                  <Button
+                    onClick={() => void testChannel("discord")}
+                    disabled={!discordConfigured || busy !== null}
+                  >
+                    {busy === "test-discord" ? "Sending…" : "Send test Discord"}
+                  </Button>
+                </div>
+              </section>
+
+              <section className="card setting-list">
+                <div className="setting-title">
+                  <h3>Email</h3>
+                  <p>
+                    Receive one email per scan with new findings above your threshold. Delivered via Resend.
+                  </p>
+                </div>
+                <div className="field-block">
+                  <label htmlFor="alert-email">Recipient email</label>
+                  <input
+                    id="alert-email"
+                    type="email"
+                    autoComplete="email"
+                    value={alertEmail}
+                    onChange={(e) => setAlertEmail(e.target.value)}
+                    placeholder={email ?? "you@example.com"}
+                    aria-label="Alert email address"
+                  />
+                  <small className="field-help">
+                    {emailConfiguredOnServer
+                      ? "Server email delivery is configured and ready."
+                      : "Set RESEND_API_KEY (and optionally BULWARK_EMAIL_FROM) on the server to activate email delivery."}
+                  </small>
+                </div>
+                <div className="setting-row">
+                  <span>
+                    <strong>Send email alerts</strong>
+                    <small>Toggle email notifications for this workspace.</small>
+                  </span>
+                  <Toggle
+                    checked={emailEnabled && emailReady}
+                    onChange={setEmailEnabled}
+                    disabled={!emailReady}
+                    title={emailReady ? "Enable or pause email alerts" : "Enter an alert email address first"}
+                  />
+                </div>
+                <div className="setting-actions">
+                  <Button
+                    onClick={() => void testChannel("email")}
+                    disabled={!emailReady || !emailConfiguredOnServer || busy !== null}
+                  >
+                    {busy === "test-email" ? "Sending…" : "Send test email"}
+                  </Button>
+                </div>
+              </section>
+
+              <section className="card setting-list">
+                {alertError && <p className="modal-error" role="alert">{alertError}</p>}
+                {message && <p className="save-note" role="status" aria-live="polite">{message}</p>}
+                <div className="setting-actions">
+                  <Button dark onClick={() => void saveAlerts()} disabled={busy !== null}>
+                    {busy === "save" ? "Saving…" : "Save alert settings"}
+                  </Button>
+                </div>
+              </section>
             </div>
-            <div className="field-block">
-              <label>Incoming webhook URL</label>
-              <div className="webhook-input-row">
-                <input
-                  type={showWebhook ? "text" : "password"}
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={webhook}
-                  onChange={(e) => setWebhook(e.target.value)}
-                  placeholder="https://hooks.slack.com/services/T000/B000/xxxx"
-                  aria-label="Slack incoming webhook URL"
-                />
-                <button
-                  type="button"
-                  className="field-reveal"
-                  onClick={() => setShowWebhook((visible) => !visible)}
-                  aria-pressed={showWebhook}
-                >
-                  {showWebhook ? "Hide" : "Show"}
-                </button>
-              </div>
-              <small className="field-help">The webhook is hidden while you are not editing it.</small>
-            </div>
-            <div className="setting-row">
-              <span>
-                <strong>Send alerts</strong>
-                <small>Off pauses delivery without deleting the webhook.</small>
-              </span>
-              <Toggle
-                checked={enabled && configured}
-                onChange={setEnabled}
-                disabled={!configured}
-                title={configured ? "Enable or pause Slack alert delivery" : "Add a webhook URL before enabling alerts"}
-              />
-            </div>
-            <div className="setting-row">
-              <span>
-                <strong>Minimum severity</strong>
-                <small>Lower severities are still recorded in the app.</small>
-              </span>
-              <select
-                className="inline-select"
-                value={severity}
-                onChange={(e) => setSeverity(e.target.value as Severity)}
-              >
-                {SEVERITY_ORDER.map((s) => (
-                  <option value={s} key={s}>
-                    {s[0].toUpperCase() + s.slice(1)} and above
-                  </option>
-                ))}
-              </select>
-            </div>
-            {slackError && <p className="modal-error" role="alert">{slackError}</p>}
-            {message && <p className="save-note" role="status" aria-live="polite">{message}</p>}
-            <div className="setting-actions">
-              <Button dark onClick={() => save("save")} disabled={busy !== null}>
-                {busy === "save" ? "Saving…" : "Save changes"}
-              </Button>
-              <Button onClick={test} disabled={!configured || busy !== null}>
-                {busy === "test" ? "Sending…" : "Send test message"}
-              </Button>
-            </div>
-          </section>
-        </div>
-        <div>
-          <section className="card side-setting">
-            <h3>Status</h3>
             <div>
-              <span>Slack</span>
-              <code>{configured ? "Connected" : "Not configured"}</code>
-            </div>
-            <div>
-              <span>Alerts</span>
-              <code>{configured ? (enabled ? "Enabled" : "Paused") : "Waiting for webhook"}</code>
-            </div>
-            <div>
-              <span>Threshold</span>
-              <code>{severity}</code>
-            </div>
-            <p>Workspace: {email ?? "—"}</p>
-          </section>
-          <section className="card side-setting">
-            <h3>What gets sent</h3>
-            <pre className="slack-preview">{`:red_circle: *CRITICAL* on *example.com*
+              <section className="card side-setting">
+                <h3>Status</h3>
+                <div>
+                  <span>Slack</span>
+                  <code>
+                    {slackConfigured ? (slackEnabled ? "Enabled" : "Paused") : "Not configured"}
+                  </code>
+                </div>
+                <div>
+                  <span>Discord</span>
+                  <code>
+                    {discordConfigured ? (discordEnabled ? "Enabled" : "Paused") : "Not configured"}
+                  </code>
+                </div>
+                <div>
+                  <span>Email</span>
+                  <code>
+                    {!emailConfiguredOnServer
+                      ? "Needs server key"
+                      : emailReady
+                        ? emailEnabled
+                          ? "Enabled"
+                          : "Paused"
+                        : "Not configured"}
+                  </code>
+                </div>
+                <div>
+                  <span>Threshold</span>
+                  <code>{severity}</code>
+                </div>
+                <p>Workspace: {email ?? "—"}</p>
+              </section>
+              <section className="card side-setting">
+                <h3>What gets sent</h3>
+                <pre className="slack-preview">{`:red_circle: *CRITICAL* on *example.com*
 > Supabase service_role key exposed
 > The service_role key bypasses Row Level Security.
-_Open Bulwark for the fix_`}</pre>
-            <p>One message per scan that finds something new above your threshold.</p>
-          </section>
+<https://your-bulwark/threats/…|Open finding in Bulwark>`}</pre>
+                <p>One message per scan with new or reopened findings above your threshold.</p>
+              </section>
+            </div>
+          </div>
         </div>
-      </div>
-      </div>
       )}
 
-      {tab === "platforms" && (
-      <div className="integration-body">
-      <ConnectionsSection
-        connections={connections}
-        loading={loading}
-        error={error}
-        onAdd={onAddConnection}
-        onRemove={onRemoveConnection}
-        onScan={onScanConnection}
-        onSetWebhookSecret={(id, secret) => onSetWebhookSecret(id, secret)}
-      />
-      </div>
+      {activeTab === "platforms" && (
+        <div className="integration-body">
+          <ConnectionsSection
+            connections={connections}
+            loading={loading}
+            error={error}
+            onAdd={onAddConnection}
+            onRemove={onRemoveConnection}
+            onScan={onScanConnection}
+            onSetWebhookSecret={(id, secret) => onSetWebhookSecret(id, secret)}
+            onUpdateSupabaseSchedule={onUpdateSupabaseSchedule}
+          />
+        </div>
       )}
 
-      {tab === "findings" && (
-      <div className="integration-body">
-      <PlatformFindingsSection
-        findings={platformFindings}
-        loading={platformFindingsLoading}
-        onSetStatus={onSetPlatformFindingStatus}
-      />
-      </div>
+      {activeTab === "findings" && (
+        <div className="integration-body">
+          <PlatformFindingsSection
+            findings={platformFindings}
+            loading={platformFindingsLoading}
+            onSetStatus={onSetPlatformFindingStatus}
+            onOpenFinding={onOpenFinding}
+          />
+        </div>
       )}
     </>
   );
@@ -3701,7 +4065,7 @@ export default function App() {
 
 function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
   const { user, signOut } = useAuth();
-  const { sites, findings, scans, scanCount, refresh } = useWorkspace();
+  const { sites, findings, scans, scanCount, loading: workspaceLoading, refresh } = useWorkspace();
   const activeSiteCount = sites.filter((site) => site.status === "verified").length;
   const pendingSiteCount = sites.filter((site) => site.status === "pending").length;
   const monitoringState: "active" | "setup" | "paused" =
@@ -3744,18 +4108,54 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
     return () => { mounted = false; };
   }, []);
 
-  const [page, setPage] = useState<Page>("Overview");
-  const [activeFindingId, setActiveFindingId] = useState<string | null>(null);
+  const [route, setRoute] = useState(() =>
+    parseLocation(window.location.pathname, window.location.search),
+  );
   const [mobileNav, setMobileNav] = useState(false);
   const [modal, setModal] = useState<"site" | "key" | "connection" | null>(null);
   const [siteToVerify, setSiteToVerify] = useState<SiteRow | null>(null);
+
+  useEffect(() => {
+    const onPopState = () => {
+      setRoute(parseLocation(window.location.pathname, window.location.search));
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  const navigate = useCallback(
+    (
+      next: { page: Page; findingId?: string | null; integrationTab?: IntegrationTab },
+      { replace = false }: { replace?: boolean } = {},
+    ) => {
+      const resolved = {
+        page: next.page,
+        findingId: next.findingId ?? null,
+        integrationTab: next.integrationTab ?? "alerts",
+      };
+      setRoute(resolved);
+      const nextUrl = buildPath(resolved);
+      const currentUrl = `${window.location.pathname}${window.location.search}`;
+      if (currentUrl !== nextUrl) {
+        if (replace) window.history.replaceState({}, "", nextUrl);
+        else window.history.pushState({}, "", nextUrl);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const timer = setInterval(() => void refresh(), 30_000);
     return () => clearInterval(timer);
   }, [refresh]);
 
-  const activeFinding = findings.find((f) => f.id === activeFindingId) ?? null;
+  const page = route.page;
+  const activeFindingId = route.findingId;
+  const activeFinding =
+    (activeFindingId
+      ? findings.find((f) => f.id === activeFindingId) ??
+        platformFindings.find((f) => f.id === activeFindingId)
+      : null) ?? null;
   const activeSite = sites.find((s) => s.id === activeFinding?.site_id);
 
   const onScan = (id: string) => {
@@ -3767,12 +4167,15 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
   const changeFindingStatus = async (status: FindingStatus) => {
     if (!activeFindingId) return;
     await setFindingStatus(activeFindingId, status);
-    await refresh();
+    await Promise.all([refresh(), reloadPlatformFindings()]);
   };
 
-  const go = (next: Page) => {
-    setPage(next);
-    setActiveFindingId(null);
+  const go = (next: Page, integrationTab?: IntegrationTab) => {
+    navigate({ page: next, findingId: null, integrationTab });
+  };
+
+  const openFindingById = (id: string) => {
+    navigate({ page: "Threats", findingId: id });
   };
 
   const openSiteModal = (site?: SiteRow) => {
@@ -3789,10 +4192,28 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
     <ThreatDetail
       finding={activeFinding}
       site={activeSite}
-      back={() => setActiveFindingId(null)}
+      back={() => go("Threats")}
       onStatus={changeFindingStatus}
-      onRefresh={refresh}
+      onRefresh={() => {
+        void refresh();
+        void reloadPlatformFindings();
+      }}
     />
+  ) : activeFindingId ? (
+    workspaceLoading || platformFindingsLoading ? (
+      <div className="card empty-state">
+        <h2>Loading finding…</h2>
+        <p>Fetching the finding details for this link.</p>
+      </div>
+    ) : (
+      <div className="card empty-state">
+        <h2>Finding not found</h2>
+        <p>This finding no longer exists or belongs to another workspace.</p>
+        <Button dark onClick={() => go("Threats")}>
+          ← Back to threats
+        </Button>
+      </div>
+    )
   ) : page === "Overview" ? (
     <Overview
       go={(p) => go(p)}
@@ -3801,10 +4222,7 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
       findings={findings}
       scans={scans}
       scanCount={scanCount}
-      onOpenFinding={(id) => {
-        setPage("Threats");
-        setActiveFindingId(id);
-      }}
+      onOpenFinding={(id) => openFindingById(id)}
     />
   ) : page === "Sites" ? (
     <Sites
@@ -3817,7 +4235,7 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
     />
   ) : page === "Threats" ? (
     <Threats
-      onOpen={(f) => setActiveFindingId(f.id)}
+      onOpen={(f) => openFindingById(f.id)}
       findings={findings}
       sites={sites}
     />
@@ -3827,6 +4245,8 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
     <Reports sites={sites} findings={findings} scans={scans} />
   ) : page === "Integrations" ? (
     <Integrations
+      activeTab={route.integrationTab}
+      onTabChange={(nextTab) => go("Integrations", nextTab)}
       settings={settingsState.settings}
       onSave={settingsState.save}
       onChanged={() => {
@@ -3844,9 +4264,18 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
         await Promise.all([connectionsState.reload(), reloadPlatformFindings()]);
         return result;
       }}
+      onUpdateSupabaseSchedule={async (id, input) => {
+        await connectionsState.updateSchedule(id, input);
+      }}
       platformFindings={platformFindings}
       platformFindingsLoading={platformFindingsLoading}
-      onSetPlatformFindingStatus={(id, status) => setFindingStatus(id, status).then(() => void reloadPlatformFindings())}
+      onSetPlatformFindingStatus={(id, status) =>
+        setFindingStatus(id, status).then(() => {
+          void reloadPlatformFindings();
+          void refresh();
+        })
+      }
+      onOpenFinding={(f) => openFindingById(f.id)}
       onSetWebhookSecret={(id, secret) => setWebhookSecret(id, secret)}
     />
   ) : page === "AI Copilot" ? (
@@ -3854,10 +4283,7 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
       findings={findings}
       sites={sites}
       keys={keysState.keys}
-      onOpen={(f) => {
-        setPage("Threats");
-        setActiveFindingId(f.id);
-      }}
+      onOpen={(f) => openFindingById(f.id)}
       onGoKeys={() => go("API Keys")}
     />
   ) : page === "API Keys" ? (
@@ -3875,7 +4301,7 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
       email={user?.email}
       onSave={settingsState.save}
       onChanged={refresh}
-      goIntegrations={() => go("Integrations")}
+      goIntegrations={() => go("Integrations", "alerts")}
     />
   ) : (
     <GenericPage page={page} />
