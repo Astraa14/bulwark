@@ -1,6 +1,6 @@
 # Bulwark Product Scope
 
-_Last updated: 2026-11-15_
+_Last updated: 2026-11-22_
 
 ## What Bulwark is
 
@@ -33,10 +33,11 @@ A repository scan:
 - reads the repository tree at the default branch head, or at the exact commit named by a verified webhook delivery;
 - reads up to **500 text files** up to 500 KB each; larger files, binary files, unreadable blobs, and files beyond the cap are counted and disclosed;
 - flags hardcoded credentials in file contents (redacted evidence plus a line link);
+- flags client-exposed secret environment variable names (`NEXT_PUBLIC_*`, `VITE_*`, `REACT_APP_*`, `NUXT_PUBLIC_*`, `PUBLIC_*` paired with secret/service-role/database variable names);
 - flags sensitive filenames (`.env`, private keys, database dumps, etc.);
 - flags unpinned dependency declarations;
-- queries [OSV](https://osv.dev) for **npm `package-lock.json` only**, sending package names and exact versions — never source code, paths, tokens, or credentials;
-- flags a small set of container/CI configuration risks (root Dockerfile user, `pull_request_target`).
+- queries [OSV](https://osv.dev) for **npm (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`) and Python (`requirements.txt`, `poetry.lock`, `uv.lock`)** lockfiles, sending only package names, ecosystems, and exact versions — never source code, paths, tokens, or credentials; other lockfiles are reported as unanalyzed;
+- flags container, CI, Vercel CORS, and Supabase SQL migration configuration risks (root Dockerfile user, `pull_request_target`, wildcard CORS with credentials, `supabase/migrations/*.sql` tables missing `ENABLE ROW LEVEL SECURITY`).
 
 It does **not** scan commit history, git objects, issues, pull requests, releases, or server-side authorization logic. It is not a SAST engine.
 
@@ -46,7 +47,8 @@ A connection stores the project reference (`https://<ref>.supabase.co`) and a **
 
 - connectivity with the publishable key;
 - storage bucket listing; when the key cannot list buckets, storage is reported as **not checked**, not as safe;
-- RLS metadata through the optional helper at `supabase/customer/bulwark_check_rls.sql`, which each customer installs in their own project. Without it, RLS is reported as **not checked**.
+- RLS metadata through the optional helper at `supabase/customer/bulwark_check_rls.sql`, which each customer installs in their own project. Without it, RLS is reported as **not checked**;
+- optional scheduled background re-scans (default every 6 hours, configurable from hourly to weekly per connection).
 
 RLS analysis is **heuristic**: it reports tables with RLS disabled, RLS enabled with no policies (deny-by-default, low severity), and policies whose expression is the literal `true`. It does not evaluate policy expressions, role targeting, or query results. A heuristic pass does not prove data is protected.
 
@@ -80,9 +82,10 @@ A scan can be:
 ## Data handling
 
 - Website, GitHub, and Supabase scans/findings are stored in Supabase with row-level security scoped to the signed-in owner. Legacy platform rows whose owner cannot be proven are retained but hidden from every user.
-- GitHub tokens and Supabase keys are encrypted at rest with `BULWARK_ENCRYPTION_KEY` and are never returned to the browser (only a masked preview).
+- GitHub tokens, Supabase keys, and Slack/Discord webhook URLs are encrypted at rest with `BULWARK_ENCRYPTION_KEY` and are never returned to the browser for platform tokens (only a masked preview).
+- Email alerts are optional and sent via Resend when `RESEND_API_KEY` is configured on the server.
 - Webhook bodies are not stored; only delivery metadata (connection, commit, resource, delivery ID) is queued.
-- OSV receives only npm package names and exact versions.
+- OSV receives only package names, ecosystems (`npm`/`PyPI`), and exact versions.
 - AI explanations run only when a user asks, using the user's own OpenAI/Anthropic key; the selected finding's text is sent to that provider.
 - Outbound scanner requests are SSRF-hardened: HTTP/HTTPS only, ports 80/443, public IPs only, every redirect hop re-validated, bounded response bodies. Supabase hosts are derived from the validated project reference instead of accepting arbitrary URLs.
 - Network-level egress restrictions are still recommended as defense in depth (see `render.yaml`).

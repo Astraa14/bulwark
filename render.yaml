@@ -29,6 +29,10 @@ services:
         value: 8787
       - key: BULWARK_APP_URL
         sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: BULWARK_EMAIL_FROM
+        sync: false
       - key: PORT
         sync: false
 

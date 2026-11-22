@@ -357,3 +357,10 @@ export async function runPlatformScanJobs(db, opts = {}) {
   }
   return results;
 }
+
+/** Enqueue scheduled scans for Supabase connections whose next_scan_at is due. */
+export async function enqueueDueSupabaseScans(db, { limit = 10 } = {}) {
+  const { data, error } = await db.rpc("enqueue_due_supabase_scans", { p_limit: limit });
+  if (error) throw new Error(`enqueue due supabase scans: ${error.message}`);
+  return Array.isArray(data) ? data : [];
+}

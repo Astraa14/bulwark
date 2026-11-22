@@ -169,3 +169,22 @@ test("the ownership backfill never guesses an owner for platform rows", async ()
     "unowned platform rows must stay unowned",
   );
 });
+
+test("scheduled Supabase and alert channels migration is idempotent and service-role gated", async () => {
+  const sql = await readFile(
+    path.join(migrationsDir, "20261122000000_scheduled_supabase_and_alerts.sql"),
+    "utf8",
+  );
+
+  assert.match(sql, /add column if not exists discord_webhook_encrypted text/i);
+  assert.match(sql, /add column if not exists discord_alerts_enabled boolean/i);
+  assert.match(sql, /add column if not exists email_alerts_enabled boolean/i);
+  assert.match(sql, /add column if not exists alert_email text/i);
+  assert.match(sql, /add column if not exists scan_interval_minutes integer/i);
+  assert.match(sql, /add column if not exists auto_scan_enabled boolean/i);
+  assert.match(sql, /add column if not exists next_scan_at timestamptz/i);
+  assert.match(sql, /create or replace function public\.enqueue_due_supabase_scans/i);
+  assert.match(sql, /for update skip locked/i);
+  assert.match(sql, /revoke all on function public\.enqueue_due_supabase_scans[\s\S]*?from public, anon, authenticated/i);
+  assert.match(sql, /grant execute on function public\.enqueue_due_supabase_scans[\s\S]*?to service_role/i);
+});

@@ -65,7 +65,7 @@ async function request(baseUrl, apiKey, path, opts = {}) {
 
 const PERMISSION_STATUSES = new Set([400, 401, 403, 404]);
 
-function rlsFindings(rows, projectUrl) {
+function rlsFindings(rows, dashboardBase) {
   const findings = [];
   let permissivePolicies = 0;
 
@@ -73,7 +73,7 @@ function rlsFindings(rows, projectUrl) {
     const table = String(row.table_name ?? "").trim();
     if (!table) continue;
     const policies = Number(row.policy_count ?? 0);
-    const editorUrl = `${projectUrl}/project/default/editor`;
+    const editorUrl = `${dashboardBase}/editor`;
 
     if (row.row_security_enabled !== true) {
       findings.push(
@@ -148,6 +148,9 @@ export async function scanSupabaseProject(projectUrl, apiKey, opts = {}) {
     return failedResult(err.message);
   }
 
+  const projectRef = new URL(baseUrl).hostname.split(".")[0];
+  const dashboardBase = `https://supabase.com/dashboard/project/${projectRef}`;
+
   const findings = [];
   const errors = [];
   const notes = [];
@@ -208,7 +211,7 @@ export async function scanSupabaseProject(projectUrl, apiKey, opts = {}) {
             "high",
             "The storage bucket is publicly readable. Anyone with the bucket URL can list and download files without authentication. Make it private unless public file sharing is intentional.",
             {
-              url: `${baseUrl}/project/default/storage/buckets/${encodeURIComponent(name)}`,
+              url: `${dashboardBase}/storage/buckets/${encodeURIComponent(name)}`,
               evidence: `Bucket "${name}" is public`,
               affected_resource: `storage:${name}`,
               confidence: "high",
@@ -281,7 +284,7 @@ export async function scanSupabaseProject(projectUrl, apiKey, opts = {}) {
       );
       rlsChecked = true;
       tablesInspected = publicRows.length;
-      const analysis = rlsFindings(publicRows, baseUrl);
+      const analysis = rlsFindings(publicRows, dashboardBase);
       findings.push(...analysis.findings);
       checkResults.push(
         outcome(
@@ -313,7 +316,7 @@ export async function scanSupabaseProject(projectUrl, apiKey, opts = {}) {
         "info",
         "Bulwark could not inspect Row Level Security. Install the helper at `supabase/customer/bulwark_check_rls.sql` in this project's SQL editor, then re-scan. Until then, this check is reported as not checked, not as safe.",
         {
-          url: `${baseUrl}/project/default/sql`,
+          url: `${dashboardBase}/sql/new`,
           evidence: `RPC bulwark_check_rls returned HTTP ${rls.status}`,
           affected_resource: "project:rls",
           confidence: "high",

@@ -21,6 +21,13 @@ function publicConnection(row, type) {
     lastScanCoverage: row.last_scan_coverage ?? null,
     ...(row.github_username ? { githubUsername: row.github_username } : {}),
     ...(row.project_ref ? { projectRef: row.project_ref, projectName: row.project_name } : {}),
+    ...(type === "supabase"
+      ? {
+          autoScanEnabled: row.auto_scan_enabled ?? true,
+          scanIntervalMinutes: row.scan_interval_minutes ?? 360,
+          nextScanAt: row.next_scan_at ?? null,
+        }
+      : {}),
   };
 }
 
@@ -112,4 +119,53 @@ export async function setWebhookSecret(db, userId, id, secret) {
   if (updateError) throw new Error(`save webhook secret: ${updateError.message}`);
 
   return { ok: true };
+}
+
+export async function updateSupabaseSchedule(db, userId, id, patch = {}) {
+  const { data: existing, error: loadError } = await db
+    .from("supabase_connections")
+    .select("*")
+    .eq("id", id)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (loadError) throw new Error(`load supabase_connections: ${loadError.message}`);
+  if (!existing) return null;
+
+  const nextInterval =
+    patch.scanIntervalMinutes !== undefined
+      ? Number(patch.scanIntervalMinutes)
+      : Number(existing.scan_interval_minutes ?? 360);
+  if (!Number.isFinite(nextInterval) || nextInterval < 60 || nextInterval > 10080) {
+    throw new Error("Supabase scan interval must be between 60 minutes and 7 days.");
+  }
+  const roundedInterval = Math.round(nextInterval);
+  const autoScanEnabled =
+    patch.autoScanEnabled !== undefined
+      ? Boolean(patch.autoScanEnabled)
+      : existing.auto_scan_enabled ?? true;
+
+  const update = {
+    auto_scan_enabled: autoScanEnabled,
+    scan_interval_minutes: roundedInterval,
+    next_scan_at: autoScanEnabled
+      ? new Date(Date.now() + roundedInterval * 60_000).toISOString()
+      : existing.next_scan_at ?? null,
+  };
+
+  const { data, error } = await db
+    .from("supabase_connections")
+    .update(update)
+    .eq("id", id)
+    .eq("user_id", userId)
+    .select("*")
+    .single();
+  if (error) {
+    if (/auto_scan_enabled|scan_interval_minutes|next_scan_at/i.test(error.message)) {
+      throw new Error(
+        "Scheduled Supabase scan columns are not set up yet. Run supabase/apply_all.sql in Supabase.",
+      );
+    }
+    throw new Error(`update supabase schedule: ${error.message}`);
+  }
+  return publicConnection(data, "supabase");
 }

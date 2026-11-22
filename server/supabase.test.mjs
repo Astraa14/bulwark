@@ -68,10 +68,15 @@ test("flags a public storage bucket and a table without RLS", async () => {
   assert.ok(storage);
   assert.equal(storage.severity, "high");
   assert.equal(storage.affected_resource, "storage:avatars");
+  assert.equal(
+    storage.url,
+    "https://supabase.com/dashboard/project/abcdefghijklmnop/storage/buckets/avatars",
+  );
 
   const noRls = result.findings.find((finding) => finding.check_key === "supabase_table_no_rls");
   assert.ok(noRls);
   assert.equal(noRls.severity, "high");
+  assert.equal(noRls.url, "https://supabase.com/dashboard/project/abcdefghijklmnop/editor");
   assert.match(noRls.what_it_does_not_prove, /does not prove/i);
 
   assert.equal(result.coverage.storageChecked, true);
@@ -186,6 +191,7 @@ test("a missing RLS helper says 'not checked', not 'RLS is fine'", async () => {
   );
   assert.ok(finding);
   assert.equal(finding.severity, "info");
+  assert.equal(finding.url, "https://supabase.com/dashboard/project/abcdefghijklmnop/sql/new");
   assert.match(finding.detail, /not checked, not as safe/i);
   assert.equal(result.coverage.rlsChecked, false);
   assert.equal(result.status, "partial");

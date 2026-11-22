@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { alertNewFindings } from "./alerts.mjs";
 import { adminClient } from "./lib.mjs";
-import { runPlatformScanJobs } from "./platform-scans.mjs";
+import { enqueueDueSupabaseScans, runPlatformScanJobs } from "./platform-scans.mjs";
 import { websiteScanIdentity } from "./scan-id.mjs";
 
 /**
@@ -171,6 +171,46 @@ export async function runDueScans(db, limit = 10) {
   return results;
 }
 
+/** One worker sweep: due websites, scheduled Supabase scans, then platform jobs. */
+export async function runWorkerTick(db, { logger = console, ...opts } = {}) {
+  const siteResults = await runDueScans(db);
+  for (const result of siteResults) {
+    logger.log?.(
+      result.ok
+        ? `scanned ${result.domain}: ${result.findings} finding(s), ${result.newFindings} new, ${result.reopenedFindings} reopened (${result.status})`
+        : `failed ${result.domain}: ${result.error}`,
+    );
+  }
+
+  let scheduledSupabase = [];
+  try {
+    scheduledSupabase = await enqueueDueSupabaseScans(db);
+    if (scheduledSupabase.length) {
+      logger.log?.(`enqueued ${scheduledSupabase.length} scheduled Supabase scan(s)`);
+    }
+  } catch (err) {
+    // The schedule RPC may not exist until the scheduled-supabase migration runs.
+    logger.error?.("scheduled Supabase enqueue failed:", err.message);
+  }
+
+  let jobs = [];
+  try {
+    jobs = await runPlatformScanJobs(db, { logger, ...opts });
+  } catch (err) {
+    // The jobs table may not exist until the platform migration runs.
+    logger.error?.("platform jobs tick failed:", err.message);
+  }
+  for (const job of jobs) {
+    logger.log?.(
+      job.ok
+        ? `platform job ${job.jobId}: ${job.status}, ${job.newFindings ?? 0} new finding(s)`
+        : `platform job ${job.jobId} failed: ${job.error}`,
+    );
+  }
+
+  return { siteResults, scheduledSupabase, jobs };
+}
+
 if (process.argv[1]?.endsWith("worker.mjs")) {
   const db = adminClient();
   const intervalSeconds = Number(process.env.SCAN_POLL_SECONDS ?? 60);
@@ -180,29 +220,7 @@ if (process.argv[1]?.endsWith("worker.mjs")) {
     if (tickRunning) return;
     tickRunning = true;
     try {
-      const results = await runDueScans(db);
-      for (const result of results) {
-        console.log(
-          result.ok
-            ? `scanned ${result.domain}: ${result.findings} finding(s), ${result.newFindings} new, ${result.reopenedFindings} reopened (${result.status})`
-            : `failed ${result.domain}: ${result.error}`,
-        );
-      }
-
-      let jobs = [];
-      try {
-        jobs = await runPlatformScanJobs(db);
-      } catch (err) {
-        // The jobs table may not exist until the platform migration runs.
-        console.error("platform jobs tick failed:", err.message);
-      }
-      for (const job of jobs) {
-        console.log(
-          job.ok
-            ? `platform job ${job.jobId}: ${job.status}, ${job.newFindings ?? 0} new finding(s)`
-            : `platform job ${job.jobId} failed: ${job.error}`,
-        );
-      }
+      await runWorkerTick(db);
     } catch (err) {
       console.error("worker tick failed:", err.message);
     } finally {

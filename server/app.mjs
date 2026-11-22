@@ -4,7 +4,17 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { decrypt } from "./crypto.mjs";
 import { explainWithProvider } from "./ai.mjs";
-import { getSettings, saveSettings, sendSlack, isSlackWebhookUrl } from "./alerts.mjs";
+import {
+  getSettings,
+  saveSettings,
+  sendSlack,
+  sendDiscord,
+  sendEmail,
+  isSlackWebhookUrl,
+  isDiscordWebhookUrl,
+  isValidAlertEmail,
+  isEmailDeliveryConfigured,
+} from "./alerts.mjs";
 import { fetchPageSample } from "./checks.mjs";
 import { addKey, deleteKey, listKeys, markKeyUsed, resolveKey } from "./keys.mjs";
 import {
@@ -13,6 +23,7 @@ import {
   listConnections,
   resolveConnection,
   setWebhookSecret,
+  updateSupabaseSchedule,
 } from "./connections.mjs";
 import { assertRepoCoordinates, checkRepoAccess, listGitHubRepos } from "./github.mjs";
 import { adminClient } from "./lib.mjs";
@@ -497,6 +508,25 @@ export function createApp({
     }),
   );
 
+  app.put(
+    "/api/connections/supabase/:id/schedule",
+    requireUser,
+    wrap(async (req, res) => {
+      try {
+        const connection = await updateSupabaseSchedule(
+          db,
+          req.user.id,
+          req.params.id,
+          req.body ?? {},
+        );
+        if (!connection) return res.status(404).json({ error: "Supabase connection not found" });
+        res.json({ ok: true, connection });
+      } catch (err) {
+        res.status(400).json({ error: err.message });
+      }
+    }),
+  );
+
   app.post(
     "/api/connections/github/:id/webhook-secret",
     requireUser,
@@ -783,25 +813,92 @@ export function createApp({
     requireUser,
     alertLimiter,
     wrap(async (req, res) => {
+      const channel = String(req.body?.channel ?? "slack").trim().toLowerCase();
       const settings = await getSettings(db, req.user.id);
-      const url = String(req.body?.webhookUrl ?? settings.slackWebhookUrl ?? "").trim();
-      if (!url) return res.status(400).json({ error: "Add a Slack webhook URL first." });
-      if (!isSlackWebhookUrl(url)) {
-        return res
-          .status(400)
-          .json({ error: "That does not look like a Slack incoming webhook URL." });
+
+      if (channel === "slack") {
+        const url = String(req.body?.webhookUrl ?? settings.slackWebhookUrl ?? "").trim();
+        if (!url) return res.status(400).json({ error: "Add a Slack webhook URL first." });
+        if (!isSlackWebhookUrl(url)) {
+          return res
+            .status(400)
+            .json({ error: "That does not look like a Slack incoming webhook URL." });
+        }
+
+        try {
+          await sendSlack(
+            url,
+            `:white_check_mark: *Bulwark test alert*\nAlerts are wired up for ${req.user.email ?? "your workspace"}. New findings above your threshold will land here.`,
+            { fetchImpl },
+          );
+        } catch (err) {
+          return res.status(422).json({ error: err.message });
+        }
+
+        return res.json({ ok: true, channel: "slack" });
       }
 
-      try {
-        await sendSlack(
-          url,
-          `:white_check_mark: *Bulwark test alert*\nAlerts are wired up for ${req.user.email ?? "your workspace"}. New critical and high findings will land here.`,
-        );
-      } catch (err) {
-        return res.status(422).json({ error: err.message });
+      if (channel === "discord") {
+        const url = String(req.body?.webhookUrl ?? settings.discordWebhookUrl ?? "").trim();
+        if (!url) return res.status(400).json({ error: "Add a Discord webhook URL first." });
+        if (!isDiscordWebhookUrl(url)) {
+          return res
+            .status(400)
+            .json({ error: "That does not look like a Discord webhook URL." });
+        }
+
+        try {
+          await sendDiscord(
+            url,
+            {
+              embeds: [
+                {
+                  title: "Bulwark test alert",
+                  description: `Alerts are wired up for **${req.user.email ?? "your workspace"}**. New findings above your threshold will land here.`,
+                  color: 0x16a34a,
+                  footer: { text: "Bulwark security monitoring" },
+                },
+              ],
+            },
+            { fetchImpl },
+          );
+        } catch (err) {
+          return res.status(422).json({ error: err.message });
+        }
+
+        return res.json({ ok: true, channel: "discord" });
       }
 
-      res.json({ ok: true });
+      if (channel === "email") {
+        const to = String(req.body?.email ?? settings.alertEmail ?? req.user.email ?? "").trim();
+        if (!to) return res.status(400).json({ error: "Add an alert email address first." });
+        if (!isValidAlertEmail(to)) {
+          return res.status(400).json({ error: "Enter a valid email address for alerts." });
+        }
+        if (!isEmailDeliveryConfigured()) {
+          return res.status(400).json({
+            error: "Server email delivery is not configured yet (set RESEND_API_KEY).",
+          });
+        }
+
+        try {
+          await sendEmail(
+            {
+              to,
+              subject: "[Bulwark] Test security alert",
+              text: `Bulwark email alerts are wired up for ${req.user.email ?? "your workspace"}. New findings above your severity threshold will arrive here.`,
+              html: `<p>Bulwark email alerts are wired up for <strong>${(req.user.email ?? "your workspace").replace(/[<>&"]/g, "")}</strong>. New findings above your severity threshold will arrive here.</p>`,
+            },
+            { fetchImpl },
+          );
+        } catch (err) {
+          return res.status(422).json({ error: err.message });
+        }
+
+        return res.json({ ok: true, channel: "email" });
+      }
+
+      return res.status(400).json({ error: "Unsupported alert channel." });
     }),
   );
 

@@ -411,3 +411,107 @@ test("a manual scan is refused when the token cannot read the repository", async
 
   assert.equal(db.rpcCalls.length, 0);
 });
+
+test("PUT /api/connections/supabase/:id/schedule updates schedule for owner and rejects cross-tenant or out-of-range", async () => {
+  const db = createFakeDb({
+    tables: {
+      supabase_connections: [
+        {
+          id: CONN_A,
+          user_id: "user-a",
+          project_ref: "abcdefghijklmnop",
+          project_url_encrypted: encrypt("https://abcdefghijklmnop.supabase.co"),
+          api_key_encrypted: encrypt("sb_publishable_1234567890"),
+          auto_scan_enabled: true,
+          scan_interval_minutes: 360,
+          next_scan_at: "2026-11-22T00:00:00.000Z",
+        },
+      ],
+    },
+  });
+  const app = createApp({ db, serveStatic: false });
+
+  await withServer(app, async (base) => {
+    const ok = await fetch(`${base}/api/connections/supabase/${CONN_A}/schedule`, {
+      method: "PUT",
+      headers: { authorization: "Bearer token-a", "content-type": "application/json" },
+      body: JSON.stringify({ autoScanEnabled: false, scanIntervalMinutes: 1440 }),
+    });
+    assert.equal(ok.status, 200);
+    const json = await ok.json();
+    assert.equal(json.connection.autoScanEnabled, false);
+    assert.equal(json.connection.scanIntervalMinutes, 1440);
+
+    const badInterval = await fetch(`${base}/api/connections/supabase/${CONN_A}/schedule`, {
+      method: "PUT",
+      headers: { authorization: "Bearer token-a", "content-type": "application/json" },
+      body: JSON.stringify({ scanIntervalMinutes: 10 }),
+    });
+    assert.equal(badInterval.status, 400);
+
+    const foreign = await fetch(`${base}/api/connections/supabase/${CONN_A}/schedule`, {
+      method: "PUT",
+      headers: { authorization: "Bearer token-b", "content-type": "application/json" },
+      body: JSON.stringify({ autoScanEnabled: true }),
+    });
+    assert.equal(foreign.status, 404);
+  });
+});
+
+test("POST /api/alerts/test validates and dispatches Discord and Email test alerts", async () => {
+  const discordUrl = [
+    "https://discord.com/api/webhooks",
+    "123456789012345678",
+    "abcdefghijklmnopqrstuvwxyz0123456789_ABCDE",
+  ].join("/");
+  const db = createFakeDb({ tables: { user_settings: [] } });
+  const fetched = [];
+  const app = createApp({
+    db,
+    serveStatic: false,
+    fetchImpl: async (url) => {
+      fetched.push(String(url));
+      return new Response(JSON.stringify({ id: "ok" }), { status: 200 });
+    },
+  });
+
+  const previousKey = process.env.RESEND_API_KEY;
+  try {
+    delete process.env.RESEND_API_KEY;
+    await withServer(app, async (base) => {
+      const badDiscord = await fetch(`${base}/api/alerts/test`, {
+        method: "POST",
+        headers: { authorization: "Bearer token-a", "content-type": "application/json" },
+        body: JSON.stringify({ channel: "discord", webhookUrl: "http://127.0.0.1:8443/evil" }),
+      });
+      assert.equal(badDiscord.status, 400);
+
+      const goodDiscord = await fetch(`${base}/api/alerts/test`, {
+        method: "POST",
+        headers: { authorization: "Bearer token-a", "content-type": "application/json" },
+        body: JSON.stringify({ channel: "discord", webhookUrl: discordUrl }),
+      });
+      assert.equal(goodDiscord.status, 200);
+
+      const unconfiguredEmail = await fetch(`${base}/api/alerts/test`, {
+        method: "POST",
+        headers: { authorization: "Bearer token-a", "content-type": "application/json" },
+        body: JSON.stringify({ channel: "email", email: "founder@acme.dev" }),
+      });
+      assert.equal(unconfiguredEmail.status, 400);
+
+      process.env.RESEND_API_KEY = "re_test_key";
+      const goodEmail = await fetch(`${base}/api/alerts/test`, {
+        method: "POST",
+        headers: { authorization: "Bearer token-a", "content-type": "application/json" },
+        body: JSON.stringify({ channel: "email", email: "founder@acme.dev" }),
+      });
+      assert.equal(goodEmail.status, 200);
+    });
+  } finally {
+    if (previousKey === undefined) delete process.env.RESEND_API_KEY;
+    else process.env.RESEND_API_KEY = previousKey;
+  }
+
+  assert.deepEqual(fetched, [discordUrl, "https://api.resend.com/emails"]);
+});

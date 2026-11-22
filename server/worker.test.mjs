@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { scanSite } from "./worker.mjs";
+import { runWorkerTick, scanSite } from "./worker.mjs";
 import { UUID_RE } from "./scan-id.mjs";
 import { createFakeDb } from "./test-support/fake-db.mjs";
 
@@ -84,4 +84,45 @@ test("scan ids are never derived from the site id", async () => {
 
   assert.notEqual(calls[0].p_scan_id, SITE_ID);
   assert.notEqual(calls[0].p_idempotency_key, SITE_ID);
+});
+
+test("runWorkerTick enqueues due Supabase scans before running platform jobs", async () => {
+  const order = [];
+  const db = createFakeDb({
+    tables: { sites: [] },
+    rpcHandlers: {
+      enqueue_due_supabase_scans: () => {
+        order.push("enqueue_due_supabase_scans");
+        return { data: [{ id: "job-sb-1" }], error: null };
+      },
+      claim_platform_scan_jobs: () => {
+        order.push("claim_platform_scan_jobs");
+        return { data: [], error: null };
+      },
+    },
+  });
+
+  const out = await runWorkerTick(db, { logger: { log() {}, error() {} } });
+  assert.deepEqual(order, ["enqueue_due_supabase_scans", "claim_platform_scan_jobs"]);
+  assert.equal(out.scheduledSupabase.length, 1);
+});
+
+test("runWorkerTick still runs platform jobs if the scheduled-Supabase RPC is not migrated yet", async () => {
+  let claimed = false;
+  const db = createFakeDb({
+    tables: { sites: [] },
+    rpcHandlers: {
+      enqueue_due_supabase_scans: () => ({
+        data: null,
+        error: { message: "Could not find the function public.enqueue_due_supabase_scans" },
+      }),
+      claim_platform_scan_jobs: () => {
+        claimed = true;
+        return { data: [], error: null };
+      },
+    },
+  });
+
+  await runWorkerTick(db, { logger: { log() {}, error() {} } });
+  assert.equal(claimed, true);
 });
