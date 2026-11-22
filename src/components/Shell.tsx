@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Page } from "@/lib/router";
 import { PLAN_SITE_LIMIT } from "@/lib/workspace";
 import { Dot, NavIcon, PageTitle } from "./Ui";
@@ -122,9 +122,19 @@ export function Sidebar({
     { label: "Insights", items: ["AI Copilot", "Reports"] },
     { label: "Workspace", items: ["Integrations", "API Keys", "Settings"] },
   ];
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, close]);
+
   return (
     <>
-      {open && <button className="scrim" onClick={close} aria-label="Close navigation" />}
+      {open && <button type="button" className="scrim" onClick={close} aria-label="Close navigation" />}
       <aside className={`sidebar ${open ? "open" : ""}`}>
         <div className="brand">
           <img src="/bulwark-icon.svg" alt="" className="brand-logo" />
@@ -166,13 +176,13 @@ export function Sidebar({
           <div className="plan">
             <div className="plan-header">
               <strong>Free plan</strong>
-              <span className="plan-upgrade">Upgrade ↗</span>
+              <span className="plan-tier">Beta</span>
             </div>
             <span>
               {siteCount} of {PLAN_SITE_LIMIT} sites connected
             </span>
             <div className="progress">
-              <i style={{ width: `${Math.max(2, (siteCount / PLAN_SITE_LIMIT) * 100)}%` }} />
+              <i style={{ width: `${Math.min(100, Math.max(2, (siteCount / PLAN_SITE_LIMIT) * 100))}%` }} />
             </div>
           </div>
           <span className={`monitor-line ${monitoringState}`}>

@@ -11,6 +11,7 @@ export function Button({
   className = "",
   download = false,
   disabled = false,
+  type = "button",
 }: {
   children: ReactNode;
   dark?: boolean;
@@ -18,9 +19,15 @@ export function Button({
   className?: string;
   download?: boolean;
   disabled?: boolean;
+  type?: "button" | "submit";
 }) {
   return (
-    <button className={`button ${dark ? "dark" : ""} ${className}`} onClick={onClick} disabled={disabled}>
+    <button
+      type={type}
+      className={`button ${dark ? "dark" : ""} ${className}`}
+      onClick={onClick}
+      disabled={disabled}
+    >
       {download && (
         <svg className="button-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M10 2.75v9.5m0 0 3.5-3.5M10 12.25l-3.5-3.5M4 14.75v2.5h12v-2.5" />

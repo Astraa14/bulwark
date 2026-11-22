@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { apiGet, apiUrl } from "@/lib/api";
 import {
   GITHUB_INTERVAL_OPTIONS,
@@ -75,6 +75,21 @@ export function ConnectionsSection({
     setLocalError(null);
   };
 
+  useEffect(() => {
+    if (!addType && !webhookId) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (webhookId) {
+        setWebhookId(null);
+        setWebhookSecretState("");
+      } else if (addType) {
+        closeAddForm();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [addType, webhookId]);
+
   const submitConnection = async () => {
     setLocalError(null);
     setNotice(null);
@@ -115,7 +130,7 @@ export function ConnectionsSection({
 
   const removeConnection = async (id: string, type: ConnectionType) => {
     if (!window.confirm("Remove this connection? Scans using it will stop working.")) return;
-    setBusy(id);
+    setBusy(`remove-${id}`);
     setLocalError(null);
     try {
       await onRemove(id, type);
@@ -186,7 +201,8 @@ export function ConnectionsSection({
     type: ConnectionType,
     repo?: { owner: string; repo: string },
   ) => {
-    setBusy(id);
+    const busyKey = repo ? `scan-${id}-${repo.owner}/${repo.repo}` : `scan-${id}`;
+    setBusy(busyKey);
     setLocalError(null);
     setNotice(null);
     try {
@@ -208,6 +224,7 @@ export function ConnectionsSection({
   };
 
   const setWebhookSecret = async (id: string, secret: string) => {
+    setBusy(`webhook-${id}`);
     setLocalError(null);
     setNotice(null);
     try {
@@ -217,6 +234,8 @@ export function ConnectionsSection({
       setNotice("Webhook secret saved. Configure the same secret in GitHub.");
     } catch (err) {
       setLocalError((err as Error).message);
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -409,7 +428,7 @@ export function ConnectionsSection({
                     }}
                     disabled={busy !== null}
                   >
-                    {busy === c.id
+                    {busy === `scan-${c.id}`
                       ? "Scanning…"
                       : c.type === "github"
                         ? "Choose repository…"
@@ -466,8 +485,8 @@ export function ConnectionsSection({
                       </button>
                     </>
                   )}
-                  <Button onClick={() => removeConnection(c.id, c.type)}>
-                    {busy === c.id ? "Removing…" : "Remove"}
+                  <Button onClick={() => removeConnection(c.id, c.type)} disabled={busy !== null}>
+                    {busy === `remove-${c.id}` ? "Removing…" : "Remove"}
                   </Button>
                 </div>
               </div>
@@ -582,7 +601,7 @@ export function ConnectionsSection({
                       }}
                       disabled={busy !== null}
                     >
-                      {busy === reposConnectionId ? "Scanning…" : "Scan now"}
+                      {busy === `scan-${reposConnectionId}-${repo.full_name}` ? "Scanning…" : "Scan now"}
                     </button>
                   </div>
                 </div>
@@ -613,45 +632,48 @@ export function ConnectionsSection({
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" /></svg>
               </button>
             </div>
-            <div className="field-block">
-              <label htmlFor="gh-username">GitHub username or organization</label>
-              <input
-                id="gh-username"
-                autoComplete="off"
-                value={ghUsername}
-                onChange={(e) => setGhUsername(e.target.value)}
-                placeholder="octocat"
-              />
-            </div>
-            <div className="field-block">
-              <label htmlFor="gh-token">Personal access token (read-only)</label>
-              <input
-                id="gh-token"
-                type="password"
-                autoComplete="off"
-                value={ghToken}
-                onChange={(e) => setGhToken(e.target.value)}
-                placeholder="github_pat_…"
-              />
-              <small className="field-help">
-                A fine-grained token with Contents and Metadata read-only is enough. Create it in
-                GitHub under Settings → Developer settings → Personal access tokens.
-              </small>
-            </div>
-            {localError && <p className="modal-error">{localError}</p>}
-            <div className="modal-actions">
-              <button type="button" className="button" onClick={closeAddForm}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="button dark"
-                onClick={() => void submitConnection()}
-                disabled={busy !== null}
-              >
-                {busy !== null ? "Adding…" : "Connect"}
-              </button>
-            </div>
+            <form
+              onSubmit={(e: FormEvent) => {
+                e.preventDefault();
+                void submitConnection();
+              }}
+            >
+              <div className="field-block">
+                <label htmlFor="gh-username">GitHub username or organization</label>
+                <input
+                  id="gh-username"
+                  autoComplete="off"
+                  autoFocus
+                  value={ghUsername}
+                  onChange={(e) => setGhUsername(e.target.value)}
+                  placeholder="octocat"
+                />
+              </div>
+              <div className="field-block">
+                <label htmlFor="gh-token">Personal access token (read-only)</label>
+                <input
+                  id="gh-token"
+                  type="password"
+                  autoComplete="off"
+                  value={ghToken}
+                  onChange={(e) => setGhToken(e.target.value)}
+                  placeholder="github_pat_…"
+                />
+                <small className="field-help">
+                  A fine-grained token with Contents and Metadata read-only is enough. Create it in
+                  GitHub under Settings → Developer settings → Personal access tokens.
+                </small>
+              </div>
+              {localError && <p className="modal-error">{localError}</p>}
+              <div className="modal-actions">
+                <button type="button" className="button" onClick={closeAddForm}>
+                  Cancel
+                </button>
+                <button type="submit" className="button dark" disabled={busy !== null}>
+                  {busy !== null ? "Adding…" : "Connect"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
@@ -677,59 +699,62 @@ export function ConnectionsSection({
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" /></svg>
               </button>
             </div>
-            <div className="field-block">
-              <label htmlFor="sb-ref">Project ref</label>
-              <input
-                id="sb-ref"
-                autoComplete="off"
-                value={sbRef}
-                onChange={(e) => setSbRef(e.target.value)}
-                placeholder="abcdefghijklmnop"
-              />
-              <small className="field-help">
-                The subdomain in https://&lt;ref&gt;.supabase.co.
-              </small>
-            </div>
-            <div className="field-block">
-              <label htmlFor="sb-name">Project name (optional)</label>
-              <input
-                id="sb-name"
-                autoComplete="off"
-                value={sbName}
-                onChange={(e) => setSbName(e.target.value)}
-                placeholder="My Project"
-              />
-            </div>
-            <div className="field-block">
-              <label htmlFor="sb-key">Publishable (anon) key</label>
-              <input
-                id="sb-key"
-                type="password"
-                autoComplete="off"
-                value={sbKey}
-                onChange={(e) => setSbKey(e.target.value)}
-                placeholder="sb_publishable_… or eyJ…"
-              />
-              <small className="field-help">
-                Service-role and sb_secret_ keys are refused. RLS inspection needs the helper at
-                supabase/customer/bulwark_check_rls.sql; without it, RLS is reported as not
-                checked rather than safe.
-              </small>
-            </div>
-            {localError && <p className="modal-error">{localError}</p>}
-            <div className="modal-actions">
-              <button type="button" className="button" onClick={closeAddForm}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="button dark"
-                onClick={() => void submitConnection()}
-                disabled={busy !== null}
-              >
-                {busy !== null ? "Adding…" : "Connect"}
-              </button>
-            </div>
+            <form
+              onSubmit={(e: FormEvent) => {
+                e.preventDefault();
+                void submitConnection();
+              }}
+            >
+              <div className="field-block">
+                <label htmlFor="sb-ref">Project ref</label>
+                <input
+                  id="sb-ref"
+                  autoComplete="off"
+                  autoFocus
+                  value={sbRef}
+                  onChange={(e) => setSbRef(e.target.value)}
+                  placeholder="abcdefghijklmnop"
+                />
+                <small className="field-help">
+                  The subdomain in https://&lt;ref&gt;.supabase.co.
+                </small>
+              </div>
+              <div className="field-block">
+                <label htmlFor="sb-name">Project name (optional)</label>
+                <input
+                  id="sb-name"
+                  autoComplete="off"
+                  value={sbName}
+                  onChange={(e) => setSbName(e.target.value)}
+                  placeholder="My Project"
+                />
+              </div>
+              <div className="field-block">
+                <label htmlFor="sb-key">Publishable (anon) key</label>
+                <input
+                  id="sb-key"
+                  type="password"
+                  autoComplete="off"
+                  value={sbKey}
+                  onChange={(e) => setSbKey(e.target.value)}
+                  placeholder="sb_publishable_… or eyJ…"
+                />
+                <small className="field-help">
+                  Service-role and sb_secret_ keys are refused. RLS inspection needs the helper at
+                  supabase/customer/bulwark_check_rls.sql; without it, RLS is reported as not
+                  checked rather than safe.
+                </small>
+              </div>
+              {localError && <p className="modal-error">{localError}</p>}
+              <div className="modal-actions">
+                <button type="button" className="button" onClick={closeAddForm}>
+                  Cancel
+                </button>
+                <button type="submit" className="button dark" disabled={busy !== null}>
+                  {busy !== null ? "Adding…" : "Connect"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
@@ -765,39 +790,46 @@ export function ConnectionsSection({
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" /></svg>
               </button>
             </div>
-            <div className="modal-url">
-              <span>Webhook URL</span>
-              <code>{apiUrl(`/api/webhooks/github/${webhookId}`)}</code>
-            </div>
-            <div className="field-block">
-              <label htmlFor="webhook-secret">Webhook secret (at least 16 characters)</label>
-              <input
-                id="webhook-secret"
-                type="password"
-                autoComplete="off"
-                value={webhookSecret}
-                onChange={(e) => setWebhookSecretState(e.target.value)}
-                placeholder="Enter a random secret string"
-              />
-              <small className="field-help">
-                Use each connection's own URL. Two connections sharing one secret make deliveries
-                ambiguous, so those requests are refused.
-              </small>
-            </div>
-            {localError && <p className="modal-error">{localError}</p>}
-            <div className="modal-actions">
-              <button type="button" className="button" onClick={() => setWebhookId(null)}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="button dark"
-                onClick={() => void setWebhookSecret(webhookId, webhookSecret)}
-                disabled={busy !== null || webhookSecret.trim().length < 16}
-              >
-                {busy !== null ? "Saving…" : "Save secret"}
-              </button>
-            </div>
+            <form
+              onSubmit={(e: FormEvent) => {
+                e.preventDefault();
+                if (webhookSecret.trim().length >= 16) void setWebhookSecret(webhookId, webhookSecret);
+              }}
+            >
+              <div className="modal-url">
+                <span>Webhook URL</span>
+                <code>{apiUrl(`/api/webhooks/github/${webhookId}`)}</code>
+              </div>
+              <div className="field-block">
+                <label htmlFor="webhook-secret">Webhook secret (at least 16 characters)</label>
+                <input
+                  id="webhook-secret"
+                  type="password"
+                  autoComplete="off"
+                  autoFocus
+                  value={webhookSecret}
+                  onChange={(e) => setWebhookSecretState(e.target.value)}
+                  placeholder="Enter a random secret string"
+                />
+                <small className="field-help">
+                  Use each connection's own URL. Two connections sharing one secret make deliveries
+                  ambiguous, so those requests are refused.
+                </small>
+              </div>
+              {localError && <p className="modal-error">{localError}</p>}
+              <div className="modal-actions">
+                <button type="button" className="button" onClick={() => setWebhookId(null)}>
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="button dark"
+                  disabled={busy !== null || webhookSecret.trim().length < 16}
+                >
+                  {busy !== null ? "Saving…" : "Save secret"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

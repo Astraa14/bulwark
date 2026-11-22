@@ -16,6 +16,22 @@ export default defineConfig(({ mode }) => {
     build: {
       sourcemap: emitSourcemaps ? "inline" : false,
       minify: !emitSourcemaps,
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            groups: [
+              {
+                name: "vendor-react",
+                test: /node_modules[\\/](?:react|react-dom|scheduler)[\\/]/,
+              },
+              {
+                name: "vendor-supabase",
+                test: /node_modules[\\/]@supabase[\\/]/,
+              },
+            ],
+          },
+        },
+      },
     },
     plugins: [
       react(),

@@ -24,13 +24,14 @@ export function Sites({
   onVerify: (site: SiteRow) => void;
   sites: SiteRow[];
   findings: FindingRow[];
-  onScan: (id: string) => void;
+  onScan: (id: string) => Promise<void>;
   onChanged: () => void;
 }) {
   const [search, setSearch] = useState("");
   const [healthFilter, setHealthFilter] = useState("all");
   const [stackFilter, setStackFilter] = useState("all");
   const [busy, setBusy] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<"scan" | "work" | null>(null);
   const filtered = sites.filter((site) => {
     const matchesSearch = site.domain.includes(search.trim().toLowerCase());
     const matchesHealth = healthFilter === "all" || healthKey(site, findings) === healthFilter;
@@ -55,8 +56,9 @@ export function Sites({
     { key: "paused", label: "Paused" },
   ];
 
-  const act = async (id: string, fn: () => Promise<unknown>) => {
+  const act = async (id: string, fn: () => Promise<unknown>, kind: "scan" | "work" = "work") => {
     setBusy(id);
+    setBusyAction(kind);
     try {
       await fn();
       onChanged();
@@ -64,6 +66,7 @@ export function Sites({
       window.alert((err as Error).message);
     } finally {
       setBusy(null);
+      setBusyAction(null);
     }
   };
 
@@ -184,26 +187,30 @@ export function Sites({
                   </span>
                   <span className="site-actions">
                     {s.status === "verified" && (
-                      <button disabled={busy === s.id} onClick={() => onScan(s.id)}>
-                        {busy === s.id ? "Working…" : "Scan"}
+                      <button
+                        type="button"
+                        disabled={busy === s.id}
+                        onClick={() => void act(s.id, () => onScan(s.id), "scan")}
+                      >
+                        {busy === s.id && busyAction === "scan" ? "Scanning…" : "Scan"}
                       </button>
                     )}
                     {s.status === "verified" && (
-                      <button disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "pause"))}>
+                      <button type="button" disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "pause"))}>
                         Pause
                       </button>
                     )}
                     {s.status === "paused" && (
-                      <button disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "resume"))}>
+                      <button type="button" disabled={busy === s.id} onClick={() => act(s.id, () => setSiteStatus(s.id, "resume"))}>
                         Resume
                       </button>
                     )}
                     {s.status === "pending" && (
-                      <button disabled={busy === s.id} onClick={() => onVerify(s)}>
+                      <button type="button" disabled={busy === s.id} onClick={() => onVerify(s)}>
                         Verify
                       </button>
                     )}
-                    <button className="danger" disabled={busy === s.id} onClick={() => remove(s)}>
+                    <button type="button" className="danger" disabled={busy === s.id} onClick={() => remove(s)}>
                       Delete
                     </button>
                   </span>

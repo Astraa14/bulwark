@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { KEY_PROVIDERS } from "@/lib/scanOutcomes";
 import { createSite, scanSiteNow, verifySite, type SiteRow } from "@/lib/workspace";
 import { Button, Dot } from "./Ui";
@@ -10,12 +10,19 @@ export function Modal({
   onAddKey,
   initialSite,
 }: {
-  type: "site" | "key" | "connection";
+  type: "site" | "key";
   close: () => void;
   onChanged: () => void;
   onAddKey?: (input: { provider: string; key: string; label?: string; model?: string }) => Promise<unknown>;
   initialSite?: SiteRow | null;
 }) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [close]);
   const [step, setStep] = useState<"form" | "verify" | "done">(initialSite ? "verify" : "form");
   const [domain, setDomain] = useState("");
   const [site, setSite] = useState<SiteRow | null>(initialSite ?? null);
@@ -62,14 +69,14 @@ export function Modal({
 
     return (
       <div className="modal-wrap">
-        <button className="modal-scrim" onClick={close} aria-label="Close" />
-        <div className="modal card">
+        <button type="button" className="modal-scrim" onClick={close} aria-label="Close" />
+        <div className="modal card" role="dialog" aria-modal="true" aria-labelledby="modal-key-title">
           <div className="modal-head">
             <div>
-              <h2>Add an API key</h2>
+              <h2 id="modal-key-title">Add an API key</h2>
               <p>Keys are encrypted server-side and never returned to the browser.</p>
             </div>
-            <button className="modal-close" onClick={close} aria-label="Close">
+            <button type="button" className="modal-close" onClick={close} aria-label="Close">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"/></svg>
             </button>
           </div>
@@ -107,7 +114,7 @@ export function Modal({
             <label>Model</label>
             <input value={keyModel} onChange={(e) => setKeyModel(e.target.value)} />
             {error && <p className="modal-error">{error}</p>}
-            <Button dark>{busy ? "Saving…" : "Save key"}</Button>
+            <Button type="submit" dark disabled={busy}>{busy ? "Saving…" : "Save key"}</Button>
             <p className="modal-note">
               Used only for explanations and workspace briefs you request. Bulwark cannot read the
               key back — it can only decrypt it on the server to call your provider.
@@ -154,11 +161,11 @@ export function Modal({
 
   return (
     <div className="modal-wrap">
-      <button className="modal-scrim" onClick={close} aria-label="Close" />
-      <div className="modal card">
+      <button type="button" className="modal-scrim" onClick={close} aria-label="Close" />
+      <div className="modal card" role="dialog" aria-modal="true" aria-labelledby="modal-site-title">
         <div className="modal-head">
           <div>
-            <h2>{step === "form" ? "Add a site" : step === "verify" ? "Prove you own it" : "Site connected"}</h2>
+            <h2 id="modal-site-title">{step === "form" ? "Add a site" : step === "verify" ? "Prove you own it" : "Site connected"}</h2>
             <p>
               {step === "form"
                 ? "Connect a domain to begin monitoring."
@@ -167,7 +174,7 @@ export function Modal({
                   : "Bulwark will scan it within a minute."}
             </p>
           </div>
-          <button className="modal-close" onClick={close} aria-label="Close">
+          <button type="button" className="modal-close" onClick={close} aria-label="Close">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"/></svg>
           </button>
         </div>
@@ -182,7 +189,7 @@ export function Modal({
               autoFocus
             />
             {error && <p className="modal-error">{error}</p>}
-            <Button dark>{busy ? "Adding…" : "Continue"}</Button>
+            <Button type="submit" dark disabled={busy}>{busy ? "Adding…" : "Continue"}</Button>
             <p className="modal-note">
               Next you will prove ownership with a DNS record or a meta tag. Only add sites you
               control — Bulwark refuses to scan a domain you have not verified.
@@ -239,10 +246,10 @@ export function Modal({
             </div>
             {error && <p className="modal-error">{error}</p>}
             <div className="modal-actions">
-              <Button dark onClick={verify}>
+              <Button dark onClick={verify} disabled={busy}>
                 {busy ? "Checking…" : "Verify now"}
               </Button>
-              <Button onClick={close}>Later</Button>
+              <Button onClick={close} disabled={busy}>Later</Button>
             </div>
           </>
         )}

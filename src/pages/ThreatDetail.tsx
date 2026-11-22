@@ -118,13 +118,13 @@ export function ThreatDetail({
   return (
     <div className="detail-layout">
       <div className="threat-detail">
-        <button className="back" onClick={back}>
+        <button type="button" className="back" onClick={back}>
           ← All threats
         </button>
         <h1>{finding.title}</h1>
         <div className="threat-id">
           <code>
-            THR-{finding.id.slice(0, 8).toUpperCase()}　/　{targetLabel}
+            THR-{finding.id.slice(0, 8).toUpperCase()} / {targetLabel}
           </code>
         </div>
         <div className="detail-meta">
@@ -330,7 +330,7 @@ export function ThreatDetail({
             </>
           )}
           <dt>Status</dt>
-          <dd>{finding.status}</dd>
+          <dd className="cap">{finding.status}</dd>
           {finding.ignored_until && (
             <>
               <dt>Snoozed until</dt>
@@ -338,7 +338,7 @@ export function ThreatDetail({
             </>
           )}
           <dt>Confidence</dt>
-          <dd>{finding.confidence ?? "—"}</dd>
+          <dd className="cap">{finding.confidence ?? "—"}</dd>
           {finding.affected_resource && (
             <>
               <dt>Affected</dt>

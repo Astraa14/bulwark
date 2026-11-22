@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
-import { Modal } from "@/components/Modal";
+import { Suspense, lazy, useCallback, useEffect, useState } from "react";
 import { GenericPage, Header, Sidebar, type Theme } from "@/components/Shell";
 import { Button } from "@/components/Ui";
 import { useAuth } from "@/lib/auth";
@@ -18,17 +17,23 @@ import {
   type FindingStatus,
   type SiteRow,
 } from "@/lib/workspace";
-import { AiCopilot } from "@/pages/AiCopilot";
-import { ApiKeys } from "@/pages/ApiKeys";
-import { Integrations } from "@/pages/Integrations";
-import { Overview } from "@/pages/Overview";
-import { Reports } from "@/pages/Reports";
-import { Scans } from "@/pages/Scans";
-import { Settings } from "@/pages/Settings";
-import { Sites } from "@/pages/Sites";
-import { ThreatDetail } from "@/pages/ThreatDetail";
-import { Threats } from "@/pages/Threats";
-import AuthScreen from "@/screens/AuthScreen";
+
+const Modal = lazy(() => import("@/components/Modal").then((m) => ({ default: m.Modal })));
+const AiCopilot = lazy(() => import("@/pages/AiCopilot").then((m) => ({ default: m.AiCopilot })));
+const ApiKeys = lazy(() => import("@/pages/ApiKeys").then((m) => ({ default: m.ApiKeys })));
+const Integrations = lazy(() =>
+  import("@/pages/Integrations").then((m) => ({ default: m.Integrations })),
+);
+const Overview = lazy(() => import("@/pages/Overview").then((m) => ({ default: m.Overview })));
+const Reports = lazy(() => import("@/pages/Reports").then((m) => ({ default: m.Reports })));
+const Scans = lazy(() => import("@/pages/Scans").then((m) => ({ default: m.Scans })));
+const Settings = lazy(() => import("@/pages/Settings").then((m) => ({ default: m.Settings })));
+const Sites = lazy(() => import("@/pages/Sites").then((m) => ({ default: m.Sites })));
+const ThreatDetail = lazy(() =>
+  import("@/pages/ThreatDetail").then((m) => ({ default: m.ThreatDetail })),
+);
+const Threats = lazy(() => import("@/pages/Threats").then((m) => ({ default: m.Threats })));
+const AuthScreen = lazy(() => import("@/screens/AuthScreen"));
 
 export default function App() {
   const { configured, loading, session } = useAuth();
@@ -77,7 +82,13 @@ export default function App() {
   // Demo mode: no Supabase env configured, keep the original mock UI.
   if (!configured) return <AppShell {...shellProps} />;
   if (loading) return <div className="boot">Loading Bulwark…</div>;
-  if (!session) return <AuthScreen />;
+  if (!session) {
+    return (
+      <Suspense fallback={<div className="boot">Loading Bulwark…</div>}>
+        <AuthScreen />
+      </Suspense>
+    );
+  }
   return <AppShell {...shellProps} />;
 }
 
@@ -135,7 +146,7 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
     parseLocation(window.location.pathname, window.location.search),
   );
   const [mobileNav, setMobileNav] = useState(false);
-  const [modal, setModal] = useState<"site" | "key" | "connection" | null>(null);
+  const [modal, setModal] = useState<"site" | "key" | null>(null);
   const [siteToVerify, setSiteToVerify] = useState<SiteRow | null>(null);
 
   useEffect(() => {
@@ -181,10 +192,9 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
       : null) ?? null;
   const activeSite = sites.find((s) => s.id === activeFinding?.site_id);
 
-  const onScan = (id: string) => {
-    scanSiteNow(id)
-      .then(() => refresh())
-      .catch((err: Error) => window.alert(err.message));
+  const onScan = async (id: string) => {
+    await scanSiteNow(id);
+    await refresh();
   };
 
   const changeFindingStatus = async (status: FindingStatus) => {
@@ -347,19 +357,23 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
           theme={theme}
           onToggleTheme={onToggleTheme}
         />
-        <main className={activeFinding ? "detail-main" : ""}>{content}</main>
+        <main className={activeFinding ? "detail-main" : ""}>
+          <Suspense fallback={<div className="page-loading">Loading view…</div>}>{content}</Suspense>
+        </main>
       </div>
       {modal && (
-        <Modal
-          type={modal}
-          close={closeModal}
-          onChanged={() => {
-            void refresh();
-            void keysState.reload();
-          }}
-          onAddKey={keysState.add}
-          initialSite={modal === "site" ? siteToVerify : null}
-        />
+        <Suspense fallback={null}>
+          <Modal
+            type={modal}
+            close={closeModal}
+            onChanged={() => {
+              void refresh();
+              void keysState.reload();
+            }}
+            onAddKey={keysState.add}
+            initialSite={modal === "site" ? siteToVerify : null}
+          />
+        </Suspense>
       )}
     </div>
   );

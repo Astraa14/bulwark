@@ -116,6 +116,7 @@ export function Threats({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search threats..."
+          aria-label="Search threats"
         />
         <select value={severity} onChange={(e) => setSeverity(e.target.value)} aria-label="Severity">
           <option value="all">Severity: all</option>
@@ -145,7 +146,7 @@ export function Threats({
           <span />
         </div>
         {filtered.map((f) => (
-          <button className="threat-row" key={f.id} onClick={() => onOpen(f)}>
+          <button type="button" className="threat-row" key={f.id} onClick={() => onOpen(f)}>
             <strong className="table-title" title={f.title}>{f.title}</strong>
             <code className="table-domain" title={siteLabel(sites, f)}>{siteLabel(sites, f)}</code>
             <span>
