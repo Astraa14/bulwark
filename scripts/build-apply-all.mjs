@@ -28,8 +28,10 @@ const parts = [
   "",
 ];
 
+const normalizeEol = (value) => value.replace(/\r\n/g, "\n");
+
 for (const name of files) {
-  const sql = await readFile(path.join(migrationsDir, name), "utf8");
+  const sql = normalizeEol(await readFile(path.join(migrationsDir, name), "utf8"));
   parts.push(`-- >>> supabase/migrations/${name}`);
   parts.push(sql.trimEnd());
   parts.push("");
@@ -40,7 +42,7 @@ const output = `${parts.join("\n").trimEnd()}\n`;
 if (checkOnly) {
   let current = "";
   try {
-    current = await readFile(target, "utf8");
+    current = normalizeEol(await readFile(target, "utf8"));
   } catch {
     current = "";
   }

@@ -10,6 +10,7 @@ import {
   MAX_FILE_BYTES,
   MAX_FINDINGS,
   MAX_HISTORY_COMMITS,
+  MAX_LOCKFILE_BYTES,
   MAX_SECRET_MATCHES_PER_PATTERN_PER_FILE,
   OSV_API,
   SAFE_CLIENT_ENV_SUFFIX_RE,
@@ -44,10 +45,34 @@ export function assertRepoCoordinates(owner, repo) {
   if (!REPO_RE.test(String(repo ?? ""))) throw new Error("Invalid GitHub repository name.");
 }
 
+const TEST_PATH_RE = /(?:^|\/)(?:__tests__|tests?|fixtures?|mocks?|test-support)\//i;
+const TEST_FILE_RE = /\.(?:test|spec)\.[a-z0-9]+$/i;
+const GENERIC_PLACEHOLDER_RE =
+  /(?:fake|dummy|example|placeholder|changeme|sample|mock|redact(?:ed)?|replace[-_]?me|your[-_]|todo|not[-_]?a[-_]?real|test[-_]?(?:key|pass|secret|token))/i;
+const PROVIDER_PREFIX_RE = /^(?:sk-(?:proj-|svcacct-|live-)?|sk-ant-|sk_live_|AIza|gh[pousr]_|AKIA|xox[baprs]-)/;
+
+export function isTestFile(filePath) {
+  const value = String(filePath ?? "");
+  return TEST_PATH_RE.test(value) || TEST_FILE_RE.test(value);
+}
+
+function isLowEntropyToken(rawMatch) {
+  const body = String(rawMatch ?? "").replace(PROVIDER_PREFIX_RE, "");
+  if (!body) return false;
+  return new Set(body.toLowerCase()).size <= 3;
+}
+
+function isLikelyGenericPlaceholder(rawMatch) {
+  const quoted = String(rawMatch ?? "").match(/["']([^"']+)["']/)?.[1] ?? String(rawMatch ?? "");
+  if (GENERIC_PLACEHOLDER_RE.test(quoted)) return true;
+  if (new Set(quoted.toLowerCase()).size <= 3) return true;
+  return false;
+}
+
 function isTextFile(filePath) {
   const lower = String(filePath ?? "").toLowerCase();
   const base = lower.slice(lower.lastIndexOf("/") + 1);
-  if (SENSITIVE_FILENAMES.has(base)) return true;
+  if (SENSITIVE_FILENAMES.has(base) || base.startsWith(".env.")) return true;
   if (ANALYZED_LOCKFILES.has(base) || UNANALYZED_LOCKFILES.has(base)) return true;
   if (base === "dockerfile" || base === "makefile" || base === "gemfile") return true;
   const dot = base.lastIndexOf(".");
@@ -205,8 +230,12 @@ function blobUrl(owner, repo, commitSha, filePath, line = null) {
 function scanTextForSecrets(text, path, { owner, repo, commitSha }) {
   const out = [];
   if (!text) return out;
+  const inTest = isTestFile(path);
 
   for (const pattern of SECRET_PATTERNS) {
+    const specific = !pattern.key.startsWith("secret_generic_");
+    if (!specific && inTest) continue;
+
     const flags = pattern.re.flags.includes("g") ? pattern.re.flags : `${pattern.re.flags}g`;
     const re = new RegExp(pattern.re.source, flags);
     let occurrence = 0;
@@ -214,10 +243,13 @@ function scanTextForSecrets(text, path, { owner, repo, commitSha }) {
     for (const match of text.matchAll(re)) {
       if (occurrence >= MAX_SECRET_MATCHES_PER_PATTERN_PER_FILE) break;
       if (match.index === undefined) continue;
+      if (!specific && isLikelyGenericPlaceholder(match[0])) continue;
+      if (specific && inTest && pattern.key !== "secret_private_key" && isLowEntropyToken(match[0])) {
+        continue;
+      }
       occurrence += 1;
 
       const line = text.slice(0, match.index).split("\n").length;
-      const specific = !pattern.key.startsWith("secret_generic_");
       out.push(
         finding(
           pattern.key,
@@ -228,9 +260,10 @@ function scanTextForSecrets(text, path, { owner, repo, commitSha }) {
             url: blobUrl(owner, repo, commitSha, path, line),
             evidence: `${redactSecret(match[0])} · ${owner}/${repo}/${path}:${line}`,
             affected_resource: `${path}:${line}:${occurrence}`,
-            confidence: specific ? "high" : "medium",
-            what_it_does_not_prove:
-              "A pattern match does not prove the credential is live, privileged, or still valid.",
+            confidence: specific && !inTest ? "high" : "medium",
+            what_it_does_not_prove: inTest
+              ? "This match is inside a test or fixture file; confirm it is synthetic rather than a live credential."
+              : "A pattern match does not prove the credential is live, privileged, or still valid.",
             remediation:
               "Rotate the credential, remove it from the repository, and purge it from git history if it was pushed.",
           },
@@ -507,7 +540,7 @@ export function packagesFromTomlLock(path, content) {
 
 export function scanClientExposedEnvVars(text, path, { owner, repo, commitSha }) {
   const out = [];
-  if (!text) return out;
+  if (!text || isTestFile(path)) return out;
 
   const seenOnFile = new Set();
   const re = new RegExp(CLIENT_ENV_RE.source, "g");
@@ -895,7 +928,10 @@ export async function scanGitHubRepo(
       skippedNonText += 1;
       continue;
     }
-    if (Number(blob.size ?? 0) > MAX_FILE_BYTES) {
+    const lowerPath = String(blob.path ?? "").toLowerCase();
+    const baseName = lowerPath.slice(lowerPath.lastIndexOf("/") + 1);
+    const sizeLimit = ANALYZED_LOCKFILES.has(baseName) ? MAX_LOCKFILE_BYTES : MAX_FILE_BYTES;
+    if (Number(blob.size ?? 0) > sizeLimit) {
       skippedLarge += 1;
       continue;
     }
@@ -1093,12 +1129,16 @@ export async function scanGitHubRepo(
           .join("\n");
         if (!addedLines) continue;
 
+        const fileIsTest = isTestFile(file.filename);
         for (const pattern of highConfidencePatterns) {
           const flags = pattern.re.flags.includes("g") ? pattern.re.flags : `${pattern.re.flags}g`;
           const re = new RegExp(pattern.re.source, flags);
           let count = 0;
           for (const match of addedLines.matchAll(re)) {
             if (count >= 5) break;
+            if (fileIsTest && pattern.key !== "secret_private_key" && isLowEntropyToken(match[0])) {
+              continue;
+            }
             count += 1;
             const shortSha = item.sha.slice(0, 7);
             historyFindings.push(
@@ -1111,9 +1151,10 @@ export async function scanGitHubRepo(
                   url: `https://github.com/${owner}/${repo}/commit/${item.sha}`,
                   evidence: `${redactSecret(match[0])} · ${owner}/${repo}@${shortSha} (${file.filename})`,
                   affected_resource: `history:${item.sha.slice(0, 12)}:${file.filename}:${count}`,
-                  confidence: "high",
-                  what_it_does_not_prove:
-                    "Only the most recent commits were inspected; matching a pattern does not prove the key is still active.",
+                  confidence: fileIsTest ? "medium" : "high",
+                  what_it_does_not_prove: fileIsTest
+                    ? "This match is inside a test or fixture file in recent commit history; confirm it is synthetic rather than a live credential."
+                    : "Only the most recent commits were inspected; matching a pattern does not prove the key is still active.",
                   remediation:
                     "Rotate/revoke the exposed credential immediately, and rewrite git history if the repository is or was public.",
                 },
@@ -1139,7 +1180,9 @@ export async function scanGitHubRepo(
     notes.push("GitHub truncated the repository tree, so file coverage is incomplete.");
   }
   if (skippedLarge > 0) {
-    notes.push(`${skippedLarge} file(s) exceeded ${MAX_FILE_BYTES} bytes and were not read.`);
+    notes.push(
+      `${skippedLarge} file(s) exceeded the size limit (${MAX_FILE_BYTES} bytes, or ${MAX_LOCKFILE_BYTES} bytes for lockfiles) and were not read.`,
+    );
   }
   if (skippedUnreadable > 0) {
     notes.push(`${skippedUnreadable} file(s) could not be read.`);

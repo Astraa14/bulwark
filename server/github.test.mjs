@@ -499,3 +499,93 @@ test("scans bounded recent commit history for leaked secrets and flags workflow 
   assert.ok(result.findings.some((f) => f.check_key === "workflow_write_all_permissions"));
   assert.ok(result.findings.some((f) => f.check_key === "workflow_unpinned_action"));
 });
+
+test("does not flag .env.example as an exposed config file, but still scans it for real secrets", async () => {
+  const realLookingStripe = ["sk_live", "998877665544332211aabbcc"].join("_");
+  const cleanFixture = createGitHubFetch({
+    files: [
+      {
+        path: ".env.example",
+        content: [
+          "VITE_SUPABASE_URL=https://your-project.supabase.co",
+          "VITE_SUPABASE_ANON_KEY=your_publishable_anon_key",
+          'DB_PASSWORD="your_password_placeholder"',
+        ].join("\n"),
+      },
+    ],
+  });
+
+  const cleanResult = await scan(cleanFixture);
+  assert.equal(cleanResult.findings.length, 0);
+
+  const leakedFixture = createGitHubFetch({
+    files: [
+      {
+        path: ".env.example",
+        content: `STRIPE_KEY=${realLookingStripe}\nNEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY=oops\n`,
+      },
+    ],
+  });
+
+  const leakedResult = await scan(leakedFixture);
+  assert.ok(!leakedResult.findings.some((f) => f.check_key === "exposed_config_file"));
+  assert.ok(leakedResult.findings.some((f) => f.check_key === "secret_stripe"));
+  assert.ok(leakedResult.findings.some((f) => f.check_key === "client_exposed_secret_env"));
+});
+
+test("skips generic placeholders and test-file env heuristics while still catching realistic provider keys", async () => {
+  const realLookingStripe = ["sk_live", "112233445566778899ddeeff"].join("_");
+  const fixture = createGitHubFetch({
+    files: [
+      {
+        path: "src/docs-example.ts",
+        content: [
+          'const password = "changeme_placeholder";',
+          'const api_key = "fake-api-key-for-docs-example-1234";',
+        ].join("\n"),
+      },
+      {
+        path: "server/sample.test.mjs",
+        content: [
+          'const envName = "NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY";',
+          'const apiKey = "AIza-fake-gemini-key-for-unit-test";',
+          `const dummy = "AIza${"A".repeat(35)}";`,
+          `const leaked = "${realLookingStripe}";`,
+        ].join("\n"),
+      },
+    ],
+  });
+
+  const result = await scan(fixture);
+  assert.equal(result.findings.length, 1);
+  assert.equal(result.findings[0].check_key, "secret_stripe");
+  assert.equal(result.findings[0].confidence, "medium");
+  assert.match(result.findings[0].what_it_does_not_prove, /test or fixture file/i);
+});
+
+test("analyzes large lockfiles over 500 KB up to the 3 MB lockfile cap", async () => {
+  const lock = JSON.stringify({
+    packages: {
+      "node_modules/lodash": { version: "4.17.20" },
+    },
+  });
+  const fixture = createGitHubFetch({
+    files: [{ path: "package-lock.json", content: lock, size: 1_200_000 }],
+    osv: () => [
+      {
+        vulns: [
+          {
+            id: "GHSA-large-lock",
+            summary: "Large lockfile vuln",
+            database_specific: { severity: "HIGH" },
+            affected: [{ ranges: [{ events: [{ fixed: "4.17.21" }] }] }],
+          },
+        ],
+      },
+    ],
+  });
+
+  const result = await scan(fixture);
+  assert.equal(result.coverage.skippedLarge, 0);
+  assert.ok(result.findings.some((f) => f.check_key === "dep_vuln_lodash"));
+});

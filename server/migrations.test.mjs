@@ -25,11 +25,12 @@ test("jsonb array aliases are table aliases, not column aliases", async () => {
 });
 
 test("apply_all.sql contains every migration verbatim and in order", async () => {
-  const applyAll = await readFile(applyAllPath, "utf8");
+  const normalizeEol = (value) => value.replace(/\r\n/g, "\n");
+  const applyAll = normalizeEol(await readFile(applyAllPath, "utf8"));
 
   let cursor = -1;
   for (const file of migrationFiles) {
-    const sql = (await readFile(path.join(migrationsDir, file), "utf8")).trimEnd();
+    const sql = normalizeEol(await readFile(path.join(migrationsDir, file), "utf8")).trimEnd();
     const marker = `-- >>> supabase/migrations/${file}`;
     const index = applyAll.indexOf(marker);
     assert.ok(index >= 0, `apply_all.sql is missing ${file}; run npm run db:apply-all`);

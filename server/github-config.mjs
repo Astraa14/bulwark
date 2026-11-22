@@ -10,6 +10,7 @@ export const GITHUB_API = "https://api.github.com";
 export const OSV_API = "https://api.osv.dev/v1/querybatch";
 
 export const MAX_FILE_BYTES = 500_000;
+export const MAX_LOCKFILE_BYTES = 3_000_000;
 export const MAX_FILES_SCANNED = 500;
 export const MAX_HISTORY_COMMITS = 10;
 export const MAX_SECRET_MATCHES_PER_PATTERN_PER_FILE = 20;
@@ -237,13 +238,15 @@ export const SECRET_PATTERNS = [
   },
 ];
 
+// Template files like .env.example and .env.sample are intentionally excluded
+// here so clean repos with tracked env templates are not flagged by filename
+// alone; their contents are still scanned for real credentials and dangerous
+// client-exposed env variable names.
 export const SENSITIVE_FILENAMES = new Set([
   ".env",
   ".env.local",
   ".env.development",
   ".env.production",
-  ".env.example",
-  ".env.sample",
   "config.json",
   "config.yaml",
   "config.yml",

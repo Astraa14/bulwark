@@ -32,10 +32,10 @@ A connection is a GitHub username plus a **personal access token** with read-onl
 A repository scan:
 
 - reads the repository tree at the default branch head, or at the exact commit named by a verified webhook delivery;
-- reads up to **500 text files** up to 500 KB each; larger files, binary files, unreadable blobs, and files beyond the cap are counted and disclosed;
+- reads up to **500 text files** up to 500 KB each (up to 3 MB for supported lockfiles); larger files, binary files, unreadable blobs, and files beyond the cap are counted and disclosed;
 - flags hardcoded credentials in file contents (redacted evidence plus a line link) and scans added lines in up to **10 recent commits** for high-confidence provider secrets;
 - flags client-exposed secret environment variable names (`NEXT_PUBLIC_*`, `VITE_*`, `REACT_APP_*`, `NUXT_PUBLIC_*`, `PUBLIC_*` paired with secret/service-role/database variable names);
-- flags sensitive filenames (`.env`, private keys, database dumps, etc.);
+- flags sensitive filenames (`.env`, private keys, database dumps, etc.; template files like `.env.example` are still scanned for real credentials);
 - flags unpinned dependency declarations;
 - queries [OSV](https://osv.dev) for **npm (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`) and Python (`requirements.txt`, `poetry.lock`, `uv.lock`)** lockfiles, sending only package names, ecosystems, and exact versions — never source code, paths, tokens, or credentials; other lockfiles are reported as unanalyzed;
 - flags container, CI, Vercel CORS, and Supabase SQL migration configuration risks (root Dockerfile user, `pull_request_target`, `permissions: write-all`, Actions pinned to mutable branches like `@main`, wildcard CORS with credentials, `supabase/migrations/*.sql` tables missing `ENABLE ROW LEVEL SECURITY`);
