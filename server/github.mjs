@@ -1,6 +1,8 @@
 import {
+  ANALYZED_LOCKFILES,
+  CLIENT_EXPOSED_ENV_PREFIXES,
   CONFIG_CHECKS,
-  DEPENDENCY_FILES,
+  DANGEROUS_CLIENT_ENV_PATTERNS,
   GITHUB_API,
   GITHUB_FETCH_CONCURRENCY,
   GITHUB_REQUEST_TIMEOUT_MS,
@@ -9,15 +11,22 @@ import {
   MAX_FINDINGS,
   MAX_SECRET_MATCHES_PER_PATTERN_PER_FILE,
   OSV_API,
+  SAFE_CLIENT_ENV_SUFFIX_RE,
   SECRET_PATTERNS,
   SENSITIVE_FILENAMES,
   TEXT_EXTENSIONS,
+  UNANALYZED_LOCKFILES,
 } from "./github-config.mjs";
 
 const OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
 const EXACT_VERSION_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+const PEP440_EXACT_RE = /^\d+(?:\.\d+)*(?:(?:a|b|rc|\.post|\.dev|post|dev)\d+)?(?:\+[0-9A-Za-z.]+)?$/i;
 const SEVERITY_RANK = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+const CLIENT_ENV_RE = new RegExp(
+  `\\b((?:${CLIENT_EXPOSED_ENV_PREFIXES.join("|")})[A-Z0-9_]{2,80})\\b`,
+  "g",
+);
 
 function finding(checkKey, title, severity, detail, extra = {}) {
   return { check_key: checkKey, title, severity, detail, ...extra };
@@ -36,8 +45,9 @@ export function assertRepoCoordinates(owner, repo) {
 
 function isTextFile(filePath) {
   const lower = String(filePath ?? "").toLowerCase();
-  if (SENSITIVE_FILENAMES.has(lower.split("/").pop())) return true;
   const base = lower.slice(lower.lastIndexOf("/") + 1);
+  if (SENSITIVE_FILENAMES.has(base)) return true;
+  if (ANALYZED_LOCKFILES.has(base) || UNANALYZED_LOCKFILES.has(base)) return true;
   if (base === "dockerfile" || base === "makefile" || base === "gemfile") return true;
   const dot = base.lastIndexOf(".");
   if (dot === -1) return false;
@@ -274,6 +284,320 @@ export function packagesFromPackageLock(path, content) {
   return out;
 }
 
+export function packagesFromPnpmLock(path, content) {
+  if (!content) return [];
+  const out = [];
+  const seen = new Set();
+  const add = (name, version) => {
+    if (!name || !version) return;
+    const normalized = String(version).trim().replace(/^v/, "");
+    if (!EXACT_VERSION_RE.test(normalized)) return;
+    const key = `${name}@${normalized}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ name, version: normalized, ecosystem: "npm", lockPath: path });
+  };
+
+  let inPackages = false;
+  for (const rawLine of String(content).split(/\r?\n/)) {
+    if (/^[a-zA-Z0-9_-]+:/.test(rawLine)) {
+      inPackages = /^packages:\s*$/.test(rawLine);
+      continue;
+    }
+    if (!inPackages) continue;
+    // Match 2-space indented package entries under `packages:`.
+    const entry = rawLine.match(/^  ([^#\s][^:]*):\s*$/);
+    if (!entry) continue;
+
+    let spec = entry[1].trim().replace(/^['"]|['"]$/g, "");
+    // Strip peer-dependency suffixes such as `(react@18.2.0)` or `_react@18.2.0`.
+    const paren = spec.indexOf("(");
+    if (paren > 0) spec = spec.slice(0, paren);
+    const underscore = spec.indexOf("_");
+    if (underscore > 0 && /@\d/.test(spec.slice(0, underscore))) {
+      spec = spec.slice(0, underscore);
+    }
+    if (spec.startsWith("/")) spec = spec.slice(1);
+
+    // Format A (pnpm v6/v9): `lodash@4.17.20` or `@scope/pkg@2.3.4`
+    const atIndex = spec.lastIndexOf("@");
+    if (atIndex > 0) {
+      const name = spec.slice(0, atIndex);
+      const version = spec.slice(atIndex + 1);
+      if (EXACT_VERSION_RE.test(version)) {
+        add(name, version);
+        continue;
+      }
+    }
+
+    // Format B (pnpm v5): `lodash/4.17.20` or `@scope/pkg/2.3.4`
+    const slashIndex = spec.lastIndexOf("/");
+    if (slashIndex > 0) {
+      const name = spec.slice(0, slashIndex);
+      const version = spec.slice(slashIndex + 1);
+      if (EXACT_VERSION_RE.test(version)) {
+        add(name, version);
+      }
+    }
+  }
+
+  return out;
+}
+
+export function packagesFromYarnLock(path, content) {
+  if (!content) return [];
+  const out = [];
+  const seen = new Set();
+  const add = (name, version) => {
+    if (!name || !version) return;
+    const normalized = String(version).trim().replace(/^v/, "");
+    if (!EXACT_VERSION_RE.test(normalized)) return;
+    const key = `${name}@${normalized}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ name, version: normalized, ecosystem: "npm", lockPath: path });
+  };
+
+  const extractName = (headerLine) => {
+    // Take the first descriptor before comma or trailing colon.
+    const first = headerLine
+      .replace(/:\s*$/, "")
+      .split(",")[0]
+      .trim()
+      .replace(/^['"]|['"]$/g, "");
+    if (!first || first === "__metadata") return null;
+    // Skip workspace resolutions.
+    if (first.includes("@workspace:")) return null;
+    const atIndex = first.startsWith("@") ? first.indexOf("@", 1) : first.indexOf("@");
+    if (atIndex <= 0) return null;
+    return first.slice(0, atIndex).trim() || null;
+  };
+
+  let currentName = null;
+  let currentVersion = null;
+  let skipBlock = false;
+  const flush = () => {
+    if (currentName && currentVersion && !skipBlock) add(currentName, currentVersion);
+    currentName = null;
+    currentVersion = null;
+    skipBlock = false;
+  };
+
+  for (const rawLine of String(content).split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      if (!trimmed) flush();
+      continue;
+    }
+
+    if (!rawLine.startsWith(" ") && !rawLine.startsWith("\t")) {
+      flush();
+      if (trimmed.endsWith(":")) {
+        currentName = extractName(trimmed);
+      }
+      continue;
+    }
+
+    if (!currentName) continue;
+    if (/^resolution:\s*["']?[^"']*@workspace:/i.test(trimmed)) {
+      skipBlock = true;
+      continue;
+    }
+    // Yarn v1: `  version "4.17.20"` | Yarn Berry: `  version: 4.17.20`
+    const verMatch = trimmed.match(/^version(?:\s*:\s*|\s+)["']?([^"'\s]+)["']?$/);
+    if (verMatch && !currentVersion) {
+      currentVersion = verMatch[1];
+    }
+  }
+  flush();
+
+  return out;
+}
+
+export function packagesFromRequirementsTxt(path, content) {
+  if (!content) return [];
+  const out = [];
+  const seen = new Set();
+
+  for (const rawLine of String(content).split(/\r?\n/)) {
+    const noComment = rawLine.split("#")[0].trim();
+    if (!noComment || noComment.startsWith("-")) continue;
+    // Strip environment markers (`; python_version < "3.12"`) and hashes (`--hash=...`).
+    const clean = noComment.split(";")[0].split(/\s+--/)[0].trim();
+    const match = clean.match(/^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]+\])?\s*==\s*([A-Za-z0-9.+_-]+)$/);
+    if (!match) continue;
+    const name = match[1];
+    const version = match[2];
+    if (!PEP440_EXACT_RE.test(version)) continue;
+    const key = `${name.toLowerCase()}@${version}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name, version, ecosystem: "PyPI", lockPath: path });
+  }
+
+  return out;
+}
+
+export function packagesFromTomlLock(path, content) {
+  if (!content) return [];
+  const out = [];
+  const seen = new Set();
+  let inPackage = false;
+  let inSubtable = false;
+  let name = null;
+  let version = null;
+  let isLocal = false;
+
+  const flush = () => {
+    if (inPackage && !isLocal && name && version && PEP440_EXACT_RE.test(version)) {
+      const key = `${name.toLowerCase()}@${version}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push({ name, version, ecosystem: "PyPI", lockPath: path });
+      }
+    }
+    name = null;
+    version = null;
+    isLocal = false;
+    inSubtable = false;
+  };
+
+  for (const rawLine of String(content).split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+
+    if (trimmed === "[[package]]") {
+      flush();
+      inPackage = true;
+      inSubtable = false;
+      continue;
+    }
+
+    if (trimmed.startsWith("[")) {
+      if (trimmed.startsWith("[package.") || trimmed.startsWith("[[package.")) {
+        inSubtable = true;
+      } else {
+        flush();
+        inPackage = false;
+      }
+      continue;
+    }
+
+    if (!inPackage || inSubtable) continue;
+
+    const nameMatch = trimmed.match(/^name\s*=\s*["']([^"']+)["']/);
+    if (nameMatch) {
+      name = nameMatch[1];
+      continue;
+    }
+    const verMatch = trimmed.match(/^version\s*=\s*["']([^"']+)["']/);
+    if (verMatch) {
+      version = verMatch[1];
+      continue;
+    }
+    if (/^source\s*=\s*\{[^}]*(?:editable|virtual)\s*=/.test(trimmed)) {
+      isLocal = true;
+    }
+  }
+  flush();
+
+  return out;
+}
+
+export function scanClientExposedEnvVars(text, path, { owner, repo, commitSha }) {
+  const out = [];
+  if (!text) return out;
+
+  const seenOnFile = new Set();
+  const re = new RegExp(CLIENT_ENV_RE.source, "g");
+  for (const match of text.matchAll(re)) {
+    if (match.index === undefined) continue;
+    const varName = match[1];
+    if (seenOnFile.has(varName)) continue;
+
+    const prefix = CLIENT_EXPOSED_ENV_PREFIXES.find((p) => varName.startsWith(p));
+    if (!prefix) continue;
+    const suffix = varName.slice(prefix.length);
+    if (!suffix || SAFE_CLIENT_ENV_SUFFIX_RE.test(suffix)) continue;
+
+    const rule = DANGEROUS_CLIENT_ENV_PATTERNS.find((entry) => entry.re.test(suffix));
+    if (!rule) continue;
+
+    seenOnFile.add(varName);
+    const line = text.slice(0, match.index).split("\n").length;
+    out.push(
+      finding(
+        "client_exposed_secret_env",
+        `Client-exposed secret variable: ${varName}`,
+        rule.severity,
+        `Environment variables prefixed with \`${prefix}\` are bundled into public browser JavaScript. Naming a ${rule.label} with \`${prefix}\` exposes it to every visitor.`,
+        {
+          url: blobUrl(owner, repo, commitSha, path, line),
+          evidence: `${varName} · ${owner}/${repo}/${path}:${line}`,
+          affected_resource: `${path}:${varName}`,
+          confidence: "high",
+          what_it_does_not_prove:
+            "This checks the variable name, not whether a live secret is currently set in your deployment environment.",
+          remediation: `Remove the ${prefix} prefix, move code using ${varName} into a server route or edge function, and rotate the credential if it was ever deployed.`,
+        },
+      ),
+    );
+  }
+  return out;
+}
+
+export function scanSupabaseMigrationsForRls(sqlFiles, { owner, repo, commitSha }) {
+  if (!sqlFiles.length) return [];
+
+  const rlsEnabledTables = new Set();
+  const createdTables = [];
+
+  for (const file of sqlFiles) {
+    const content = file.content ?? "";
+    const enableRe =
+      /alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(?:["']?public["']?\.)?["']?([a-zA-Z_][a-zA-Z0-9_]*)["']?\s+enable\s+row\s+level\s+security/gi;
+    for (const match of content.matchAll(enableRe)) {
+      rlsEnabledTables.add(match[1].toLowerCase());
+    }
+
+    const createRe =
+      /create\s+table\s+(?:if\s+not\s+exists\s+)?(?:["']?public["']?\.)?["']?([a-zA-Z_][a-zA-Z0-9_]*)["']?\s*\(/gi;
+    for (const match of content.matchAll(createRe)) {
+      const table = match[1].toLowerCase();
+      // Ignore schema-qualified non-public tables such as auth.users or storage.objects.
+      const before = content.slice(Math.max(0, match.index - 40), match.index + match[0].length);
+      if (/\b(?:auth|storage|realtime|vault|pg_catalog)\s*\./i.test(before)) continue;
+      const line = content.slice(0, match.index).split("\n").length;
+      createdTables.push({ table, path: file.path, line });
+    }
+  }
+
+  const out = [];
+  const seen = new Set();
+  for (const entry of createdTables) {
+    if (rlsEnabledTables.has(entry.table) || seen.has(entry.table)) continue;
+    seen.add(entry.table);
+    out.push(
+      finding(
+        "supabase_migration_missing_rls",
+        `Migration creates table without RLS: ${entry.table}`,
+        "high",
+        `\`${entry.path}\` creates table \`public.${entry.table}\`, and none of the scanned SQL migrations enable Row Level Security on it.`,
+        {
+          url: blobUrl(owner, repo, commitSha, entry.path, entry.line),
+          evidence: `public.${entry.table} · ${entry.path}:${entry.line}`,
+          affected_resource: `migration_table:${entry.table}`,
+          confidence: "medium",
+          what_it_does_not_prove:
+            "RLS may have been enabled directly in the Supabase dashboard or in a migration outside the scanned file cap.",
+          remediation: `Add \`alter table public.${entry.table} enable row level security;\` and owner-scoped RLS policies in a migration.`,
+        },
+      ),
+    );
+  }
+  return out;
+}
+
 function unpinnedFindings(path, content, { owner, repo, commitSha }) {
   let json;
   try {
@@ -329,9 +653,11 @@ function scanConfigFile(path, content, { owner, repo, commitSha }) {
             confidence: "medium",
             what_it_does_not_prove:
               "This is a static configuration heuristic; it does not prove the container or workflow is exploitable.",
-            remediation: check.check.includes("docker")
-              ? "Add a non-root USER directive to the image or service."
-              : "Remove untrusted pull-request input from pull_request_target workflows.",
+            remediation:
+              check.remediation ??
+              (check.check.includes("docker")
+                ? "Add a non-root USER directive to the image or service."
+                : "Review and harden this configuration."),
           }),
         );
       }
@@ -379,10 +705,11 @@ async function queryOsv(packages, { fetchImpl = fetch } = {}) {
   const unique = [];
   const seen = new Set();
   for (const pkg of packages) {
-    const key = `${pkg.lockPath}:${pkg.name}@${pkg.version}`;
+    const eco = pkg.ecosystem || "npm";
+    const key = `${pkg.lockPath}:${eco}:${pkg.name}@${pkg.version}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    unique.push(pkg);
+    unique.push({ ...pkg, ecosystem: eco });
   }
 
   const out = [];
@@ -393,7 +720,7 @@ async function queryOsv(packages, { fetchImpl = fetch } = {}) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         queries: chunk.map((pkg) => ({
-          package: { name: pkg.name, ecosystem: "npm" },
+          package: { name: pkg.name, ecosystem: pkg.ecosystem },
           version: pkg.version,
         })),
       }),
@@ -586,6 +913,7 @@ export async function scanGitHubRepo(
   const configErrors = [];
   const lockfiles = [];
   const unsupportedDependencyFiles = new Set();
+  const migrationSqlFiles = [];
   let filesRead = 0;
   let skippedUnreadable = 0;
 
@@ -645,6 +973,11 @@ export async function scanGitHubRepo(
         repo,
         commitSha: target.commitSha,
       }),
+      ...scanClientExposedEnvVars(item.content, path, {
+        owner,
+        repo,
+        commitSha: target.commitSha,
+      }),
     );
 
     if (base === "package.json") {
@@ -659,12 +992,34 @@ export async function scanGitHubRepo(
 
     if (base === "package-lock.json") {
       lockfiles.push(...packagesFromPackageLock(path, item.content));
-    } else if (DEPENDENCY_FILES.has(base)) {
+    } else if (base === "pnpm-lock.yaml") {
+      lockfiles.push(...packagesFromPnpmLock(path, item.content));
+    } else if (base === "yarn.lock") {
+      lockfiles.push(...packagesFromYarnLock(path, item.content));
+    } else if (base === "requirements.txt") {
+      lockfiles.push(...packagesFromRequirementsTxt(path, item.content));
+    } else if (base === "poetry.lock" || base === "uv.lock") {
+      lockfiles.push(...packagesFromTomlLock(path, item.content));
+    } else if (UNANALYZED_LOCKFILES.has(base)) {
       unsupportedDependencyFiles.add(path);
+    }
+
+    if (lower.startsWith("supabase/migrations/") && lower.endsWith(".sql")) {
+      migrationSqlFiles.push({ path, content: item.content });
     }
 
     configFindings.push(
       ...scanConfigFile(path, item.content, {
+        owner,
+        repo,
+        commitSha: target.commitSha,
+      }),
+    );
+  }
+
+  if (migrationSqlFiles.length) {
+    configFindings.push(
+      ...scanSupabaseMigrationsForRls(migrationSqlFiles, {
         owner,
         repo,
         commitSha: target.commitSha,
@@ -706,7 +1061,7 @@ export async function scanGitHubRepo(
   }
   if (unsupportedDependencyFiles.size > 0) {
     notes.push(
-      `Dependency advisories currently cover npm lockfiles only. Not analyzed: ${[...unsupportedDependencyFiles]
+      `Dependency advisories currently cover npm (package-lock.json, pnpm-lock.yaml, yarn.lock) and Python (requirements.txt, poetry.lock, uv.lock). Not analyzed: ${[...unsupportedDependencyFiles]
         .slice(0, 8)
         .join(", ")}${unsupportedDependencyFiles.size > 8 ? "…" : ""}.`,
     );

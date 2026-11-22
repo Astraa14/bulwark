@@ -1,8 +1,10 @@
 // Static configuration for GitHub repository scanning.
 //
 // Dependency vulnerability detection is NOT configured here. It is queried
-// from OSV at scan time so the rules cannot go stale. Only npm lockfiles
-// are currently analyzed; other ecosystems are not supported.
+// from OSV at scan time so the rules cannot go stale. Supported lockfiles:
+// npm (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`) and Python
+// (`requirements.txt`, `poetry.lock`, `uv.lock`). Other lockfiles are counted
+// as unanalyzed so coverage remains explicit.
 
 export const GITHUB_API = "https://api.github.com";
 export const OSV_API = "https://api.osv.dev/v1/querybatch";
@@ -23,6 +25,7 @@ export const CONFIG_CHECKS = [
     test: (content) => !/^\s*USER\s+/m.test(content),
     detail:
       "The Dockerfile does not set a non-root USER. Containers running as root have more privileges than necessary if compromised.",
+    remediation: "Add a non-root USER directive to the image or service.",
   },
   {
     path: "docker-compose.yml",
@@ -31,6 +34,7 @@ export const CONFIG_CHECKS = [
     severity: "medium",
     test: (content) => !/^\s*user:\s*[^0\s]/m.test(content),
     detail: "A Docker Compose service does not set a non-root user.",
+    remediation: "Add a non-root user setting to each service in Docker Compose.",
   },
   {
     path: "docker-compose.yaml",
@@ -39,6 +43,7 @@ export const CONFIG_CHECKS = [
     severity: "medium",
     test: (content) => !/^\s*user:\s*[^0\s]/m.test(content),
     detail: "A Docker Compose service does not set a non-root user.",
+    remediation: "Add a non-root user setting to each service in Docker Compose.",
   },
   {
     path: ".github/workflows/",
@@ -52,6 +57,94 @@ export const CONFIG_CHECKS = [
       ),
     detail:
       "A workflow runs on `pull_request_target` and also references untrusted pull-request content. That combination can expose repository write permissions. Prefer `pull_request`, or never run untrusted code in this workflow.",
+    remediation: "Remove untrusted pull-request input from pull_request_target workflows.",
+  },
+  {
+    path: "vercel.json",
+    check: "vercel_wildcard_cors_credentials",
+    title: "Vercel config pairs wildcard CORS with credentials",
+    severity: "high",
+    test: (content) => {
+      try {
+        const parsed = JSON.parse(content);
+        const rules = Array.isArray(parsed?.headers) ? parsed.headers : [];
+        for (const rule of rules) {
+          const entries = Array.isArray(rule?.headers) ? rule.headers : [];
+          let wildcardOrigin = false;
+          let allowCredentials = false;
+          for (const entry of entries) {
+            const key = String(entry?.key ?? "").trim().toLowerCase();
+            const val = String(entry?.value ?? "").trim().toLowerCase();
+            if (key === "access-control-allow-origin" && val === "*") wildcardOrigin = true;
+            if (key === "access-control-allow-credentials" && val === "true") {
+              allowCredentials = true;
+            }
+          }
+          if (wildcardOrigin && allowCredentials) return true;
+        }
+      } catch {
+        // Fall through to textual heuristic for JSONC/non-strict configs.
+      }
+      return (
+        /Access-Control-Allow-Origin["']?\s*:\s*["']\*["']/i.test(content) &&
+        /Access-Control-Allow-Credentials["']?\s*:\s*["']true["']/i.test(content)
+      );
+    },
+    detail:
+      "vercel.json sets Access-Control-Allow-Origin to `*` alongside Access-Control-Allow-Credentials: true. Explicitly allow only trusted origins instead of a wildcard.",
+    remediation:
+      "Replace the `*` origin with your exact frontend origin(s), or remove Access-Control-Allow-Credentials if the route is public.",
+  },
+];
+
+/**
+ * Frontend build tools inline env variables starting with these prefixes into
+ * the public JavaScript bundle sent to every visitor's browser.
+ */
+export const CLIENT_EXPOSED_ENV_PREFIXES = [
+  "NEXT_PUBLIC_",
+  "VITE_",
+  "REACT_APP_",
+  "NUXT_PUBLIC_",
+  "PUBLIC_",
+];
+
+/**
+ * Env variable suffixes that are intentionally safe in browsers and should
+ * never be flagged by the client-exposed secret heuristic.
+ */
+export const SAFE_CLIENT_ENV_SUFFIX_RE =
+  /(?:^|_)(?:ANON_KEY|PUBLISHABLE_KEY|PUBLIC_KEY|SITE_KEY|CLIENT_ID|APP_ID|PROJECT_ID|MEASUREMENT_ID|DSN|GA_ID)$/;
+
+/**
+ * Variable name fragments that represent server-only secrets or privileged
+ * credentials. Order matters: first match determines severity.
+ */
+export const DANGEROUS_CLIENT_ENV_PATTERNS = [
+  {
+    re: /(?:^|_)(?:SERVICE_ROLE(?:_KEY)?|SUPABASE_SECRET(?:_KEY)?)$/,
+    severity: "critical",
+    label: "Supabase service-role / secret key",
+  },
+  {
+    re: /(?:^|_)(?:PRIVATE_KEY|PEM_KEY|SIGNING_KEY|ENCRYPTION_KEY|MASTER_KEY)$/,
+    severity: "critical",
+    label: "private or encryption key",
+  },
+  {
+    re: /(?:^|_)(?:DATABASE_URL|POSTGRES_URL|POSTGRES_PRISMA_URL|MYSQL_URL|MONGO(?:DB)?_URI|REDIS_URL|DB_PASS(?:WORD)?)$/,
+    severity: "critical",
+    label: "database connection string or password",
+  },
+  {
+    re: /(?:^|_)(?:STRIPE_SECRET(?:_KEY)?|STRIPE_WEBHOOK_SECRET|AWS_SECRET(?:_ACCESS_KEY)?|OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|GOOGLE_AI_API_KEY|RESEND_API_KEY|SENDGRID_API_KEY|TWILIO_AUTH_TOKEN|CLERK_SECRET_KEY|GITHUB_TOKEN|GH_TOKEN|OPENAI_KEY|ANTHROPIC_KEY)$/,
+    severity: "critical",
+    label: "server-only provider secret",
+  },
+  {
+    re: /(?:^|_)(?:API_SECRET|CLIENT_SECRET|AUTH_SECRET|NEXTAUTH_SECRET|JWT_SECRET|SESSION_SECRET|WEBHOOK_SECRET|SECRET_KEY|SECRET_TOKEN|ACCESS_TOKEN|ADMIN_TOKEN|ADMIN_PASSWORD|SMTP_PASS(?:WORD)?)$/,
+    severity: "high",
+    label: "server-only secret or token",
   },
 ];
 
@@ -141,16 +234,43 @@ export const SENSITIVE_FILENAMES = new Set([
   ".my.cnf",
 ]);
 
+export const ANALYZED_LOCKFILES = new Set([
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "requirements.txt",
+  "poetry.lock",
+  "uv.lock",
+]);
+
+export const UNANALYZED_LOCKFILES = new Set([
+  "gemfile.lock",
+  "cargo.lock",
+  "go.sum",
+  "composer.lock",
+  "podfile.lock",
+  "pipfile.lock",
+  "bun.lock",
+]);
+
 export const DEPENDENCY_FILES = new Set([
   "package.json",
-  "package-lock.json",
+  ...ANALYZED_LOCKFILES,
+  ...UNANALYZED_LOCKFILES,
 ]);
 
 export const TEXT_EXTENSIONS = new Set([
   ".js",
+  ".mjs",
+  ".cjs",
   ".ts",
+  ".mts",
+  ".cts",
   ".jsx",
   ".tsx",
+  ".svelte",
+  ".vue",
+  ".astro",
   ".py",
   ".go",
   ".rs",
@@ -179,6 +299,9 @@ export const TEXT_EXTENSIONS = new Set([
   ".yaml",
   ".yml",
   ".toml",
+  ".lock",
+  ".sql",
+  ".prisma",
   ".xml",
   ".ini",
   ".cfg",
