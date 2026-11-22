@@ -3,6 +3,14 @@ import { apiDelete, apiGet, apiPost, apiPut } from "./api";
 import { supabase } from "./supabase";
 
 export type SiteStatus = "pending" | "verified" | "paused";
+export type SiteStack =
+  | "nextjs-vercel"
+  | "vite-render"
+  | "cloudflare"
+  | "nginx"
+  | "express"
+  | "supabase"
+  | "other";
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type FindingStatus = "open" | "acknowledged" | "resolved" | "ignored";
 
@@ -15,6 +23,7 @@ export type SiteRow = {
   verify_token: string;
   scan_interval_minutes: number;
   autonomy: "suggest" | "auto_fix";
+  stack?: SiteStack | null;
   last_scan_at: string | null;
   next_scan_at: string;
   page_sample?: string | null;
@@ -47,6 +56,8 @@ export type FindingRow = {
   /** Concrete, safe step to remediate the observation. */
   remediation?: string | null;
   affected_resource?: string | null;
+  ignored_until?: string | null;
+  triage_note?: string | null;
   explanation: string | null;
   explanation_model: string | null;
   explained_at: string | null;
@@ -120,7 +131,60 @@ export type Settings = {
   discordAlertsEnabled: boolean;
   emailAlertsEnabled: boolean;
   alertEmail: string | null;
+  weeklyDigestEnabled: boolean;
+  lastDigestSentAt: string | null;
   emailConfigured: boolean;
+};
+
+export type AlertDeliveryRow = {
+  id: string;
+  channel: "slack" | "discord" | "email";
+  kind: "finding" | "digest";
+  targetLabel: string;
+  findingCount: number;
+  status: "queued" | "sending" | "sent" | "failed";
+  attempts: number;
+  lastError: string | null;
+  createdAt: string;
+  sentAt: string | null;
+};
+
+export type GitHubRepoSchedule = {
+  id: string;
+  owner: string;
+  repo: string;
+  fullName: string;
+  lastScannedCommit?: string | null;
+  lastScannedAt?: string | null;
+  autoScanEnabled: boolean;
+  scanIntervalMinutes: number;
+  nextScanAt: string | null;
+};
+
+export type CopilotBriefItem = {
+  id: string;
+  title: string;
+  severity: Severity;
+  target: string;
+  checkKey: string;
+  remediation: string;
+};
+
+export type CopilotBriefResult = {
+  ok: boolean;
+  brief: string;
+  topItems: CopilotBriefItem[];
+  model: string | null;
+  generatedBy: "ai" | "deterministic";
+};
+
+export type RecheckResult = {
+  ok: boolean;
+  resolved: boolean;
+  status: FindingStatus;
+  scanStatus: ScanStatus;
+  scanId: string | null;
+  error: string | null;
 };
 
 export type ConnectionType = "github" | "supabase";
@@ -161,7 +225,7 @@ export type ScanConnectionResult = {
 
 export type ApiKeyRow = {
   id: string;
-  provider: "openai" | "anthropic";
+  provider: "openai" | "anthropic" | "gemini";
   providerLabel: string;
   label: string | null;
   model: string | null;
@@ -270,10 +334,67 @@ export async function setSiteInterval(siteId: string, minutes: number) {
   if (error) throw new Error(error.message);
 }
 
+export async function setSiteStack(siteId: string, stack: SiteStack | null) {
+  if (!supabase) throw new Error("Supabase is not configured.");
+  const { error } = await supabase.from("sites").update({ stack }).eq("id", siteId);
+  if (error) throw new Error(error.message);
+}
+
 export async function setFindingStatus(findingId: string, status: FindingStatus) {
   if (!supabase) throw new Error("Supabase is not configured.");
-  const { error } = await supabase.from("findings").update({ status }).eq("id", findingId);
+  const patch: Record<string, unknown> = { status };
+  if (status !== "ignored") patch.ignored_until = null;
+  const { error } = await supabase.from("findings").update(patch).eq("id", findingId);
   if (error) throw new Error(error.message);
+}
+
+export function triageFinding(
+  findingId: string,
+  input: {
+    status?: FindingStatus;
+    snoozeDays?: number | null;
+    ignoredUntil?: null;
+    triageNote?: string | null;
+  },
+) {
+  return apiPost<{ ok: boolean; finding: FindingRow }>(
+    `/api/findings/${encodeURIComponent(findingId)}/triage`,
+    input,
+  );
+}
+
+export function recheckFinding(findingId: string) {
+  return apiPost<RecheckResult>(`/api/findings/${encodeURIComponent(findingId)}/recheck`, {});
+}
+
+export function listAlertDeliveries() {
+  return apiGet<{ deliveries: AlertDeliveryRow[] }>("/api/alerts/deliveries").then(
+    (res) => res.deliveries ?? [],
+  );
+}
+
+export function sendTestDigest() {
+  return apiPost<{ ok: boolean; channels: string[] }>("/api/alerts/digest/test", {});
+}
+
+export function getCopilotBrief(useAi = true) {
+  return apiPost<CopilotBriefResult>("/api/copilot/brief", { useAi });
+}
+
+export function listGitHubSchedules(connectionId: string) {
+  return apiGet<{ schedules: GitHubRepoSchedule[] }>(
+    `/api/connections/github/${encodeURIComponent(connectionId)}/schedules`,
+  ).then((res) => res.schedules ?? []);
+}
+
+export function updateGitHubSchedule(
+  connectionId: string,
+  input: { owner: string; repo: string; autoScanEnabled: boolean; scanIntervalMinutes: number },
+) {
+  return apiPut<{ ok: boolean; schedule: GitHubRepoSchedule }>(
+    `/api/connections/github/${encodeURIComponent(connectionId)}/schedule`,
+    input,
+  ).then((res) => res.schedule);
 }
 
 export function explainFinding(findingId: string, refresh = false) {
@@ -305,7 +426,7 @@ export function useWorkspace() {
       supabase
         .from("sites")
         .select(
-          "id,user_id,domain,display_name,status,verify_token,scan_interval_minutes,autonomy,last_scan_at,next_scan_at,page_sample,page_sample_at,created_at",
+          "id,user_id,domain,display_name,status,verify_token,scan_interval_minutes,autonomy,stack,last_scan_at,next_scan_at,page_sample,page_sample_at,created_at",
         )
         .order("created_at", { ascending: true }),
       supabase

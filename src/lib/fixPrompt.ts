@@ -1,4 +1,14 @@
-import type { FindingRow } from "./workspace";
+import type { FindingRow, SiteStack } from "./workspace";
+
+const STACK_PROMPT_NAMES: Record<SiteStack, string> = {
+  "nextjs-vercel": "Next.js on Vercel (next.config / vercel.json)",
+  "vite-render": "Vite + Node on Render (vite.config / Express middleware)",
+  cloudflare: "Cloudflare Pages / Workers (_headers / wrangler.toml)",
+  nginx: "Nginx reverse proxy",
+  express: "Node.js / Express",
+  supabase: "Supabase backend (migrations + RLS policies)",
+  other: "Custom web stack",
+};
 
 function sourceKind(finding: FindingRow): string {
   if (finding.platform === "github") return "GitHub repository scan";
@@ -11,7 +21,11 @@ function sourceKind(finding: FindingRow): string {
  * coding editor (Cursor, Claude Code, Windsurf, Antigravity). Never includes
  * raw credentials — only the already-redacted evidence stored on the finding.
  */
-export function buildFixPrompt(finding: FindingRow, targetLabel: string): string {
+export function buildFixPrompt(
+  finding: FindingRow,
+  targetLabel: string,
+  stack?: SiteStack | null,
+): string {
   const lines: string[] = [
     `Fix this security finding detected by Bulwark (${sourceKind(finding)}):`,
     "",
@@ -21,6 +35,9 @@ export function buildFixPrompt(finding: FindingRow, targetLabel: string): string
     `Check: ${finding.check_key}`,
   ];
 
+  if (stack && STACK_PROMPT_NAMES[stack]) {
+    lines.push(`Stack: ${STACK_PROMPT_NAMES[stack]}`);
+  }
   if (finding.affected_resource) {
     lines.push(`Affected resource: ${finding.affected_resource}`);
   }
@@ -50,7 +67,9 @@ export function buildFixPrompt(finding: FindingRow, targetLabel: string): string
     "",
     "Instructions:",
     "1. Inspect the relevant files or configuration in this workspace first to confirm the root cause.",
-    "2. Apply the smallest safe fix without weakening security controls or hardcoding any secrets.",
+    stack && STACK_PROMPT_NAMES[stack]
+      ? `2. Apply the smallest idiomatic fix for ${STACK_PROMPT_NAMES[stack]} without weakening security controls or hardcoding any secrets.`
+      : "2. Apply the smallest safe fix without weakening security controls or hardcoding any secrets.",
   );
 
   if (finding.platform === "supabase" || finding.check_key.includes("rls")) {
@@ -63,6 +82,7 @@ export function buildFixPrompt(finding: FindingRow, targetLabel: string): string
     );
   } else if (
     finding.check_key.startsWith("secret_") ||
+    finding.check_key.startsWith("history_secret_") ||
     finding.check_key === "client_exposed_secret_env" ||
     finding.check_key === "exposed_config_file"
   ) {

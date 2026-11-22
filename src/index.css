@@ -2816,6 +2816,82 @@ pre.explanation {
   min-width: 140px;
 }
 
+.stack-select {
+  min-width: 118px;
+  max-width: 150px;
+}
+
+.inline-actions {
+  margin-top: 0;
+  justify-content: flex-end;
+}
+
+.triage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.snooze-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.snooze-label {
+  font-size: 12px;
+  color: var(--text-subtle);
+  margin-right: 4px;
+}
+
+.triage-note-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.triage-note-box label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.triage-note-box textarea {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.triage-note-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.brief-card {
+  margin-bottom: 18px;
+}
+
+.brief-output {
+  padding: 16px 18px;
+  border-top: 1px solid var(--border);
+}
+
+.delivery-list {
+  display: flex;
+  flex-direction: column;
+}
+
 .group-head {
   display: flex;
   flex-wrap: wrap;
