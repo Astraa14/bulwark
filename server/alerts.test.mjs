@@ -5,16 +5,22 @@ process.env.BULWARK_ENCRYPTION_KEY = "bulwark-test-encryption-key";
 
 const {
   alertNewFindings,
+  buildWeeklyDigestSummary,
   findingAppUrl,
   formatDiscordAlert,
   formatEmailAlert,
   formatSlackAlert,
+  formatWeeklyDigest,
   getSettings,
   isDiscordWebhookUrl,
   isValidAlertEmail,
+  listAlertDeliveries,
+  processAlertDeliveries,
+  runDueWeeklyDigests,
   saveSettings,
   sendDiscord,
   sendEmail,
+  sendWeeklyDigestForUser,
 } = await import("./alerts.mjs");
 const { createFakeDb } = await import("./test-support/fake-db.mjs");
 
@@ -189,4 +195,118 @@ test("alertNewFindings delivers across Slack, Discord, and Email and isolates ch
   assert.equal(result.errors.length, 1);
   assert.match(result.errors[0], /slack: Slack returned HTTP 500/);
   assert.equal(sentUrls.length, 3);
+});
+
+test("failed alerts queue in alert_deliveries and succeed on outbox retry", async () => {
+  const db = createFakeDb({
+    tables: { user_settings: [], alert_deliveries: [] },
+    rpcHandlers: {
+      claim_alert_deliveries: (_args, fakeDb) => {
+        const rows = fakeDb.tables.get("alert_deliveries") ?? [];
+        const claimed = rows.filter((r) => r.status === "queued");
+        for (const row of claimed) {
+          row.status = "sending";
+          row.attempts = Number(row.attempts ?? 0) + 1;
+        }
+        return { data: claimed.map((r) => ({ ...r })), error: null };
+      },
+    },
+  });
+
+  await saveSettings(db, "user-a", {
+    slackWebhookUrl: SLACK_URL,
+    alertsEnabled: true,
+    slackMinSeverity: "high",
+  });
+
+  // First attempt fails -> queued for retry in outbox.
+  await assert.rejects(
+    () =>
+      alertNewFindings(db, {
+        site: { domain: "acme.dev" },
+        userId: "user-a",
+        appUrl: "https://app.bulwark.dev",
+        findings: [{ id: "f-1", severity: "critical", title: "Exposed .env" }],
+        fetchImpl: async () => new Response("err", { status: 503 }),
+      }),
+    /Slack returned HTTP 503/,
+  );
+
+  let history = await listAlertDeliveries(db, "user-a");
+  assert.equal(history.length, 1);
+  assert.equal(history[0].status, "queued");
+  assert.equal(history[0].attempts, 1);
+
+  // Worker drains outbox -> succeeds on retry.
+  const retried = await processAlertDeliveries(db, {
+    fetchImpl: async () => new Response("ok", { status: 200 }),
+  });
+  assert.equal(retried.length, 1);
+  assert.equal(retried[0].ok, true);
+
+  history = await listAlertDeliveries(db, "user-a");
+  assert.equal(history[0].status, "sent");
+  assert.equal(history[0].attempts, 2);
+});
+
+test("weekly posture digest formats summary and sends only for due subscribers", async () => {
+  const summary = buildWeeklyDigestSummary({
+    sites: [
+      { id: "s1", domain: "acme.dev", status: "verified" },
+      { id: "s2", domain: "staging.acme.dev", status: "paused" },
+    ],
+    findings: [
+      { id: "f1", check_key: "tls_expiring", title: "TLS expires in 10 days", severity: "high", status: "open", last_seen_at: new Date().toISOString() },
+      { id: "f2", check_key: "header_hsts", title: "Missing HSTS", severity: "medium", status: "resolved", last_seen_at: new Date().toISOString() },
+    ],
+  });
+  assert.equal(summary.sitesActive, 1);
+  assert.equal(summary.high, 1);
+  assert.equal(summary.resolvedRecently, 1);
+  assert.equal(summary.expiringCount, 1);
+
+  const formatted = formatWeeklyDigest({ summary, appUrl: "https://app.bulwark.dev" });
+  assert.match(formatted.slack, /weekly security digest/i);
+  assert.match(formatted.email.subject, /1 high open/);
+
+  const db = createFakeDb({
+    tables: {
+      user_settings: [],
+      alert_deliveries: [],
+      sites: [{ id: "s1", user_id: "user-a", domain: "acme.dev", status: "verified" }],
+      findings: [],
+    },
+  });
+  await saveSettings(db, "user-a", {
+    slackWebhookUrl: SLACK_URL,
+    alertsEnabled: true,
+    weeklyDigestEnabled: true,
+  });
+
+  const sent = [];
+  const firstRun = await runDueWeeklyDigests(db, {
+    appUrl: "https://app.bulwark.dev",
+    fetchImpl: async (url) => {
+      sent.push(String(url));
+      return new Response("ok", { status: 200 });
+    },
+  });
+  assert.equal(firstRun.length, 1);
+  assert.equal(firstRun[0].sent, true);
+  assert.equal(sent.length, 1);
+
+  // Immediately running again does not double-send within the 7-day window.
+  const secondRun = await runDueWeeklyDigests(db, {
+    appUrl: "https://app.bulwark.dev",
+    fetchImpl: async () => new Response("ok", { status: 200 }),
+  });
+  assert.equal(secondRun.length, 0);
+
+  // Force send preview works anytime.
+  const preview = await sendWeeklyDigestForUser(db, "user-a", {
+    appUrl: "https://app.bulwark.dev",
+    force: true,
+    fetchImpl: async () => new Response("ok", { status: 200 }),
+  });
+  assert.equal(preview.sent, true);
 });

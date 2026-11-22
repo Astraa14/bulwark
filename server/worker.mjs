@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { alertNewFindings } from "./alerts.mjs";
+import { alertNewFindings, processAlertDeliveries, runDueWeeklyDigests } from "./alerts.mjs";
 import { adminClient } from "./lib.mjs";
-import { enqueueDueSupabaseScans, runPlatformScanJobs } from "./platform-scans.mjs";
+import {
+  enqueueDueGitHubScans,
+  enqueueDueSupabaseScans,
+  runPlatformScanJobs,
+} from "./platform-scans.mjs";
 import { websiteScanIdentity } from "./scan-id.mjs";
 
 /**
@@ -171,7 +175,7 @@ export async function runDueScans(db, limit = 10) {
   return results;
 }
 
-/** One worker sweep: due websites, scheduled Supabase scans, then platform jobs. */
+/** One worker sweep: due websites, scheduled Supabase/GitHub scans, platform jobs, outbox retries, and weekly digests. */
 export async function runWorkerTick(db, { logger = console, ...opts } = {}) {
   const siteResults = await runDueScans(db);
   for (const result of siteResults) {
@@ -189,15 +193,23 @@ export async function runWorkerTick(db, { logger = console, ...opts } = {}) {
       logger.log?.(`enqueued ${scheduledSupabase.length} scheduled Supabase scan(s)`);
     }
   } catch (err) {
-    // The schedule RPC may not exist until the scheduled-supabase migration runs.
     logger.error?.("scheduled Supabase enqueue failed:", err.message);
+  }
+
+  let scheduledGitHub = [];
+  try {
+    scheduledGitHub = await enqueueDueGitHubScans(db);
+    if (scheduledGitHub.length) {
+      logger.log?.(`enqueued ${scheduledGitHub.length} scheduled GitHub scan(s)`);
+    }
+  } catch (err) {
+    logger.error?.("scheduled GitHub enqueue failed:", err.message);
   }
 
   let jobs = [];
   try {
     jobs = await runPlatformScanJobs(db, { logger, ...opts });
   } catch (err) {
-    // The jobs table may not exist until the platform migration runs.
     logger.error?.("platform jobs tick failed:", err.message);
   }
   for (const job of jobs) {
@@ -208,7 +220,26 @@ export async function runWorkerTick(db, { logger = console, ...opts } = {}) {
     );
   }
 
-  return { siteResults, scheduledSupabase, jobs };
+  let retriedAlerts = [];
+  try {
+    retriedAlerts = await processAlertDeliveries(db, opts);
+  } catch (err) {
+    logger.error?.("alert outbox tick failed:", err.message);
+  }
+
+  let digests = [];
+  try {
+    digests = await runDueWeeklyDigests(db, {
+      appUrl: opts.appUrl ?? process.env.BULWARK_APP_URL ?? "http://localhost:8443",
+      fetchImpl: opts.fetchImpl,
+      env: opts.env,
+      logger,
+    });
+  } catch (err) {
+    logger.error?.("weekly digest tick failed:", err.message);
+  }
+
+  return { siteResults, scheduledSupabase, scheduledGitHub, jobs, retriedAlerts, digests };
 }
 
 if (process.argv[1]?.endsWith("worker.mjs")) {

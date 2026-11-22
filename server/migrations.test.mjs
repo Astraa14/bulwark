@@ -188,3 +188,23 @@ test("scheduled Supabase and alert channels migration is idempotent and service-
   assert.match(sql, /revoke all on function public\.enqueue_due_supabase_scans[\s\S]*?from public, anon, authenticated/i);
   assert.match(sql, /grant execute on function public\.enqueue_due_supabase_scans[\s\S]*?to service_role/i);
 });
+
+test("phase 1-3 migration adds outbox, snooze, GitHub schedules, weekly digest, and site stack safely", async () => {
+  const sql = await readFile(
+    path.join(migrationsDir, "20261122010000_phase1_to_3_features.sql"),
+    "utf8",
+  );
+
+  assert.match(sql, /create table if not exists public\.alert_deliveries/i);
+  assert.match(sql, /alter table public\.alert_deliveries enable row level security/i);
+  assert.match(sql, /create or replace function public\.claim_alert_deliveries/i);
+  assert.match(sql, /grant execute on function public\.claim_alert_deliveries[\s\S]*?to service_role/i);
+  assert.match(sql, /add column if not exists ignored_until timestamptz/i);
+  assert.match(sql, /add column if not exists triage_note text/i);
+  assert.match(sql, /grant update \(status, ignored_until, triage_note\)/i);
+  assert.match(sql, /create or replace function public\.enqueue_due_github_scans/i);
+  assert.match(sql, /grant execute on function public\.enqueue_due_github_scans[\s\S]*?to service_role/i);
+  assert.match(sql, /add column if not exists weekly_digest_enabled boolean/i);
+  assert.match(sql, /add column if not exists stack text/i);
+  assert.match(sql, /grant update \(stack\) on public\.sites to authenticated/i);
+});

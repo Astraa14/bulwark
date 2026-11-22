@@ -86,25 +86,39 @@ test("scan ids are never derived from the site id", async () => {
   assert.notEqual(calls[0].p_idempotency_key, SITE_ID);
 });
 
-test("runWorkerTick enqueues due Supabase scans before running platform jobs", async () => {
+test("runWorkerTick enqueues due Supabase & GitHub scans, runs platform jobs, and drains alert outbox", async () => {
   const order = [];
   const db = createFakeDb({
-    tables: { sites: [] },
+    tables: { sites: [], user_settings: [] },
     rpcHandlers: {
       enqueue_due_supabase_scans: () => {
         order.push("enqueue_due_supabase_scans");
         return { data: [{ id: "job-sb-1" }], error: null };
       },
+      enqueue_due_github_scans: () => {
+        order.push("enqueue_due_github_scans");
+        return { data: [{ id: "job-gh-1" }], error: null };
+      },
       claim_platform_scan_jobs: () => {
         order.push("claim_platform_scan_jobs");
+        return { data: [], error: null };
+      },
+      claim_alert_deliveries: () => {
+        order.push("claim_alert_deliveries");
         return { data: [], error: null };
       },
     },
   });
 
   const out = await runWorkerTick(db, { logger: { log() {}, error() {} } });
-  assert.deepEqual(order, ["enqueue_due_supabase_scans", "claim_platform_scan_jobs"]);
+  assert.deepEqual(order, [
+    "enqueue_due_supabase_scans",
+    "enqueue_due_github_scans",
+    "claim_platform_scan_jobs",
+    "claim_alert_deliveries",
+  ]);
   assert.equal(out.scheduledSupabase.length, 1);
+  assert.equal(out.scheduledGitHub.length, 1);
 });
 
 test("runWorkerTick still runs platform jobs if the scheduled-Supabase RPC is not migrated yet", async () => {

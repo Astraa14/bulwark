@@ -515,3 +515,157 @@ test("POST /api/alerts/test validates and dispatches Discord and Email test aler
 
   assert.deepEqual(fetched, [discordUrl, "https://api.resend.com/emails"]);
 });
+
+test("POST /api/findings/:id/triage snoozes and saves notes with tenant isolation", async () => {
+  const db = createFakeDb({
+    tables: {
+      findings: [
+        { id: "find-a", user_id: "user-a", site_id: null, status: "open", title: "A" },
+        { id: "find-b", user_id: "user-b", site_id: null, status: "open", title: "B" },
+      ],
+    },
+  });
+  const app = createApp({ db, serveStatic: false });
+
+  await withServer(app, async (base) => {
+    const ok = await fetch(`${base}/api/findings/find-a/triage`, {
+      method: "POST",
+      headers: { authorization: "Bearer token-a", "content-type": "application/json" },
+      body: JSON.stringify({ snoozeDays: 30, triageNote: "Waiting on vendor patch" }),
+    });
+    assert.equal(ok.status, 200);
+    const json = await ok.json();
+    assert.equal(json.finding.status, "ignored");
+    assert.ok(json.finding.ignored_until);
+    assert.equal(json.finding.triage_note, "Waiting on vendor patch");
+
+    const bad = await fetch(`${base}/api/findings/find-a/triage`, {
+      method: "POST",
+      headers: { authorization: "Bearer token-a", "content-type": "application/json" },
+      body: JSON.stringify({ snoozeDays: 999 }),
+    });
+    assert.equal(bad.status, 400);
+
+    const foreign = await fetch(`${base}/api/findings/find-b/triage`, {
+      method: "POST",
+      headers: { authorization: "Bearer token-a", "content-type": "application/json" },
+      body: JSON.stringify({ snoozeDays: 7 }),
+    });
+    assert.equal(foreign.status, 404);
+  });
+});
+
+test("POST /api/findings/:id/recheck re-scans a GitHub finding and reports resolved status", async () => {
+  const fixture = createGitHubFetch({
+    owner: "octo",
+    repo: "repo",
+    files: [{ path: "README.md", content: "# fixed" }],
+  });
+  const db = createFakeDb({
+    tables: {
+      github_connections: [connection()],
+      findings: [
+        {
+          id: "gh-find-1",
+          user_id: "user-a",
+          site_id: null,
+          platform: "github",
+          connection_id: CONN_A,
+          resource: "octo/repo",
+          check_key: "secret_stripe",
+          title: "Leaked Stripe key",
+          severity: "critical",
+          status: "open",
+        },
+      ],
+    },
+    rpcHandlers: {
+      persist_platform_scan_result: (args, fakeDb) => {
+        const rows = fakeDb.tables.get("findings") ?? [];
+        for (const r of rows) {
+          if (r.id === "gh-find-1" && (args.p_findings ?? []).length === 0) r.status = "resolved";
+        }
+        return {
+          data: { scanId: args.p_scan_id, duplicate: false, newFindings: [], reopenedFindings: [] },
+          error: null,
+        };
+      },
+    },
+  });
+  const app = createApp({ db, fetchImpl: fixture.fetchImpl, serveStatic: false });
+
+  await withServer(app, async (base) => {
+    const res = await fetch(`${base}/api/findings/gh-find-1/recheck`, {
+      method: "POST",
+      headers: { authorization: "Bearer token-a" },
+    });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.resolved, true);
+    assert.equal(json.status, "resolved");
+
+    const foreign = await fetch(`${base}/api/findings/gh-find-1/recheck`, {
+      method: "POST",
+      headers: { authorization: "Bearer token-b" },
+    });
+    assert.equal(foreign.status, 404);
+  });
+});
+
+test("GitHub per-repo schedules, alert deliveries, and copilot brief endpoints enforce ownership", async () => {
+  const db = createFakeDb({
+    tables: {
+      github_connections: [connection()],
+      github_repositories: [],
+      alert_deliveries: [
+        { id: "d1", user_id: "user-a", channel: "slack", kind: "finding", target_label: "acme.dev", finding_count: 1, status: "sent", attempts: 1, created_at: "2026-11-22T00:00:00Z" },
+        { id: "d2", user_id: "user-b", channel: "slack", kind: "finding", target_label: "other.dev", finding_count: 1, status: "sent", attempts: 1, created_at: "2026-11-22T00:00:00Z" },
+      ],
+      sites: [{ id: "s1", user_id: "user-a", domain: "acme.dev", status: "verified" }],
+      findings: [
+        { id: "f1", user_id: "user-a", site_id: "s1", check_key: "exposed_env", title: "Exposed .env", severity: "critical", status: "open", last_seen_at: "2026-11-22T00:00:00Z" },
+      ],
+      api_keys: [],
+    },
+  });
+  const app = createApp({ db, serveStatic: false });
+
+  await withServer(app, async (base) => {
+    const saveSched = await fetch(`${base}/api/connections/github/${CONN_A}/schedule`, {
+      method: "PUT",
+      headers: { authorization: "Bearer token-a", "content-type": "application/json" },
+      body: JSON.stringify({ owner: "octo", repo: "repo", autoScanEnabled: true, scanIntervalMinutes: 1440 }),
+    });
+    assert.equal(saveSched.status, 200);
+    assert.equal((await saveSched.json()).schedule.autoScanEnabled, true);
+
+    const listSched = await fetch(`${base}/api/connections/github/${CONN_A}/schedules`, {
+      headers: { authorization: "Bearer token-a" },
+    });
+    assert.equal(listSched.status, 200);
+    assert.equal((await listSched.json()).schedules.length, 1);
+
+    const foreignSched = await fetch(`${base}/api/connections/github/${CONN_A}/schedule`, {
+      method: "PUT",
+      headers: { authorization: "Bearer token-b", "content-type": "application/json" },
+      body: JSON.stringify({ owner: "octo", repo: "repo", autoScanEnabled: true, scanIntervalMinutes: 1440 }),
+    });
+    assert.equal(foreignSched.status, 404);
+
+    const deliveries = await fetch(`${base}/api/alerts/deliveries`, {
+      headers: { authorization: "Bearer token-a" },
+    });
+    assert.equal(deliveries.status, 200);
+    assert.deepEqual((await deliveries.json()).deliveries.map((d) => d.id), ["d1"]);
+
+    const brief = await fetch(`${base}/api/copilot/brief`, {
+      method: "POST",
+      headers: { authorization: "Bearer token-a", "content-type": "application/json" },
+      body: JSON.stringify({ useAi: false }),
+    });
+    assert.equal(brief.status, 200);
+    const briefJson = await brief.json();
+    assert.equal(briefJson.generatedBy, "deterministic");
+    assert.equal(briefJson.topItems[0].id, "f1");
+  });
+});

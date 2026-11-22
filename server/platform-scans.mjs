@@ -364,3 +364,10 @@ export async function enqueueDueSupabaseScans(db, { limit = 10 } = {}) {
   if (error) throw new Error(`enqueue due supabase scans: ${error.message}`);
   return Array.isArray(data) ? data : [];
 }
+
+/** Enqueue scheduled scans for GitHub repositories opted into periodic scans. */
+export async function enqueueDueGitHubScans(db, { limit = 10 } = {}) {
+  const { data, error } = await db.rpc("enqueue_due_github_scans", { p_limit: limit });
+  if (error) throw new Error(`enqueue due github scans: ${error.message}`);
+  return Array.isArray(data) ? data : [];
+}

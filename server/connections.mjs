@@ -169,3 +169,90 @@ export async function updateSupabaseSchedule(db, userId, id, patch = {}) {
   }
   return publicConnection(data, "supabase");
 }
+
+export async function listGitHubSchedules(db, userId, connectionId) {
+  const { data, error } = await db
+    .from("github_repositories")
+    .select(
+      "id, owner, name, last_scanned_commit, last_scanned_at, auto_scan_enabled, scan_interval_minutes, next_scan_at",
+    )
+    .eq("user_id", userId)
+    .eq("connection_id", connectionId)
+    .order("name", { ascending: true });
+  if (error) {
+    if (/auto_scan_enabled|schema cache/i.test(error.message)) return [];
+    throw new Error(`load github schedules: ${error.message}`);
+  }
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    owner: row.owner,
+    repo: row.name,
+    fullName: `${row.owner}/${row.name}`,
+    lastScannedCommit: row.last_scanned_commit ?? null,
+    lastScannedAt: row.last_scanned_at ?? null,
+    autoScanEnabled: row.auto_scan_enabled === true,
+    scanIntervalMinutes: row.scan_interval_minutes ?? 1440,
+    nextScanAt: row.next_scan_at ?? null,
+  }));
+}
+
+export async function updateGitHubSchedule(
+  db,
+  userId,
+  connectionId,
+  { owner, repo, autoScanEnabled, scanIntervalMinutes } = {},
+) {
+  const { data: conn, error: connErr } = await db
+    .from("github_connections")
+    .select("id")
+    .eq("id", connectionId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (connErr) throw new Error(`load github_connections: ${connErr.message}`);
+  if (!conn) return null;
+
+  const cleanOwner = String(owner ?? "").trim();
+  const cleanRepo = String(repo ?? "").trim();
+  if (!cleanOwner || !cleanRepo) throw new Error("Repository owner and name are required.");
+
+  const minutes = scanIntervalMinutes !== undefined ? Number(scanIntervalMinutes) : 1440;
+  if (!Number.isFinite(minutes) || minutes < 360 || minutes > 10080) {
+    throw new Error("GitHub scan interval must be between 6 hours and 7 days.");
+  }
+  const rounded = Math.round(minutes);
+  const enabled = Boolean(autoScanEnabled);
+
+  const { data, error } = await db
+    .from("github_repositories")
+    .upsert(
+      {
+        user_id: userId,
+        connection_id: connectionId,
+        owner: cleanOwner,
+        name: cleanRepo,
+        auto_scan_enabled: enabled,
+        scan_interval_minutes: rounded,
+        next_scan_at: enabled ? new Date(Date.now() + rounded * 60_000).toISOString() : null,
+      },
+      { onConflict: "connection_id,owner,name" },
+    )
+    .select("*")
+    .single();
+  if (error) {
+    if (/auto_scan_enabled|scan_interval_minutes|next_scan_at/i.test(error.message)) {
+      throw new Error(
+        "Scheduled GitHub scan columns are not set up yet. Run supabase/apply_all.sql in Supabase.",
+      );
+    }
+    throw new Error(`update github schedule: ${error.message}`);
+  }
+  return {
+    id: data.id,
+    owner: data.owner,
+    repo: data.name,
+    fullName: `${data.owner}/${data.name}`,
+    autoScanEnabled: data.auto_scan_enabled === true,
+    scanIntervalMinutes: data.scan_interval_minutes ?? rounded,
+    nextScanAt: data.next_scan_at ?? null,
+  };
+}

@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { decrypt } from "./crypto.mjs";
-import { explainWithProvider } from "./ai.mjs";
+import {
+  buildDeterministicBrief,
+  explainWithProvider,
+  generateWorkspaceBriefWithProvider,
+} from "./ai.mjs";
 import {
   getSettings,
   saveSettings,
@@ -14,6 +18,8 @@ import {
   isDiscordWebhookUrl,
   isValidAlertEmail,
   isEmailDeliveryConfigured,
+  listAlertDeliveries,
+  sendWeeklyDigestForUser,
 } from "./alerts.mjs";
 import { fetchPageSample } from "./checks.mjs";
 import { addKey, deleteKey, listKeys, markKeyUsed, resolveKey } from "./keys.mjs";
@@ -21,8 +27,10 @@ import {
   addConnection,
   deleteConnection,
   listConnections,
+  listGitHubSchedules,
   resolveConnection,
   setWebhookSecret,
+  updateGitHubSchedule,
   updateSupabaseSchedule,
 } from "./connections.mjs";
 import { assertRepoCoordinates, checkRepoAccess, listGitHubRepos } from "./github.mjs";
@@ -542,6 +550,38 @@ export function createApp({
     }),
   );
 
+  app.get(
+    "/api/connections/github/:id/schedules",
+    requireUser,
+    wrap(async (req, res) => {
+      const conn = await resolveConnection(db, req.user.id, req.params.id, "github_connections");
+      if (!conn) return res.status(404).json({ error: "GitHub connection not found" });
+      const schedules = await listGitHubSchedules(db, req.user.id, req.params.id);
+      res.json({ schedules });
+    }),
+  );
+
+  app.put(
+    "/api/connections/github/:id/schedule",
+    requireUser,
+    wrap(async (req, res) => {
+      const owner = String(req.body?.owner ?? "").trim();
+      const repo = String(req.body?.repo ?? "").trim();
+      try {
+        assertRepoCoordinates(owner, repo);
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
+      try {
+        const schedule = await updateGitHubSchedule(db, req.user.id, req.params.id, req.body ?? {});
+        if (!schedule) return res.status(404).json({ error: "GitHub connection not found" });
+        res.json({ ok: true, schedule });
+      } catch (err) {
+        res.status(400).json({ error: err.message });
+      }
+    }),
+  );
+
   // -------------------------------------------------------------------------
   // Platform findings (GitHub / Supabase scans, site_id = null)
   // -------------------------------------------------------------------------
@@ -558,6 +598,171 @@ export function createApp({
         .limit(200);
       if (error) throw new Error(`load platform findings: ${error.message}`);
       res.json({ findings: data ?? [] });
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // Finding triage (status, snooze expiry, note) + 1-click re-check loop
+  // -------------------------------------------------------------------------
+  app.post(
+    "/api/findings/:id/triage",
+    requireUser,
+    wrap(async (req, res) => {
+      const findingId = req.params.id;
+      const { data: finding, error: loadErr } = await db
+        .from("findings")
+        .select("*, sites(id, domain, user_id)")
+        .eq("id", findingId)
+        .maybeSingle();
+      if (loadErr) throw new Error(loadErr.message);
+
+      const owned =
+        finding?.user_id === req.user.id ||
+        (finding?.site_id && finding?.sites?.user_id === req.user.id);
+      if (!finding || !owned) {
+        return res.status(404).json({ error: "Finding not found" });
+      }
+
+      const patch = {};
+      if (req.body?.status !== undefined) {
+        const status = String(req.body.status);
+        if (!["open", "acknowledged", "resolved", "ignored"].includes(status)) {
+          return res.status(400).json({ error: "Invalid finding status." });
+        }
+        patch.status = status;
+        if (status !== "ignored") patch.ignored_until = null;
+      }
+
+      if (req.body?.snoozeDays !== undefined && req.body?.snoozeDays !== null) {
+        const days = Number(req.body.snoozeDays);
+        if (!Number.isFinite(days) || days < 1 || days > 365) {
+          return res.status(400).json({ error: "Snooze duration must be between 1 and 365 days." });
+        }
+        patch.status = "ignored";
+        patch.ignored_until = new Date(Date.now() + Math.round(days) * 86_400_000).toISOString();
+      } else if (req.body?.ignoredUntil === null) {
+        patch.ignored_until = null;
+      }
+
+      if (req.body?.triageNote !== undefined) {
+        const note = String(req.body.triageNote ?? "").trim();
+        if (note.length > 500) {
+          return res.status(400).json({ error: "Triage note must be 500 characters or fewer." });
+        }
+        patch.triage_note = note || null;
+      }
+
+      if (!Object.keys(patch).length) {
+        return res.status(400).json({ error: "No triage fields provided." });
+      }
+
+      const { data: updated, error: updateErr } = await db
+        .from("findings")
+        .update(patch)
+        .eq("id", finding.id)
+        .select("*")
+        .single();
+      if (updateErr) {
+        if (/ignored_until|triage_note/i.test(updateErr.message)) {
+          return res.status(400).json({
+            error: "Snooze and triage note columns are not migrated yet. Run supabase/apply_all.sql.",
+          });
+        }
+        throw new Error(updateErr.message);
+      }
+      res.json({ ok: true, finding: updated });
+    }),
+  );
+
+  app.post(
+    "/api/findings/:id/recheck",
+    requireUser,
+    scanLimiter,
+    wrap(async (req, res) => {
+      const findingId = req.params.id;
+      const { data: finding, error: loadErr } = await db
+        .from("findings")
+        .select("*, sites(id, domain, status, verify_token, scan_interval_minutes, page_sample, user_id)")
+        .eq("id", findingId)
+        .maybeSingle();
+      if (loadErr) throw new Error(loadErr.message);
+
+      const owned =
+        finding?.user_id === req.user.id ||
+        (finding?.site_id && finding?.sites?.user_id === req.user.id);
+      if (!finding || !owned) {
+        return res.status(404).json({ error: "Finding not found" });
+      }
+
+      let scanOut;
+      if (finding.site_id) {
+        const site = finding.sites ?? (await ownedSite(req.user.id, finding.site_id));
+        if (!site) return res.status(404).json({ error: "Site not found" });
+        if (site.status !== "verified") {
+          return res.status(409).json({ error: "Verify this site before re-checking findings." });
+        }
+        scanOut = await withScanSlot(() => scanSite(db, site));
+      } else if (finding.platform === "supabase" && finding.connection_id) {
+        const conn = await resolveConnection(
+          db,
+          req.user.id,
+          finding.connection_id,
+          "supabase_connections",
+        );
+        if (!conn) return res.status(404).json({ error: "Supabase connection no longer exists." });
+        scanOut = await withScanSlot(() =>
+          scanSupabaseConnection({
+            db,
+            userId: req.user.id,
+            connection: conn,
+            fetchImpl,
+            appUrl,
+            logger,
+          }),
+        );
+      } else if (finding.platform === "github" && finding.connection_id && finding.resource) {
+        const conn = await resolveConnection(
+          db,
+          req.user.id,
+          finding.connection_id,
+          "github_connections",
+        );
+        if (!conn) return res.status(404).json({ error: "GitHub connection no longer exists." });
+        const [owner, repo] = String(finding.resource).split("/");
+        assertRepoCoordinates(owner, repo);
+        scanOut = await withScanSlot(() =>
+          scanGitHubConnection({
+            db,
+            userId: req.user.id,
+            connection: conn,
+            owner,
+            repo,
+            ref: finding.ref ?? null,
+            fetchImpl,
+            osvFetchImpl,
+            appUrl,
+            logger,
+          }),
+        );
+      } else {
+        return res.status(400).json({ error: "This finding cannot be automatically re-checked." });
+      }
+
+      const { data: refreshed } = await db
+        .from("findings")
+        .select("id, status, last_seen_at")
+        .eq("id", finding.id)
+        .maybeSingle();
+
+      const status = refreshed?.status ?? finding.status;
+      res.json({
+        ok: true,
+        resolved: status === "resolved",
+        status,
+        scanStatus: scanOut?.status ?? "completed",
+        scanId: scanOut?.scanId ?? null,
+        error: scanOut?.error ?? null,
+      });
     }),
   );
 
@@ -719,7 +924,7 @@ export function createApp({
 
       const { data: finding, error } = await db
         .from("findings")
-        .select("*, sites(id, domain, user_id)")
+        .select("*, sites(id, domain, stack, user_id)")
         .eq("id", findingId)
         .maybeSingle();
 
@@ -745,7 +950,7 @@ export function createApp({
       if (!key) {
         return res
           .status(400)
-          .json({ error: "Add an OpenAI or Anthropic key before using AI explanations." });
+          .json({ error: "Add an OpenAI, Anthropic, or Gemini key before using AI explanations." });
       }
 
       const subject =
@@ -761,7 +966,9 @@ export function createApp({
           apiKey: key.apiKey,
           model: key.model,
           domain: subject,
+          stack: finding.sites?.stack ?? null,
           finding,
+          fetchImpl,
         });
       } catch (err) {
         return res.status(422).json({ error: err.message });
@@ -784,6 +991,84 @@ export function createApp({
         cached: false,
         explainedAt: new Date().toISOString(),
       });
+    }),
+  );
+
+  app.post(
+    "/api/copilot/brief",
+    requireUser,
+    explainLimiter,
+    wrap(async (req, res) => {
+      const [sitesRes, findingsRes] = await Promise.all([
+        db.from("sites").select("id, domain, status").eq("user_id", req.user.id),
+        db
+          .from("findings")
+          .select("id, site_id, platform, resource, check_key, title, severity, status, detail, remediation, last_seen_at")
+          .eq("user_id", req.user.id)
+          .order("last_seen_at", { ascending: false })
+          .limit(200),
+      ]);
+      const sites = sitesRes.data ?? [];
+      const findings = findingsRes.data ?? [];
+
+      const wantAi = req.body?.useAi !== false;
+      const key = wantAi ? await resolveKey(db, req.user.id) : null;
+      if (!key) {
+        const deterministic = buildDeterministicBrief({ sites, findings });
+        return res.json({
+          ok: true,
+          ...deterministic,
+          model: null,
+          generatedBy: "deterministic",
+        });
+      }
+
+      try {
+        const brief = await generateWorkspaceBriefWithProvider({
+          provider: key.provider,
+          apiKey: key.apiKey,
+          model: key.model,
+          sites,
+          findings,
+          fetchImpl,
+        });
+        await markKeyUsed(db, key.id);
+        return res.json({ ok: true, ...brief });
+      } catch (err) {
+        return res.status(422).json({ error: err.message });
+      }
+    }),
+  );
+
+  app.get(
+    "/api/alerts/deliveries",
+    requireUser,
+    wrap(async (req, res) => {
+      const deliveries = await listAlertDeliveries(db, req.user.id);
+      res.json({ deliveries });
+    }),
+  );
+
+  app.post(
+    "/api/alerts/digest/test",
+    requireUser,
+    alertLimiter,
+    wrap(async (req, res) => {
+      try {
+        const out = await sendWeeklyDigestForUser(db, req.user.id, {
+          appUrl,
+          fetchImpl,
+          force: true,
+        });
+        if (!out.sent) {
+          return res.status(400).json({
+            error: "Enable at least one alert channel (Slack, Discord, or Email) first.",
+          });
+        }
+        res.json({ ok: true, channels: out.channels, summary: out.summary });
+      } catch (err) {
+        res.status(422).json({ error: err.message });
+      }
     }),
   );
 

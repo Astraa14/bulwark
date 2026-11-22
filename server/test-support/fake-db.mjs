@@ -326,6 +326,8 @@ export function createFakeDb({
       }
       if (name === "claim_platform_scan_jobs") return { data: [], error: null };
       if (name === "enqueue_due_supabase_scans") return { data: [], error: null };
+      if (name === "enqueue_due_github_scans") return { data: [], error: null };
+      if (name === "claim_alert_deliveries") return { data: [], error: null };
       if (name === "claim_site_scan") return { data: true, error: null };
       if (name === "release_site_scan") return { data: null, error: null };
       return { data: null, error: null };
