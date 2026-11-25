@@ -25,8 +25,9 @@ function scan(fixture, options = {}) {
 }
 
 test("reports every credential match and links to the exact commit line", async () => {
+  const fakeStripe = ["sk_live", "ABCdef1234567890abcdef"].join("_");
   const content = [
-    "const stripe = 'sk_live_ABCdef1234567890abcdef';",
+    `const stripe = '${fakeStripe}';`,
     "const google = 'AIzaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';",
   ].join("\n");
   const fixture = createGitHubFetch({ files: [{ path: "src/config.js", content }] });
@@ -43,7 +44,7 @@ test("reports every credential match and links to the exact commit line", async 
     `https://github.com/${OWNER}/${REPO}/blob/${fixture.headSha}/src/config.js#L1`,
   );
   assert.ok(stripe[0].evidence.includes("sk_l…cdef"), "evidence is redacted");
-  assert.ok(!stripe[0].evidence.includes("sk_live_ABCdef1234567890abcdef"));
+  assert.ok(!stripe[0].evidence.includes(fakeStripe));
   assert.equal(stripe[0].confidence, "high");
   assert.match(stripe[0].what_it_does_not_prove, /does not prove/i);
 });
@@ -459,6 +460,7 @@ test("checks supabase/migrations/*.sql across files for tables missing RLS", asy
 
 test("scans bounded recent commit history for leaked secrets and flags workflow write-all / unpinned actions", async () => {
   const oldSha = commitSha("old-leak-commit");
+  const fakeStripe = ["sk_live", "ABCdef1234567890abcdef"].join("_");
   const fixture = createGitHubFetch({
     files: [
       { path: "README.md", content: "# clean head" },
@@ -480,7 +482,7 @@ test("scans bounded recent commit history for leaked secrets and flags workflow 
         files: [
           {
             filename: "src/payments.ts",
-            patch: "@@ -0,0 +1,2 @@\n+const stripe = 'sk_live_ABCdef1234567890abcdef';\n",
+            patch: `@@ -0,0 +1,2 @@\n+const stripe = '${fakeStripe}';\n`,
           },
         ],
       },
@@ -493,7 +495,7 @@ test("scans bounded recent commit history for leaked secrets and flags workflow 
   assert.ok(hist, "should detect Stripe key in recent commit history");
   assert.equal(hist.severity, "critical");
   assert.equal(hist.url, `https://github.com/${OWNER}/${REPO}/commit/${oldSha}`);
-  assert.ok(!hist.evidence.includes("sk_live_ABCdef1234567890abcdef"), "historical evidence redacted");
+  assert.ok(!hist.evidence.includes(fakeStripe), "historical evidence redacted");
   assert.equal(result.coverage.historyCommitsScanned, 1);
 
   assert.ok(result.findings.some((f) => f.check_key === "workflow_write_all_permissions"));

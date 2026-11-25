@@ -1,6 +1,6 @@
 {
-  "title": "Bulwark — AI security monitoring",
-  "description": "Bulwark watches your websites 24/7 for malware, exposed secrets, and downtime, explaining every threat in plain English using your own AI key.",
+  "title": "Bulwark — Security posture for builders who ship",
+  "description": "External security posture and Safe-to-Ship monitor for AI-built web apps, GitHub repositories, and Supabase projects.",
   "language": "en",
   "robots": {
     "index": true

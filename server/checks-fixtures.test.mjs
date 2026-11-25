@@ -384,7 +384,8 @@ test("multiple finding types in one scan all reported", async () => {
       });
     }
     if (url === "https://example.com/.env") {
-      return new Response("STRIPE_SECRET_KEY=sk_live_abc123xyz45678901234\n", {
+      const fakeStripe = ["sk_live", "abc123xyz45678901234"].join("_");
+      return new Response(`STRIPE_SECRET_KEY=${fakeStripe}\n`, {
         status: 200,
         headers: { "content-type": "text/plain" },
       });

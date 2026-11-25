@@ -1,8 +1,16 @@
 {
-  "name": "figma-make-app",
+  "name": "bulwark",
   "version": "1.0.0",
+  "description": "External security posture and Safe-to-Ship monitor for AI-built web apps, GitHub repositories, and Supabase projects.",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Astraa14/bulwark.git"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -12,7 +20,7 @@
     "api": "node --env-file=.env.local server/api.mjs",
     "worker": "node --env-file=.env.local server/worker.mjs",
     "start": "node server/start.mjs",
-    "test": "node --test \"server/**/*.test.mjs\"",
+    "test": "node --experimental-strip-types --test \"server/**/*.test.mjs\"",
     "db:apply-all": "node scripts/build-apply-all.mjs",
     "db:check": "node scripts/build-apply-all.mjs --check"
   },
