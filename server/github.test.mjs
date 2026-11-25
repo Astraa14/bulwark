@@ -589,3 +589,96 @@ test("analyzes large lockfiles over 500 KB up to the 3 MB lockfile cap", async (
   assert.equal(result.coverage.skippedLarge, 0);
   assert.ok(result.findings.some((f) => f.check_key === "dep_vuln_lodash"));
 });
+
+test("detects vibe-code footguns: unauthenticated AI routes, unsigned webhooks, verify_jwt=false Edge Functions, and missing .env in .gitignore", async () => {
+  const fixture = createGitHubFetch({
+    files: [
+      {
+        path: "package.json",
+        content: JSON.stringify({ name: "vibe-saas", dependencies: { next: "15.0.0" } }),
+      },
+      {
+        path: ".gitignore",
+        content: "node_modules/\n.next/\ndist/\n",
+      },
+      {
+        path: "app/api/generate/route.ts",
+        content: [
+          'import OpenAI from "openai";',
+          "const client = new OpenAI();",
+          "export async function POST(req: Request) {",
+          "  const { prompt } = await req.json();",
+          '  const res = await client.responses.create({ model: "gpt-4.1-mini", input: prompt });',
+          "  return Response.json(res);",
+          "}",
+        ].join("\n"),
+      },
+      {
+        path: "app/api/chat-safe/route.ts",
+        content: [
+          'import OpenAI from "openai";',
+          "export async function POST(req: Request) {",
+          "  const user = await supabase.auth.getUser();",
+          "  if (!user) return new Response('Unauthorized', { status: 401 });",
+          "  return Response.json({ ok: true });",
+          "}",
+        ].join("\n"),
+      },
+      {
+        path: "app/api/webhooks/stripe/route.ts",
+        content: [
+          'import Stripe from "stripe";',
+          "export async function POST(req: Request) {",
+          "  const event = await req.json();",
+          '  if (event.type === "checkout.session.completed") {',
+          "    await upgradeUserToPro(event.data.object.client_reference_id);",
+          "  }",
+          "  return Response.json({ received: true });",
+          "}",
+        ].join("\n"),
+      },
+      {
+        path: "app/api/webhooks/stripe-safe/route.ts",
+        content: [
+          'import Stripe from "stripe";',
+          "export async function POST(req: Request) {",
+          "  const raw = await req.text();",
+          '  const sig = req.headers.get("stripe-signature")!;',
+          "  const event = stripe.webhooks.constructEvent(raw, sig, process.env.STRIPE_WEBHOOK_SECRET!);",
+          "  return Response.json({ id: event.id });",
+          "}",
+        ].join("\n"),
+      },
+      {
+        path: "supabase/config.toml",
+        content: "[functions.admin-sync]\nverify_jwt = false\n",
+      },
+      {
+        path: "supabase/functions/admin-sync/index.ts",
+        content: [
+          'import { createClient } from "@supabase/supabase-js";',
+          'const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);',
+          "Deno.serve(async (req) => {",
+          '  await admin.from("profiles").update({ plan: "pro" });',
+          "  return new Response('ok');",
+          "});",
+        ].join("\n"),
+      },
+    ],
+  });
+
+  const result = await scan(fixture);
+  const keys = result.findings.map((f) => `${f.check_key}:${f.affected_resource}`);
+  assert.ok(keys.includes("ai_route_without_auth:app/api/generate/route.ts"));
+  assert.ok(!keys.includes("ai_route_without_auth:app/api/chat-safe/route.ts"));
+  assert.ok(
+    keys.includes("webhook_missing_signature_verification:app/api/webhooks/stripe/route.ts"),
+  );
+  assert.ok(
+    !keys.includes("webhook_missing_signature_verification:app/api/webhooks/stripe-safe/route.ts"),
+  );
+  assert.ok(
+    keys.includes("supabase_function_unverified_jwt:supabase/functions/admin-sync/index.ts"),
+  );
+  assert.ok(keys.includes("gitignore_missing_env:.gitignore"));
+});

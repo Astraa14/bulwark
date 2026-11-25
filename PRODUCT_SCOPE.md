@@ -20,7 +20,7 @@ Bulwark is an **external security posture monitor** for small products and "vibe
 | Directory listing | Index-of pages | That no other directories are exposed |
 | Defacement | Homepage text drift vs baseline, defacement markers | That no deeper compromise exists |
 | Discovery | robots.txt, sitemap.xml, security.txt | That no hidden routes exist |
-| Secrets & source maps | Hardcoded keys/tokens in homepage and same-host JS bundles, plus publicly downloadable `.js.map` source maps | That no secrets exist in server code or other assets |
+| Secrets & source maps | Hardcoded keys/tokens (`sk_live_`, `pk_test_` in prod, etc.) in homepage and same-host JS bundles, auto-discovered public Supabase `anon` table exposure, plus `.js.map` source maps | That no secrets exist in server code or other assets |
 | API exposure | Public `/openapi.json`, `/swagger.json`, and unauthenticated `/graphql` introspection | That other API routes are properly authorized |
 
 Every check reports one of `pass`, `finding`, `error`, or `not_checked`. A scan is `completed` only when every check reached a conclusion; otherwise it is `partial`, and the UI shows what was not checked.
@@ -38,7 +38,7 @@ A repository scan:
 - flags sensitive filenames (`.env`, private keys, database dumps, etc.; template files like `.env.example` are still scanned for real credentials);
 - flags unpinned dependency declarations;
 - queries [OSV](https://osv.dev) for **npm (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`) and Python (`requirements.txt`, `poetry.lock`, `uv.lock`)** lockfiles, sending only package names, ecosystems, and exact versions — never source code, paths, tokens, or credentials; other lockfiles are reported as unanalyzed;
-- flags container, CI, Vercel CORS, and Supabase SQL migration configuration risks (root Dockerfile user, `pull_request_target`, `permissions: write-all`, Actions pinned to mutable branches like `@main`, wildcard CORS with credentials, `supabase/migrations/*.sql` tables missing `ENABLE ROW LEVEL SECURITY`);
+- flags container, CI, Vercel CORS, Supabase SQL migration, and **vibe-code architecture** risks (root Dockerfile user, `pull_request_target`, `permissions: write-all`, Actions pinned to mutable branches like `@main`, wildcard CORS with credentials, `supabase/migrations/*.sql` tables missing `ENABLE ROW LEVEL SECURITY`, metered AI routes without auth/rate-limiting, unsigned payment/identity webhook handlers, `verify_jwt = false` Edge Functions using `service_role`, and `.gitignore` missing `.env*`);
 - supports optional per-repository scheduled scans (every 6 hours to weekly) in addition to push webhooks.
 
 It does **not** scan full historical git object packs beyond the recent commit window, issues, pull requests, releases, or server-side authorization logic. It is not a SAST engine.
@@ -47,9 +47,9 @@ It does **not** scan full historical git object packs beyond the recent commit w
 
 A connection stores the project reference (`https://<ref>.supabase.co`) and a **publishable/anon key**. Service-role keys and `sb_secret_` keys are rejected before any request.
 
-- connectivity with the publishable key;
+- connectivity with the publishable key, plus **zero-SQL-helper PostgREST `anon` API surface inspection** (OpenAPI exposed tables, custom `/rpc/*` functions, and zero-row `HEAD` count probes that detect `anon`-readable rows without reading table contents);
 - storage bucket listing; when the key cannot list buckets, storage is reported as **not checked**, not as safe;
-- RLS metadata through the optional helper at `supabase/customer/bulwark_check_rls.sql`, which each customer installs in their own project. Without it, RLS is reported as **not checked**;
+- RLS metadata through the optional helper at `supabase/customer/bulwark_check_rls.sql`, which each customer installs in their own project. Without it, policy-level RLS metadata is reported as **not checked** (while external `anon` surface checks still run);
 - optional scheduled background re-scans (default every 6 hours, configurable from hourly to weekly per connection).
 
 RLS analysis is **heuristic**: it reports tables with RLS disabled, RLS enabled with no policies (deny-by-default, low severity), and policies whose expression is the literal `true`. It does not evaluate policy expressions, role targeting, or query results. A heuristic pass does not prove data is protected.

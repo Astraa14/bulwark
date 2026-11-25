@@ -582,3 +582,70 @@ test("detects missing SPF/DMARC, public JS source maps, exposed OpenAPI docs, an
     global.fetch = originalFetch;
   }
 });
+
+test("auto-discovers public Supabase anon exposure and Stripe pk_test_ keys from live JS bundles", async () => {
+  const originalFetch = global.fetch;
+  const anonPayload = Buffer.from(JSON.stringify({ role: "anon" })).toString("base64url");
+  const headerPayload = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString(
+    "base64url",
+  );
+  const anonJwt = `${headerPayload}.${anonPayload}.sig123456789`;
+  const stripeTestPub = ["pk_test", "51NabcDEF1234567890abcdef"].join("_");
+  const sbBase = "https://vibeproj123456.supabase.co";
+
+  global.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const method = init.method ?? "GET";
+    if (url === "https://example.com/") {
+      return new Response(
+        '<!doctype html><html><head><script src="/assets/index.js"></script></head><body>Vibe App</body></html>',
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+    }
+    if (url === "https://example.com/assets/index.js") {
+      return new Response(
+        `const sbUrl = "${sbBase}"; const sbKey = "${anonJwt}"; const stripe = "${stripeTestPub}";`,
+        { status: 200, headers: { "content-type": "application/javascript" } },
+      );
+    }
+    if (url === `${sbBase}/rest/v1/`) {
+      return new Response(
+        JSON.stringify({
+          swagger: "2.0",
+          paths: {
+            "/users": { get: {} },
+            "/public_posts": { get: {} },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (method === "HEAD" && url === `${sbBase}/rest/v1/users?limit=1`) {
+      return new Response(null, { status: 200, headers: { "content-range": "0-0/19" } });
+    }
+    if (method === "HEAD" && url === `${sbBase}/rest/v1/public_posts?limit=1`) {
+      return new Response(null, { status: 200, headers: { "content-range": "*/0" } });
+    }
+    if (url.startsWith("https://cloudflare-dns.com/dns-query")) {
+      return new Response(JSON.stringify({ Status: 0, Answer: [{ data: '"v=spf1 -all"' }] }), {
+        status: 200,
+      });
+    }
+    return new Response(null, { status: 404 });
+  };
+
+  try {
+    const fakeLookup = async () => [{ address: "93.184.216.34", family: 4 }];
+    const result = await runChecks("example.com", { lookup: fakeLookup });
+    const sbLeak = result.findings.find((f) => f.check_key === "site_supabase_anon_exposure");
+    assert.ok(sbLeak, "should detect live Supabase anon table exposure via website bundle");
+    assert.equal(sbLeak.severity, "critical");
+    assert.match(sbLeak.title, /users.*19 rows/);
+
+    const pkTest = result.findings.find((f) => f.check_key === "stripe_test_key_in_production");
+    assert.ok(pkTest, "should detect Stripe pk_test_ key on production domain");
+    assert.equal(pkTest.severity, "medium");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

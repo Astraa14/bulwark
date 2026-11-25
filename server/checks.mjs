@@ -930,7 +930,11 @@ function decodeJwtRole(token) {
   }
 }
 
-function scanTextForSecrets(text, sourceUrl) {
+function isStagingDomain(domain) {
+  return /^(?:dev|staging|stage|test|testing|preview|sandbox|qa|demo)\./i.test(String(domain ?? ""));
+}
+
+function scanTextForSecrets(text, sourceUrl, domain = "") {
   const out = [];
   if (!text) return out;
   for (const pattern of SECRET_PATTERNS) {
@@ -968,6 +972,29 @@ function scanTextForSecrets(text, sourceUrl) {
       break;
     }
   }
+  if (!isStagingDomain(domain)) {
+    const stripeTestMatch = text.match(/\bpk_test_[0-9A-Za-z]{20,}\b/);
+    if (stripeTestMatch) {
+      out.push(
+        finding(
+          "stripe_test_key_in_production",
+          "Stripe test publishable key served on live domain",
+          "medium",
+          "Your live site bundles a `pk_test_…` Stripe key instead of `pk_live_…`. Real customers either cannot pay or can complete checkout with Stripe test cards without being charged.",
+          {
+            url: sourceUrl,
+            evidence: `${redactSecret(stripeTestMatch[0])} · found in ${sourceUrl.split("/").pop() || sourceUrl}`,
+            affected_resource: sourceUrl,
+            confidence: "high",
+            what_it_does_not_prove:
+              "If this domain is intentionally a sandbox or demo environment, test mode may be expected.",
+            remediation:
+              "Set your production frontend environment variable to `pk_live_…` (and keep `sk_live_…` strictly server-side).",
+          },
+        ),
+      );
+    }
+  }
   return out;
 }
 
@@ -989,6 +1016,129 @@ function collectScriptUrls(html, pageUrl) {
   return [...urls];
 }
 
+function extractPublicSupabaseTarget(texts) {
+  const urlRe = /https:\/\/([a-z0-9]{10,32})\.supabase\.co\b/gi;
+  const pubKeyRe = /\bsb_publishable_[A-Za-z0-9_-]{16,}\b/g;
+  const jwtRe = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
+
+  let projectRef = null;
+  let anonKey = null;
+
+  for (const text of texts) {
+    if (!text) continue;
+    if (!projectRef) {
+      const m = urlRe.exec(text);
+      if (m) projectRef = m[1].toLowerCase();
+      urlRe.lastIndex = 0;
+    }
+    if (!anonKey) {
+      const pub = pubKeyRe.exec(text);
+      pubKeyRe.lastIndex = 0;
+      if (pub) {
+        anonKey = pub[0];
+      } else {
+        for (const jm of text.matchAll(jwtRe)) {
+          if (decodeJwtRole(jm[0]) === "anon") {
+            anonKey = jm[0];
+            break;
+          }
+        }
+      }
+    }
+    if (projectRef && anonKey) break;
+  }
+
+  if (!projectRef || !anonKey) return null;
+  return { projectRef, baseUrl: `https://${projectRef}.supabase.co`, anonKey };
+}
+
+const SITE_SENSITIVE_SUPABASE_TABLE_RE =
+  /^(?:users?|profiles?|accounts?|customers?|members?|admins?|api[_-]?keys?|keys?|secrets?|tokens?|sessions?|orders?|payments?|invoices?|subscriptions?|billing|messages?|chats?|emails?|leads?|waitlist|webhooks?|documents?|uploads?)$/i;
+
+async function probeDiscoveredSupabaseAnonSurface({ projectRef, baseUrl, anonKey }, { lookup: customLookup } = {}) {
+  const out = [];
+  const authHeaders = {
+    apikey: anonKey,
+    authorization: `Bearer ${anonKey}`,
+    accept: "application/openapi+json, application/json",
+  };
+  const rootRes = await fetchWithTimeout(`${baseUrl}/rest/v1/`, {
+    timeout: 7000,
+    maxBytes: 1_500_000,
+    headers: authHeaders,
+    ...(customLookup ? { lookup: customLookup } : {}),
+  });
+  if (rootRes.error || !rootRes.ok || !rootRes.body) return out;
+
+  let spec;
+  try {
+    spec = JSON.parse(rootRes.body);
+  } catch {
+    return out;
+  }
+  if (!spec || (!spec.swagger && !spec.openapi) || !spec.paths || typeof spec.paths !== "object") {
+    return out;
+  }
+
+  const tables = [];
+  for (const routePath of Object.keys(spec.paths)) {
+    const m = routePath.match(/^\/([A-Za-z_][A-Za-z0-9_]*)$/);
+    if (m) {
+      tables.push({
+        name: m[1],
+        sensitive: SITE_SENSITIVE_SUPABASE_TABLE_RE.test(m[1]),
+      });
+    }
+  }
+  tables.sort((a, b) => Number(b.sensitive) - Number(a.sensitive) || a.name.localeCompare(b.name));
+
+  const probes = await Promise.all(
+    tables.slice(0, 6).map(async (table) => {
+      const res = await fetchWithTimeout(
+        `${baseUrl}/rest/v1/${encodeURIComponent(table.name)}?limit=1`,
+        {
+          method: "HEAD",
+          timeout: 6000,
+          ...(customLookup ? { lookup: customLookup } : {}),
+          headers: {
+            apikey: anonKey,
+            authorization: `Bearer ${anonKey}`,
+            prefer: "count=exact",
+          },
+        },
+      );
+      return { table, res };
+    }),
+  );
+
+  for (const { table, res } of probes) {
+    if (res.error || !res.ok) continue;
+    const rangeMatch = String(res.headers?.["content-range"] ?? "").match(/\/(\d+)\s*$/);
+    const visibleRows = rangeMatch ? Number(rangeMatch[1]) : 0;
+    if (visibleRows > 0) {
+      out.push(
+        finding(
+          "site_supabase_anon_exposure",
+          `Live Supabase table \`${table.name}\` exposes ${visibleRows} row${visibleRows === 1 ? "" : "s"} to visitors`,
+          table.sensitive ? "critical" : "high",
+          `Your website's public JavaScript bundle connects to Supabase project \`${projectRef}\` with an \`anon\` key that can read ${visibleRows} row${visibleRows === 1 ? "" : "s"} from \`public.${table.name}\` without signing in.`,
+          {
+            url: `https://supabase.com/dashboard/project/${projectRef}/auth/policies`,
+            evidence: `${projectRef}.supabase.co · HEAD /rest/v1/${table.name} · ${visibleRows} row(s) visible to anon`,
+            affected_resource: `supabase:${projectRef}:${table.name}`,
+            confidence: "high",
+            what_it_does_not_prove:
+              "Bulwark used a zero-row HEAD count probe and never downloaded table contents. If this table is intentionally public, you can acknowledge or snooze this finding.",
+            remediation: `Enable Row Level Security on \`public.${table.name}\` in Supabase project \`${projectRef}\` and scope SELECT policies to authenticated owners.`,
+          },
+        ),
+      );
+    }
+  }
+
+  return out;
+}
+
 function extractSourceMapUrl(scriptBody, scriptUrl) {
   if (!scriptBody) return null;
   // Look near the end of the bundle for sourceMappingURL comments.
@@ -1007,7 +1157,7 @@ function extractSourceMapUrl(scriptBody, scriptUrl) {
   }
 }
 
-async function checkLeakedSecretsInner(domain, page) {
+async function checkLeakedSecretsInner(domain, page, { lookup: customLookup } = {}) {
   const findings = [];
   const errors = [];
   const seen = new Set();
@@ -1019,7 +1169,7 @@ async function checkLeakedSecretsInner(domain, page) {
       findings.push(item);
     }
   };
-  add(scanTextForSecrets(page.body, page.finalUrl));
+  add(scanTextForSecrets(page.body, page.finalUrl, domain));
 
   const pageHost = new URL(page.finalUrl).host;
   const candidates = collectScriptUrls(page.body, page.finalUrl)
@@ -1046,11 +1196,21 @@ async function checkLeakedSecretsInner(domain, page) {
   );
 
   const mapUrls = new Set();
+  const inspectableTexts = [page.body];
   for (const bundle of bundleResults) {
     if (!bundle) continue;
-    add(scanTextForSecrets(bundle.body, bundle.url));
+    inspectableTexts.push(bundle.body);
+    add(scanTextForSecrets(bundle.body, bundle.url, domain));
     const mapUrl = extractSourceMapUrl(bundle.body, bundle.url);
     if (mapUrl) mapUrls.add(mapUrl);
+  }
+
+  const discoveredSupabase = extractPublicSupabaseTarget(inspectableTexts);
+  if (discoveredSupabase) {
+    const sbFindings = await probeDiscoveredSupabaseAnonSurface(discoveredSupabase, {
+      lookup: customLookup,
+    });
+    add(sbFindings);
   }
 
   // Probe referenced same-host JS source maps (.js.map) without extra fetches
@@ -1607,7 +1767,7 @@ export function checkTls(domain) {
 // Orchestrator
 // ============================================================================
 
-export async function runChecks(rawDomain, { baseline = null } = {}) {
+export async function runChecks(rawDomain, { baseline = null, lookup: customLookup } = {}) {
   const domain = normalizeDomain(rawDomain);
   const findings = [];
   const start = Date.now();
@@ -1752,7 +1912,7 @@ export async function runChecks(rawDomain, { baseline = null } = {}) {
     runCheck("exposed_files", () => checkExposedFilesInner(domain)),
     runCheck("cors", () => checkCorsInner(domain)),
     runCheck("public_discovery", () => checkDiscoveryInner(domain)),
-    runCheck("secrets", () => checkLeakedSecretsInner(domain, page)),
+    runCheck("secrets", () => checkLeakedSecretsInner(domain, page, { lookup: customLookup })),
     runCheck("api_exposure", () => checkApiExposureInner(domain)),
     runCheck("domain_registration", () => checkDomainExpiryInner(domain)),
     runCheck("dns", () => checkDnsInner(domain)),
@@ -1771,12 +1931,13 @@ export async function runChecks(rawDomain, { baseline = null } = {}) {
     register(r.key, r.outcome, r.error ?? null);
   }
 
-  // Deduplicate by check_key (keep first occurrence).
+  // Deduplicate by (check_key, affected_resource) so multi-resource checks stay distinct.
   const unique = [];
   const seen = new Set();
   for (const f of findings) {
-    if (seen.has(f.check_key)) continue;
-    seen.add(f.check_key);
+    const dedupKey = f.affected_resource ? `${f.check_key}:${f.affected_resource}` : f.check_key;
+    if (seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
     unique.push(f);
   }
 

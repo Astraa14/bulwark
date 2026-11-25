@@ -11,20 +11,36 @@ function base64url(value) {
 const ANON_KEY = `${base64url({ alg: "HS256", typ: "JWT" })}.${base64url({ role: "anon" })}.signature`;
 const SERVICE_KEY = `${base64url({ alg: "HS256", typ: "JWT" })}.${base64url({ role: "service_role" })}.signature`;
 
-function json(body, status = 200) {
+function json(body, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...extraHeaders },
   });
 }
 
-function createSupabaseFetch({ buckets = [], bucketsStatus = 200, rls = [], rlsStatus = 200 } = {}) {
+function createSupabaseFetch({
+  openapi = {},
+  headCounts = {},
+  buckets = [],
+  bucketsStatus = 200,
+  rls = [],
+  rlsStatus = 200,
+} = {}) {
   const requests = [];
   const fetchImpl = async (input, init = {}) => {
     const url = String(input);
-    requests.push({ url, method: init.method ?? "GET", body: init.body ?? null });
+    const method = init.method ?? "GET";
+    requests.push({ url, method, body: init.body ?? null });
 
-    if (url === `${PROJECT_URL}/rest/v1/`) return json({});
+    if (url === `${PROJECT_URL}/rest/v1/`) return json(openapi);
+    if (method === "HEAD" && url.startsWith(`${PROJECT_URL}/rest/v1/`)) {
+      const table = decodeURIComponent(url.slice(`${PROJECT_URL}/rest/v1/`.length).split("?")[0]);
+      const count = headCounts[table] ?? 0;
+      return new Response(null, {
+        status: 200,
+        headers: { "content-range": count > 0 ? `0-0/${count}` : `*/0` },
+      });
+    }
     if (url === `${PROJECT_URL}/storage/v1/bucket`) {
       return bucketsStatus === 200 ? json(buckets) : json({ message: "denied" }, bucketsStatus);
     }
@@ -239,4 +255,45 @@ test("rejects an arbitrary project URL before resolving DNS", async () => {
   assert.equal(result.status, "failed");
   assert.match(result.error, /supabase\.co/i);
   assert.equal(lookedUp, false);
+});
+
+test("detects anon-readable sensitive tables and exposed RPCs with zero SQL helper installed", async () => {
+  const fixture = createSupabaseFetch({
+    openapi: {
+      swagger: "2.0",
+      paths: {
+        "/profiles": { get: {}, post: {} },
+        "/posts": { get: {} },
+        "/rpc/admin_delete_user": { post: {} },
+        "/rpc/bulwark_check_rls": { post: {} },
+      },
+    },
+    headCounts: {
+      profiles: 42,
+      posts: 0,
+    },
+    bucketsStatus: 403,
+    rlsStatus: 404,
+  });
+
+  const result = await run(fixture);
+
+  const readable = result.findings.find((f) => f.check_key === "supabase_anon_readable_table");
+  assert.ok(readable, "should flag anon-readable profiles table even without SQL helper");
+  assert.equal(readable.severity, "critical");
+  assert.equal(readable.affected_resource, "anon_table:profiles");
+  assert.match(readable.title, /42 rows/);
+  assert.ok(
+    fixture.requests.some((r) => r.method === "HEAD" && r.url.includes("/rest/v1/profiles?limit=1")),
+    "uses zero-row HEAD count probe without reading row data",
+  );
+
+  const rpc = result.findings.find((f) => f.check_key === "supabase_anon_rpc_exposed");
+  assert.ok(rpc, "should flag exposed custom RPC excluding bulwark_check_rls");
+  assert.equal(rpc.severity, "high");
+  assert.match(rpc.evidence, /admin_delete_user/);
+  assert.doesNotMatch(rpc.evidence, /bulwark_check_rls/);
+  assert.equal(result.coverage.anonTablesExposed, 2);
+  assert.equal(result.coverage.anonReadableTables, 1);
+  assert.equal(result.coverage.anonRpcsExposed, 1);
 });

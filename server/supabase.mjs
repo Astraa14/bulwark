@@ -47,7 +47,14 @@ function failedResult(message) {
 }
 
 async function request(baseUrl, apiKey, path, opts = {}) {
-  const { method = "GET", body = null, fetchImpl = fetch, lookup, timeout = 12_000 } = opts;
+  const {
+    method = "GET",
+    body = null,
+    headers: extraHeaders = {},
+    fetchImpl = fetch,
+    lookup,
+    timeout = 12_000,
+  } = opts;
   return fetchWithTimeout(`${baseUrl}${path}`, {
     method,
     body,
@@ -59,11 +66,168 @@ async function request(baseUrl, apiKey, path, opts = {}) {
       apikey: apiKey,
       authorization: `Bearer ${apiKey}`,
       ...(body ? { "content-type": "application/json" } : {}),
+      ...extraHeaders,
     },
   });
 }
 
 const PERMISSION_STATUSES = new Set([400, 401, 403, 404]);
+const MAX_ANON_TABLE_PROBES = 12;
+const SENSITIVE_TABLE_RE =
+  /^(?:users?|profiles?|accounts?|customers?|members?|admins?|api[_-]?keys?|keys?|secrets?|tokens?|sessions?|orders?|payments?|invoices?|subscriptions?|billing|messages?|chats?|emails?|leads?|waitlist|webhooks?|documents?|uploads?|wallets?|credits?)$/i;
+const PRIVILEGED_RPC_RE =
+  /(?:^|_)(?:admin|delete|drop|grant|revoke|exec|sql|truncate|reset|impersonate|bypass|secret)(?:_|$)/i;
+
+export function parseOpenApiSurface(spec) {
+  if (!spec || typeof spec !== "object" || (!spec.swagger && !spec.openapi)) {
+    return { exposed: false, tables: [], rpcs: [] };
+  }
+  const paths = spec.paths;
+  if (!paths || typeof paths !== "object") {
+    return { exposed: false, tables: [], rpcs: [] };
+  }
+
+  const tables = [];
+  const rpcs = [];
+  for (const [routePath, methodsObj] of Object.entries(paths)) {
+    if (!methodsObj || typeof methodsObj !== "object") continue;
+    const methods = Object.keys(methodsObj)
+      .map((m) => m.toLowerCase())
+      .filter((m) => ["get", "post", "patch", "put", "delete"].includes(m));
+
+    const tableMatch = routePath.match(/^\/([A-Za-z_][A-Za-z0-9_]*)$/);
+    if (tableMatch) {
+      tables.push({
+        name: tableMatch[1],
+        methods,
+        sensitive: SENSITIVE_TABLE_RE.test(tableMatch[1]),
+      });
+      continue;
+    }
+
+    const rpcMatch = routePath.match(/^\/rpc\/([A-Za-z_][A-Za-z0-9_]*)$/);
+    if (rpcMatch && rpcMatch[1].toLowerCase() !== "bulwark_check_rls") {
+      rpcs.push({
+        name: rpcMatch[1],
+        privilegedName: PRIVILEGED_RPC_RE.test(rpcMatch[1]),
+      });
+    }
+  }
+
+  tables.sort((a, b) => Number(b.sensitive) - Number(a.sensitive) || a.name.localeCompare(b.name));
+  return { exposed: true, tables, rpcs };
+}
+
+function parseContentRangeTotal(headerValue) {
+  if (!headerValue) return null;
+  const match = String(headerValue).match(/\/(\d+)\s*$/);
+  if (!match) return null;
+  const count = Number(match[1]);
+  return Number.isFinite(count) ? count : null;
+}
+
+/**
+ * Zero-SQL-helper attacker-view check: inspects what an unauthenticated visitor
+ * holding only the public anon/publishable key can enumerate via PostgREST's
+ * OpenAPI spec and zero-row HEAD count probes (0 bytes of table data read).
+ */
+async function inspectAnonSurface(baseUrl, apiKey, specBody, dashboardBase, { fetchImpl, lookup }) {
+  const spec = parseJson(specBody);
+  const surface = parseOpenApiSurface(spec);
+  if (!surface.exposed) {
+    return {
+      findings: [],
+      errors: [],
+      tablesExposed: 0,
+      readableTables: 0,
+      rpcsExposed: 0,
+    };
+  }
+
+  const findings = [];
+  const errors = [];
+  const targets = surface.tables.slice(0, MAX_ANON_TABLE_PROBES);
+  let readableTables = 0;
+
+  const probeResults = await Promise.all(
+    targets.map(async (table) => {
+      const res = await request(
+        baseUrl,
+        apiKey,
+        `/rest/v1/${encodeURIComponent(table.name)}?limit=1`,
+        {
+          method: "HEAD",
+          headers: { prefer: "count=exact" },
+          fetchImpl,
+          lookup,
+          timeout: 8_000,
+        },
+      );
+      return { table, res };
+    }),
+  );
+
+  for (const { table, res } of probeResults) {
+    if (res.error) {
+      errors.push(`Anon probe on ${table.name}: ${res.error}`);
+      continue;
+    }
+    if (!res.ok) continue;
+    const rowCount = parseContentRangeTotal(res.headers?.["content-range"]);
+    if (rowCount !== null && rowCount > 0) {
+      readableTables += 1;
+      findings.push(
+        finding(
+          "supabase_anon_readable_table",
+          `Unauthenticated anon key can read ${rowCount} row${rowCount === 1 ? "" : "s"} in \`${table.name}\``,
+          table.sensitive ? "critical" : "high",
+          `Using only the public publishable/anon key, an unauthenticated request to \`/rest/v1/${table.name}\` reported ${rowCount} visible row${rowCount === 1 ? "" : "s"}. Any visitor who extracts your frontend's Supabase key can query those rows right now unless this table is intentionally public.`,
+          {
+            url: `${dashboardBase}/auth/policies`,
+            evidence: `HEAD /rest/v1/${table.name} · content-range total=${rowCount} · anon role`,
+            affected_resource: `anon_table:${table.name}`,
+            confidence: "high",
+            what_it_does_not_prove:
+              "Bulwark used a zero-row HEAD count probe and never read row contents. If this table is meant to be public (such as a public blog or catalog), acknowledge or snooze this finding.",
+            remediation: `Enable Row Level Security on \`public.${table.name}\` and restrict SELECT policies to \`authenticated\` users (for example \`using (auth.uid() = user_id)\`).`,
+          },
+        ),
+      );
+    }
+  }
+
+  if (surface.rpcs.length > 0) {
+    const privileged = surface.rpcs.some((r) => r.privilegedName);
+    const names = surface.rpcs.map((r) => r.name);
+    findings.push(
+      finding(
+        "supabase_anon_rpc_exposed",
+        `Custom Postgres RPC callable by anon: ${names.slice(0, 3).join(", ")}${names.length > 3 ? "…" : ""}`,
+        privileged ? "high" : "medium",
+        `PostgREST lists ${names.length} custom \`/rest/v1/rpc/*\` function${names.length === 1 ? "" : "s"} in the public \`anon\` schema (${names.slice(0, 6).join(", ")}). Postgres grants EXECUTE to \`public\` and \`anon\` on new functions by default, which lets unauthenticated callers invoke them directly.`,
+        {
+          url: `${dashboardBase}/database/functions`,
+          evidence: `Exposed RPCs (${names.length}): ${names.slice(0, 6).join(", ")}`,
+          affected_resource: "project:anon_rpcs",
+          confidence: "medium",
+          what_it_does_not_prove:
+            "Listing in OpenAPI proves the function is exposed to PostgREST, not that calling it mutates data or bypasses internal checks.",
+          remediation:
+            "Revoke public access on internal functions: `revoke all on function public.<name>(...) from public, anon;` and grant execute only to `authenticated` or `service_role`.",
+        },
+      ),
+    );
+  }
+
+  return {
+    findings,
+    errors,
+    tablesExposed: surface.tables.length,
+    readableTables,
+    rpcsExposed: surface.rpcs.length,
+    tableNames: surface.tables.map((t) => t.name),
+  };
+}
 
 function rlsFindings(rows, dashboardBase) {
   const findings = [];
@@ -157,6 +321,7 @@ export async function scanSupabaseProject(projectUrl, apiKey, opts = {}) {
   const checkResults = [];
 
   const connectivity = await request(baseUrl, apiKey, "/rest/v1/", {
+    headers: { accept: "application/openapi+json, application/json" },
     fetchImpl,
     lookup,
   });
@@ -172,6 +337,32 @@ export async function scanSupabaseProject(projectUrl, apiKey, opts = {}) {
     return failedResult(`Supabase API returned HTTP ${connectivity.status}.`);
   }
   checkResults.push(outcome("project_access", "Project access", "pass"));
+
+  // -------------------------------------------------------------------------
+  // Zero-helper PostgREST anon surface audit (OpenAPI + zero-row HEAD probes)
+  // -------------------------------------------------------------------------
+  const anonAudit = await inspectAnonSurface(
+    baseUrl,
+    apiKey,
+    connectivity.body,
+    dashboardBase,
+    { fetchImpl, lookup },
+  );
+  findings.push(...anonAudit.findings);
+  errors.push(...anonAudit.errors);
+  if (anonAudit.errors.length > 0) {
+    checkResults.push(
+      outcome("anon_surface", "Public anon API surface", "error", anonAudit.errors[0]),
+    );
+  } else if (anonAudit.tablesExposed > 0 || anonAudit.rpcsExposed > 0) {
+    checkResults.push(
+      outcome(
+        "anon_surface",
+        "Public anon API surface",
+        anonAudit.findings.length > 0 ? "finding" : "pass",
+      ),
+    );
+  }
 
   // -------------------------------------------------------------------------
   // Storage buckets
@@ -351,7 +542,10 @@ export async function scanSupabaseProject(projectUrl, apiKey, opts = {}) {
     checksErrored,
     checksSkipped,
     coverage: {
-      tablesInspected,
+      tablesInspected: Math.max(tablesInspected, anonAudit.tablesExposed),
+      anonTablesExposed: anonAudit.tablesExposed,
+      anonReadableTables: anonAudit.readableTables,
+      anonRpcsExposed: anonAudit.rpcsExposed,
       storageBucketsVisible,
       storageChecked,
       rlsChecked,

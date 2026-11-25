@@ -580,6 +580,143 @@ export function scanClientExposedEnvVars(text, path, { owner, repo, commitSha })
   return out;
 }
 
+const API_ROUTE_FILE_RE =
+  /(?:(?:^|\/)app\/api\/.+\/route\.[cm]?[jt]sx?$|(?:^|\/)pages\/api\/.+\.[cm]?[jt]sx?$|(?:^|\/)(?:src\/)?routes\/api\/.+\.[cm]?[jt]sx?$|(?:^|\/)server\/api\/.+\.[cm]?[jt]sx?$|^supabase\/functions\/[^/]+\/index\.[cm]?[jt]sx?$)/i;
+const SERVER_ACTION_DIRECTIVE_RE = /^\s*["']use server["']/m;
+const METERED_AI_SDK_RE =
+  /(?:from\s+["'](?:openai|@anthropic-ai\/sdk|@google\/genai|@google\/generative-ai|replicate|elevenlabs|@fal-ai\/client)["']|require\(\s*["'](?:openai|@anthropic-ai\/sdk|@google\/genai|@google\/generative-ai|replicate|elevenlabs)["']\s*\)|\b(?:generateText|streamText|generateObject|streamObject)\s*\(|https:\/\/(?:api\.openai\.com\/v1\/|api\.anthropic\.com\/v1\/messages|generativelanguage\.googleapis\.com\/))/;
+const ROUTE_AUTH_OR_LIMIT_RE =
+  /\b(?:getUser|getSession|getServerSession|auth\s*\(|currentUser|verifyToken|verifyIdToken|requireUser|requireAuth|isAuthenticated|checkAuth|withAuth|clerkClient|ratelimit|rateLimit|Ratelimit|upstash|turnstile|recaptcha|hcaptcha|CRON_SECRET|API_SECRET|timingSafeEqual)\b|headers\.get\(\s*["'](?:authorization|x-api-key)["']\s*\)|headers\[["'](?:authorization|x-api-key)["']\]/i;
+
+const WEBHOOK_ROUTE_PATH_RE = /(?:^|\/)[^/]*webhooks?[^/]*(?:\/|$|\.)/i;
+const WEBHOOK_SERVER_HANDLER_RE =
+  /\b(?:export\s+(?:async\s+)?function\s+POST|export\s+default\s+(?:async\s+)?function|app\.post\s*\(|router\.post\s*\(|Deno\.serve\s*\(|serve\s*\(|@app\.(?:post|route)|def\s+\w+\s*\(\s*request)\b/;
+const WEBHOOK_PROVIDER_RE = /\b(?:stripe|lemonsqueezy|lemon_squeezy|paddle|polar|clerk|svix)\b/i;
+const WEBHOOK_VERIFY_RE =
+  /\b(?:constructEvent|constructEventAsync|webhooks\.verify|Webhook\s*\(|timingSafeEqual|createHmac|compare_digest|verifySignature|validateEvent|verifyWebhook)\b|["'](?:stripe-signature|svix-signature|x-signature|x-hub-signature-256|webhook-signature)["']/i;
+
+export function scanVibeCodeFootguns(content, path, { owner, repo, commitSha }) {
+  const out = [];
+  if (!content || isTestFile(path)) return out;
+  if (!/\.(?:[cm]?[jt]sx?|py)$/i.test(path)) return out;
+
+  const isRouteOrAction =
+    API_ROUTE_FILE_RE.test(path) || SERVER_ACTION_DIRECTIVE_RE.test(content);
+
+  if (
+    isRouteOrAction &&
+    METERED_AI_SDK_RE.test(content) &&
+    !ROUTE_AUTH_OR_LIMIT_RE.test(content)
+  ) {
+    out.push(
+      finding(
+        "ai_route_without_auth",
+        `Metered AI endpoint without auth or rate limit: ${path}`,
+        "high",
+        `\`${path}\` invokes a paid AI provider SDK or API directly inside a public route or server action without an observable authentication check or rate limiter. Automated scripts can loop requests against this endpoint and drain your API credits.`,
+        {
+          url: blobUrl(owner, repo, commitSha, path),
+          evidence: `AI SDK call without auth/rate-limit guard in ${path}`,
+          affected_resource: path,
+          confidence: "medium",
+          what_it_does_not_prove:
+            "Authentication or rate limiting may be enforced upstream in `middleware.ts`, an API gateway, or a wrapper helper Bulwark did not trace across files.",
+          remediation:
+            "Verify the caller's session (e.g. `supabase.auth.getUser()` or `auth()`) and enforce per-user/IP rate limiting before calling the AI provider.",
+        },
+      ),
+    );
+  }
+
+  if (
+    WEBHOOK_ROUTE_PATH_RE.test(path) &&
+    !/^(?:src\/)?(?:components|pages\/(?!api\/)|screens)\//i.test(path) &&
+    WEBHOOK_SERVER_HANDLER_RE.test(content) &&
+    WEBHOOK_PROVIDER_RE.test(content) &&
+    !WEBHOOK_VERIFY_RE.test(content)
+  ) {
+    out.push(
+      finding(
+        "webhook_missing_signature_verification",
+        `Webhook handler missing signature verification: ${path}`,
+        "critical",
+        `\`${path}\` handles payment or identity webhooks without verifying the provider's cryptographic signature header (such as \`stripe.webhooks.constructEvent\` or HMAC verification). Anyone on the internet can POST forged \`checkout.session.completed\` or user events to unlock paid plans.`,
+        {
+          url: blobUrl(owner, repo, commitSha, path),
+          evidence: `No signature check found in webhook handler ${path}`,
+          affected_resource: path,
+          confidence: "medium",
+          what_it_does_not_prove:
+            "Signature verification might live in a shared helper imported from another file; confirm the raw body signature is verified before trusting `req.json()`.",
+          remediation:
+            "Read the raw request body (`await req.text()`) and verify the provider's signature header (e.g. `stripe.webhooks.constructEvent(rawBody, sig, webhookSecret)`) before updating database state.",
+        },
+      ),
+    );
+  }
+
+  return out;
+}
+
+export function scanSupabaseEdgeFunctions(configToml, functionFiles, { owner, repo, commitSha }) {
+  if (!configToml || !functionFiles.length) return [];
+  const unverifiedSlugs = new Set();
+  let currentSlug = null;
+
+  for (const rawLine of String(configToml).split(/\r?\n/)) {
+    const trimmed = rawLine.split("#")[0].trim();
+    if (!trimmed) continue;
+    const sec = trimmed.match(/^\[functions\.([A-Za-z0-9_-]+)\]$/);
+    if (sec) {
+      currentSlug = sec[1];
+      continue;
+    }
+    if (trimmed.startsWith("[")) {
+      currentSlug = null;
+      continue;
+    }
+    if (currentSlug && /^verify_jwt\s*=\s*false\b/i.test(trimmed)) {
+      unverifiedSlugs.add(currentSlug);
+    }
+  }
+
+  if (!unverifiedSlugs.size) return [];
+
+  const out = [];
+  for (const fn of functionFiles) {
+    const match = fn.path.match(/^supabase\/functions\/([^/]+)\/index\.[cm]?[jt]sx?$/i);
+    if (!match) continue;
+    const slug = match[1];
+    if (!unverifiedSlugs.has(slug)) continue;
+
+    const body = fn.content ?? "";
+    const usesServiceRole = /\bSUPABASE_SERVICE_ROLE_KEY\b/.test(body);
+    const verifiesCaller =
+      WEBHOOK_VERIFY_RE.test(body) || ROUTE_AUTH_OR_LIMIT_RE.test(body);
+    if (usesServiceRole && !verifiesCaller) {
+      out.push(
+        finding(
+          "supabase_function_unverified_jwt",
+          `Supabase Edge Function disables JWT check while using service_role: ${slug}`,
+          "high",
+          `\`supabase/config.toml\` sets \`verify_jwt = false\` for \`${slug}\`, and \`${fn.path}\` uses \`SUPABASE_SERVICE_ROLE_KEY\` without verifying a user session or webhook signature. Any unauthenticated caller can invoke this function with full RLS-bypassing privileges.`,
+          {
+            url: blobUrl(owner, repo, commitSha, fn.path),
+            evidence: `[functions.${slug}] verify_jwt = false + SUPABASE_SERVICE_ROLE_KEY`,
+            affected_resource: fn.path,
+            confidence: "high",
+            what_it_does_not_prove:
+              "If this function only returns public non-sensitive data and never mutates state, impact may be limited.",
+            remediation:
+              "Re-enable `verify_jwt = true` in `supabase/config.toml`, or explicitly verify `Authorization` / webhook HMAC signatures inside the function before using the service-role client.",
+          },
+        ),
+      );
+    }
+  }
+  return out;
+}
+
 export function scanSupabaseMigrationsForRls(sqlFiles, { owner, repo, commitSha }) {
   if (!sqlFiles.length) return [];
 
@@ -953,6 +1090,10 @@ export async function scanGitHubRepo(
   const lockfiles = [];
   const unsupportedDependencyFiles = new Set();
   const migrationSqlFiles = [];
+  const edgeFunctionFiles = [];
+  let supabaseConfigToml = null;
+  let rootGitignore = null;
+  let hasEnvEcosystem = false;
   let filesRead = 0;
   let skippedUnreadable = 0;
   let historyCommitsScanned = 0;
@@ -1047,9 +1188,31 @@ export async function scanGitHubRepo(
     if (lower.startsWith("supabase/migrations/") && lower.endsWith(".sql")) {
       migrationSqlFiles.push({ path, content: item.content });
     }
+    if (lower === "supabase/config.toml") {
+      supabaseConfigToml = item.content;
+    }
+    if (/^supabase\/functions\/[^/]+\/index\.[cm]?[jt]sx?$/i.test(path)) {
+      edgeFunctionFiles.push({ path, content: item.content });
+    }
+    if (path === ".gitignore") {
+      rootGitignore = item.content;
+    }
+    if (
+      base === "package.json" ||
+      base === "requirements.txt" ||
+      base === "pyproject.toml" ||
+      base.startsWith(".env.")
+    ) {
+      hasEnvEcosystem = true;
+    }
 
     configFindings.push(
       ...scanConfigFile(path, item.content, {
+        owner,
+        repo,
+        commitSha: target.commitSha,
+      }),
+      ...scanVibeCodeFootguns(item.content, path, {
         owner,
         repo,
         commitSha: target.commitSha,
@@ -1064,6 +1227,40 @@ export async function scanGitHubRepo(
         repo,
         commitSha: target.commitSha,
       }),
+    );
+  }
+
+  if (supabaseConfigToml && edgeFunctionFiles.length) {
+    configFindings.push(
+      ...scanSupabaseEdgeFunctions(supabaseConfigToml, edgeFunctionFiles, {
+        owner,
+        repo,
+        commitSha: target.commitSha,
+      }),
+    );
+  }
+
+  if (
+    rootGitignore !== null &&
+    hasEnvEcosystem &&
+    !/(?:^|\r?\n)\s*(?:\*\*\/)?\.env(?:\*|\.\*|\.local|\b)/m.test(rootGitignore)
+  ) {
+    configFindings.push(
+      finding(
+        "gitignore_missing_env",
+        ".gitignore does not exclude .env files",
+        "medium",
+        "This repository has `.gitignore` and uses Node/Python environment conventions, but `.gitignore` does not ignore `.env` or `.env*`. One `git add .` can commit live API keys and database passwords to git history.",
+        {
+          url: blobUrl(owner, repo, target.commitSha, ".gitignore"),
+          evidence: "No `.env` or `.env*` rule in .gitignore",
+          affected_resource: ".gitignore",
+          confidence: "high",
+          what_it_does_not_prove:
+            "Global gitignore rules on an individual developer's machine might ignore `.env`, but collaborators and CI will not share them.",
+          remediation: "Add `.env` and `.env*.local` (keeping `!.env.example` if needed) to `.gitignore`.",
+        },
+      ),
     );
   }
 
