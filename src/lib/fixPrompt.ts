@@ -1,4 +1,5 @@
-import type { FindingRow, SiteStack } from "./workspace";
+import { findingImpactSummary, isShipBlocker } from "./scanOutcomes.ts";
+import type { FindingRow, SiteStack } from "./workspace.ts";
 
 const STACK_PROMPT_NAMES: Record<SiteStack, string> = {
   "nextjs-vercel": "Next.js on Vercel (next.config / vercel.json)",
@@ -30,7 +31,9 @@ export function buildFixPrompt(
     `Fix this security finding detected by Bulwark (${sourceKind(finding)}):`,
     "",
     `Finding: ${finding.title}`,
+    `Priority: ${isShipBlocker(finding) ? "Ship-blocker (fix before public launch)" : "Post-launch hardening"}`,
     `Severity: ${finding.severity}`,
+    `Real-world risk: ${findingImpactSummary(finding)}`,
     `Target: ${targetLabel}`,
     `Check: ${finding.check_key}`,
   ];
@@ -72,9 +75,33 @@ export function buildFixPrompt(
       : "2. Apply the smallest safe fix without weakening security controls or hardcoding any secrets.",
   );
 
-  if (finding.platform === "supabase" || finding.check_key.includes("rls")) {
+  if (finding.check_key === "ai_route_without_auth") {
     lines.push(
-      "3. Write an idempotent SQL migration for any RLS or policy changes, and verify access rules stay least-privilege.",
+      "3. Require an authenticated session (e.g. `supabase.auth.getUser()` or `auth()`) and add per-user/IP rate limiting before calling the AI provider.",
+    );
+  } else if (finding.check_key === "webhook_missing_signature_verification") {
+    lines.push(
+      "3. Read the raw request body (`await req.text()`) and verify the webhook provider's cryptographic signature header (e.g. `stripe.webhooks.constructEvent`) before parsing JSON or updating database state.",
+    );
+  } else if (finding.check_key === "supabase_function_unverified_jwt") {
+    lines.push(
+      "3. Re-enable `verify_jwt = true` in `supabase/config.toml` (or verify `Authorization` / webhook HMAC signatures inside the function) before calling `SUPABASE_SERVICE_ROLE_KEY`.",
+    );
+  } else if (finding.check_key === "stripe_test_key_in_production") {
+    lines.push(
+      "3. Ensure production environment config uses `pk_live_...` for the client publishable key while keeping `sk_live_...` server-only.",
+    );
+  } else if (finding.check_key === "gitignore_missing_env") {
+    lines.push(
+      "3. Add `.env` and `.env*.local` (keeping `!.env.example` if needed) to `.gitignore` and verify no `.env` files are currently tracked.",
+    );
+  } else if (
+    finding.platform === "supabase" ||
+    finding.check_key.includes("rls") ||
+    finding.check_key === "site_supabase_anon_exposure"
+  ) {
+    lines.push(
+      "3. Write an idempotent SQL migration enabling RLS, scoping SELECT/INSERT/UPDATE/DELETE policies to `auth.uid()`, and revoking `public`/`anon` execute grants on internal RPCs.",
     );
   } else if (finding.platform === "github" && finding.check_key.startsWith("dep_")) {
     lines.push(

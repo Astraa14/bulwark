@@ -1586,6 +1586,16 @@ main {
   white-space: nowrap;
 }
 
+.attention-impact {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .severity {
   display: flex;
   align-items: center;
@@ -1992,6 +2002,40 @@ main {
   font-weight: 500;
 }
 
+.threat-title-cell {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 12px 8px 0;
+}
+
+.threat-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.threat-title-line .table-title {
+  padding-right: 0;
+}
+
+.blocker-pill {
+  min-height: 20px;
+  padding: 0 7px;
+  font-size: 10.5px;
+  flex: 0 0 auto;
+}
+
+.threat-impact {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .threat-row > span:last-child {
   justify-content: flex-end;
   color: var(--text-muted);
@@ -2015,11 +2059,83 @@ main {
 }
 
 .scan-row {
+  width: 100%;
   grid-template-columns:
     minmax(110px, 0.9fr) minmax(150px, 1.2fr) minmax(100px, 0.7fr)
     minmax(150px, 1.1fr) minmax(260px, 1.7fr);
   column-gap: 14px;
   min-width: 800px;
+}
+
+.scan-row-clickable {
+  cursor: pointer;
+}
+
+.scan-row-clickable.expanded {
+  background: var(--surface-subtle);
+}
+
+.scan-detail-drawer {
+  padding: 14px 18px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-subtle);
+  display: grid;
+  gap: 10px;
+}
+
+.scan-check-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px 12px;
+}
+
+.scan-check-item {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.scan-check-item > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.scan-check-item strong {
+  font-weight: 500;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scan-check-badge {
+  margin-left: auto;
+  color: var(--text-subtle);
+  font-size: 11px;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.scan-check-item small {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.scan-notes-list {
+  margin: 0;
+  padding-left: 18px;
+  list-style: disc;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .scan-state {
@@ -2188,6 +2304,17 @@ main {
 .meaning h2 {
   margin: 10px 0 7px;
   font-size: 16px;
+}
+
+.meaning .impact-callout {
+  margin: 0 0 10px;
+  padding: 9px 12px;
+  border-left: 2px solid var(--border-strong);
+  background: var(--surface);
+  border-radius: 0 6px 6px 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .meaning p,

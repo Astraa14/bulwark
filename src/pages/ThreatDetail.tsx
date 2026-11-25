@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import { Button, CodeCard, Dot } from "@/components/Ui";
 import { buildFixPrompt } from "@/lib/fixPrompt";
-import { safeExternalUrl, stackLabel } from "@/lib/scanOutcomes";
+import {
+  findingImpactSummary,
+  isShipBlocker,
+  safeExternalUrl,
+  stackLabel,
+} from "@/lib/scanOutcomes";
 import {
   acceptBaseline,
   explainFinding,
@@ -128,6 +133,9 @@ export function ThreatDetail({
           </code>
         </div>
         <div className="detail-meta">
+          <span className={isShipBlocker(finding) ? "tag critical" : "tag"}>
+            {isShipBlocker(finding) ? "Ship-blocker" : "Polish later"}
+          </span>
           <span className="tag">
             <Dot tone={finding.severity} />
             {finding.severity}
@@ -158,6 +166,7 @@ export function ThreatDetail({
         <section className="card meaning">
           <small>WHAT BULWARK FOUND</small>
           <h2>{`On ${targetLabel}`}</h2>
+          <p className="impact-callout">{findingImpactSummary(finding)}</p>
           <p>{finding.detail ?? "No extra detail was recorded for this finding."}</p>
           {safeExternalUrl(finding.url) && (
             <p className="detail-url">

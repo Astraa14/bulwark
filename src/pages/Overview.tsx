@@ -1,26 +1,38 @@
 import { Button, Dot, PageTitle, Stat } from "@/components/Ui";
-import type { Page } from "@/lib/router";
-import { SEVERITY_ORDER, siteHealth, siteLabel, stackLabel } from "@/lib/scanOutcomes";
+import type { IntegrationTab, Page } from "@/lib/router";
+import {
+  SEVERITY_ORDER,
+  findingImpactSummary,
+  isShipBlocker,
+  siteHealth,
+  siteLabel,
+  sortFindingsByPriority,
+  stackLabel,
+} from "@/lib/scanOutcomes";
 import { PLAN_SITE_LIMIT, relTime, type FindingRow, type ScanRow, type SiteRow } from "@/lib/workspace";
 
 export function Overview({
   go,
   openModal,
   sites,
+  connectionCount = 0,
   findings,
   scans,
   scanCount,
   onOpenFinding,
 }: {
-  go: (p: Page) => void;
+  go: (p: Page, tab?: IntegrationTab) => void;
   openModal: () => void;
   sites: SiteRow[];
+  connectionCount?: number;
   findings: FindingRow[];
   scans: ScanRow[];
   scanCount: number;
   onOpenFinding: (id: string) => void;
 }) {
   const openFindings = findings.filter((f) => f.status === "open");
+  const blockers = openFindings.filter(isShipBlocker);
+  const hardening = openFindings.filter((f) => !isShipBlocker(f));
   const critical = openFindings.filter((f) => f.severity === "critical").length;
   const high = openFindings.filter((f) => f.severity === "high").length;
   const medium = openFindings.filter((f) => f.severity === "medium").length;
@@ -29,13 +41,10 @@ export function Overview({
   const activeSites = sites.filter((site) => site.status === "verified").length;
   const pausedSites = sites.filter((site) => site.status === "paused").length;
   const pendingSites = sites.filter((site) => site.status === "pending").length;
-  const priorityFindings = [...openFindings].sort(
-    (a, b) =>
-      SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) ||
-      new Date(b.last_seen_at).getTime() - new Date(a.last_seen_at).getTime(),
-  );
-  const isSetupRequired = sites.length === 0 || pendingSites > 0;
-  const isAllPaused = activeSites === 0 && pausedSites > 0;
+  const priorityFindings = sortFindingsByPriority(openFindings);
+  const hasMonitoredAssets = activeSites > 0 || connectionCount > 0;
+  const isSetupRequired = !hasMonitoredAssets && (sites.length === 0 || pendingSites > 0);
+  const isAllPaused = !hasMonitoredAssets && pausedSites > 0;
 
   const scanDays = Array.from({ length: 30 }, () => 0);
   for (const scan of scans) {
@@ -46,12 +55,12 @@ export function Overview({
   const scanDayPeak = Math.max(1, ...scanDays);
   const severityCounts = [critical, high, medium, low, info];
   const briefingState =
-    openFindings.length > 0 ? "has-findings" :
+    blockers.length > 0 ? "has-findings" :
     isSetupRequired ? "needs-setup" :
     isAllPaused ? "is-paused" : "is-clear";
   const briefingTone =
-    openFindings.length > 0
-      ? critical > 0 ? "critical" : high > 0 ? "high" : "medium"
+    blockers.length > 0
+      ? critical > 0 ? "critical" : "high"
       : isSetupRequired ? "medium" : isAllPaused ? "low" : "healthy";
 
   const buckets = Array.from({ length: 10 }, () => ({ d: 0, r: 0 }));
@@ -84,7 +93,15 @@ export function Overview({
         <div className="eyebrow-row">
           <span className="briefing-kicker">
             <Dot tone={briefingTone} />
-            {openFindings.length > 0 ? "ACTION REQUIRED" : isSetupRequired ? "SETUP REQUIRED" : isAllPaused ? "MONITORING PAUSED" : "SECURITY STATUS"}
+            {blockers.length > 0
+              ? "HOLD BEFORE SHARING · SHIP-BLOCKERS"
+              : isSetupRequired
+                ? "LAUNCH READINESS · SETUP REQUIRED"
+                : isAllPaused
+                  ? "MONITORING PAUSED"
+                  : openFindings.length > 0
+                    ? "SAFE TO SHIP · POLISH LATER"
+                    : "SAFE TO SHIP · ALL CLEAR"}
           </span>
           <code>
             {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" })} ·{" "}
@@ -94,39 +111,56 @@ export function Overview({
         <div className="briefing-main">
           <div className="briefing-copy">
             <h2>
-              {openFindings.length === 0
-                ? "Nothing needs attention"
-                : `${openFindings.length} thing${openFindings.length === 1 ? "" : "s"} need attention`}
+              {blockers.length > 0
+                ? `${blockers.length} ship-blocker${blockers.length === 1 ? "" : "s"} to fix before sharing your link`
+                : isSetupRequired
+                  ? pendingSites > 0
+                    ? "Verify your domain to check launch readiness"
+                    : "Connect your app to check if it is safe to ship"
+                  : isAllPaused
+                    ? "Monitoring is paused"
+                    : hardening.length > 0
+                      ? `Safe to ship — ${hardening.length} hardening item${hardening.length === 1 ? "" : "s"} for later`
+                      : "Safe to ship — no open exposures"}
             </h2>
             <p className="briefing-summary">
-              {openFindings.length > 0
-                ? `${critical} critical · ${high} high · ${medium} medium · ${low} low${info > 0 ? ` · ${info} info` : ""} across your monitored assets.`
-                : sites.length === 0
-                  ? "Connect your first site to begin continuous security checks."
-                  : activeSites === 0 && pausedSites > 0
-                    ? "Your connected sites are paused. Resume monitoring whenever you are ready."
-                    : pendingSites > 0
-                      ? "Verify your pending site to start monitoring it."
-                      : "Your monitored sites are clear at the latest check. Bulwark keeps watching."}
+              {blockers.length > 0
+                ? `${blockers.length} launch-blocking exposure${blockers.length === 1 ? "" : "s"} (${critical} critical, ${high} high)${hardening.length > 0 ? ` · ${hardening.length} lower-urgency hardening item${hardening.length === 1 ? "" : "s"} can wait until after launch.` : " across your monitored sites, repos, and Supabase projects."}`
+                : hardening.length > 0
+                  ? `Zero leaked keys, open anon tables, or critical blockers found. ${medium} medium · ${low} low${info > 0 ? ` · ${info} info` : ""} defense-in-depth item${hardening.length === 1 ? "" : "s"} can be polished anytime.`
+                  : sites.length === 0 && connectionCount === 0
+                    ? "Add a live URL, GitHub repo, or Supabase project — Bulwark checks for leaked keys, open anon tables, and AI/billing footguns."
+                    : isAllPaused
+                      ? "Your connected sites are paused. Resume monitoring whenever you are ready."
+                      : pendingSites > 0 && !hasMonitoredAssets
+                        ? "Verify your pending site to run external checks."
+                        : "Latest checks found no leaked credentials, open anon tables, or critical exposures."}
             </p>
           </div>
           {openFindings.length > 0 ? (
             <div className="title-actions">
               <Button onClick={() => go("AI Copilot")}>Weekly brief</Button>
-              <Button dark onClick={() => go("Threats")}>Review threats</Button>
+              <Button dark onClick={() => go("Threats")}>
+                {blockers.length > 0 ? "Fix blockers" : "Review items"}
+              </Button>
             </div>
-          ) : sites.length === 0 ? (
-            <Button dark onClick={openModal}>+ Add site</Button>
-          ) : pendingSites > 0 || activeSites === 0 ? (
+          ) : sites.length === 0 && connectionCount === 0 ? (
+            <div className="title-actions">
+              <Button onClick={() => go("Integrations", "platforms")}>Connect GitHub / Supabase</Button>
+              <Button dark onClick={openModal}>+ Add site</Button>
+            </div>
+          ) : pendingSites > 0 || !hasMonitoredAssets ? (
             <Button onClick={() => go("Sites")}>{pendingSites > 0 ? "Verify site" : "Manage sites"}</Button>
           ) : null}
         </div>
         {openFindings.length > 0 && (
           <>
             <div className="section-head">
-              <span className="attention-caption">Top 3 priorities to fix first</span>
+              <span className="attention-caption">
+                {blockers.length > 0 ? "Fix before sharing publicly" : "Recommended hardening"}
+              </span>
               <button type="button" onClick={() => go("Threats")}>
-                View all threats →
+                View all ({openFindings.length}) →
               </button>
             </div>
             <div className="attention-grid">
@@ -141,9 +175,10 @@ export function Overview({
                   <div>
                     <span className="severity">
                       <Dot tone={f.severity} />
-                      {f.severity}
+                      {isShipBlocker(f) ? `Ship-blocker · ${f.severity}` : `Polish later · ${f.severity}`}
                     </span>
                     <strong title={f.title}>{f.title}</strong>
+                    <span className="attention-impact">{findingImpactSummary(f)}</span>
                     <code title={siteLabel(sites, f)}>
                       {siteLabel(sites, f)}
                     </code>

@@ -5,7 +5,7 @@ import type {
   Severity,
   SiteRow,
   SiteStack,
-} from "./workspace";
+} from "./workspace.ts";
 
 export const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low", "info"];
 
@@ -116,6 +116,111 @@ export function escapeHtml(value: unknown) {
 /** Website findings show their domain; platform findings show their resource. */
 export function siteLabel(sites: SiteRow[], finding: FindingRow) {
   return sites.find((site) => site.id === finding.site_id)?.domain ?? finding.resource ?? "—";
+}
+
+export function findingSourceKind(finding: FindingRow): "website" | "github" | "supabase" {
+  if (finding.platform === "github") return "github";
+  if (finding.platform === "supabase") return "supabase";
+  return "website";
+}
+
+export function scanSourceKind(scan: ScanRow): "website" | "github" | "supabase" {
+  if (scan.platform === "github") return "github";
+  if (scan.platform === "supabase") return "supabase";
+  return "website";
+}
+
+const EXTRA_SHIP_BLOCKER_KEYS = new Set([
+  "stripe_test_key_in_production",
+  "webhook_missing_signature_verification",
+  "ai_route_without_auth",
+  "supabase_anon_readable_table",
+  "site_supabase_anon_exposure",
+  "supabase_function_unverified_jwt",
+]);
+
+/**
+ * Distinguishes launch-stopping exposures ("Ship-blockers") from lower-urgency
+ * defense-in-depth polish ("Polish later") so non-security builders know
+ * whether it is safe to share their link publicly right now.
+ */
+export function isShipBlocker(finding: FindingRow): boolean {
+  if (finding.severity === "critical" || finding.severity === "high") return true;
+  return EXTRA_SHIP_BLOCKER_KEYS.has(finding.check_key);
+}
+
+export function findingImpactSummary(finding: FindingRow): string {
+  const key = finding.check_key;
+  if (
+    key.startsWith("secret_") ||
+    key.startsWith("history_secret_") ||
+    key === "client_exposed_secret_env" ||
+    key === "exposed_env" ||
+    key === "exposed_config_file"
+  ) {
+    return "Anyone who sees your bundle or repo can copy this credential and access your account or backend.";
+  }
+  if (
+    key === "supabase_anon_readable_table" ||
+    key === "site_supabase_anon_exposure" ||
+    key === "supabase_table_no_rls" ||
+    key === "supabase_migration_missing_rls"
+  ) {
+    return "Unauthenticated visitors can query rows directly using your public Supabase anon key.";
+  }
+  if (key === "supabase_public_storage") {
+    return "Anyone with the bucket URL can list and download files stored in this bucket.";
+  }
+  if (key === "ai_route_without_auth") {
+    return "Bots can loop requests to this endpoint and drain your paid AI/API balance.";
+  }
+  if (key === "webhook_missing_signature_verification") {
+    return "Anyone can POST a forged webhook payload to spoof payments or upgrade accounts for free.";
+  }
+  if (key === "supabase_function_unverified_jwt" || key === "supabase_anon_rpc_exposed") {
+    return "Unauthenticated callers can invoke this backend function directly with the anon key.";
+  }
+  if (key === "stripe_test_key_in_production") {
+    return "Live visitors hit Stripe test mode — checkouts fail or accept fake test cards without charging.";
+  }
+  if (key === "gitignore_missing_env") {
+    return "A single `git add .` can accidentally commit live `.env` secrets into git history.";
+  }
+  if (key.startsWith("dep_vuln_")) {
+    return "A locked package version has a published security advisory in OSV.";
+  }
+  if (
+    key === "exposed_source_map" ||
+    key === "exposed_git" ||
+    key === "exposed_sql" ||
+    key === "exposed_api_docs" ||
+    key === "graphql_introspection_enabled"
+  ) {
+    return "Visitors can download internal source code, git metadata, database dumps, or API schemas.";
+  }
+  if (key === "cors_wildcard_credentials" || key === "vercel_wildcard_cors_credentials" || key === "cors_reflects_origin") {
+    return "Malicious sites can read authenticated API responses from logged-in users' browsers.";
+  }
+  if (key.startsWith("tls_") || key === "site_unreachable" || key.startsWith("http_")) {
+    return "Visitors may hit browser security warnings or a broken landing page.";
+  }
+  if (key.startsWith("workflow_")) {
+    return "Untrusted pull requests or upstream action updates could gain CI write permissions.";
+  }
+  if (isShipBlocker(finding)) {
+    return "High-impact exposure — fix before sharing this app publicly.";
+  }
+  return "Defense-in-depth hardening — safe to polish after your initial launch.";
+}
+
+export function sortFindingsByPriority(items: FindingRow[]): FindingRow[] {
+  return [...items].sort((a, b) => {
+    const blockerDiff = Number(isShipBlocker(b)) - Number(isShipBlocker(a));
+    if (blockerDiff !== 0) return blockerDiff;
+    const sevDiff = SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity);
+    if (sevDiff !== 0) return sevDiff;
+    return new Date(b.last_seen_at).getTime() - new Date(a.last_seen_at).getTime();
+  });
 }
 
 export function healthKey(site: SiteRow, findings: FindingRow[]) {

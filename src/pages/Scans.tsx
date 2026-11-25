@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Button, Dot, PageTitle } from "@/components/Ui";
 import {
   CHECK_OUTCOME_ORDER,
+  checkOutcome,
   downloadCsv,
   outcomeLabel,
   outcomeText,
   scanOutcomeSummary,
+  scanSourceKind,
   scanState,
 } from "@/lib/scanOutcomes";
 import { shortDate, type ScanRow, type SiteRow } from "@/lib/workspace";
@@ -19,8 +21,9 @@ export function Scans({
   sites: SiteRow[];
   onChanged: () => void;
 }) {
-  const [siteFilter, setSiteFilter] = useState("all");
+  const [sourceFilter, setSourceFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [expandedScanId, setExpandedScanId] = useState<string | null>(null);
 
   const scanSubject = (scan: ScanRow) =>
     sites.find((site) => site.id === scan.site_id)?.domain ??
@@ -28,7 +31,12 @@ export function Scans({
     (scan.site_id ? "—" : "Platform scan");
 
   const filtered = scans.filter((s) => {
-    if (siteFilter !== "all" && s.site_id !== siteFilter) return false;
+    if (sourceFilter === "kind:website" && scanSourceKind(s) !== "website") return false;
+    if (sourceFilter === "kind:github" && scanSourceKind(s) !== "github") return false;
+    if (sourceFilter === "kind:supabase" && scanSourceKind(s) !== "supabase") return false;
+    if (sourceFilter !== "all" && !sourceFilter.startsWith("kind:") && s.site_id !== sourceFilter) {
+      return false;
+    }
     if (statusFilter !== "all" && s.status !== statusFilter) return false;
     return true;
   });
@@ -87,11 +95,14 @@ export function Scans({
         }
       />
       <div className="filters">
-        <select value={siteFilter} onChange={(e) => setSiteFilter(e.target.value)} aria-label="Site">
-          <option value="all">Site: all</option>
+        <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)} aria-label="Source">
+          <option value="all">Source: all</option>
+          <option value="kind:website">All websites</option>
+          <option value="kind:github">GitHub repositories</option>
+          <option value="kind:supabase">Supabase projects</option>
           {sites.map((s) => (
             <option value={s.id} key={s.id}>
-              {s.domain}
+              Site: {s.domain}
             </option>
           ))}
         </select>
@@ -102,13 +113,13 @@ export function Scans({
           <option value="failed">Failed</option>
         </select>
         <span>
-          {filtered.length} scan{filtered.length === 1 ? "" : "s"} shown
+          {filtered.length} scan{filtered.length === 1 ? "" : "s"} shown · click a row for check details
         </span>
       </div>
       <div className="card data-table scans-table">
         <div className="scan-row table-head">
           <span>Started</span>
-          <span>Site</span>
+          <span>Target</span>
           <span>Scan state</span>
           <span>Coverage</span>
           <span>Check outcomes</span>
@@ -116,6 +127,9 @@ export function Scans({
         {filtered.map((s) => {
           const summary = scanOutcomeSummary(s);
           const state = scanState(s, summary);
+          const expanded = expandedScanId === s.id;
+          const results = Array.isArray(s.check_results) ? s.check_results : [];
+          const coverageNotes = Array.isArray(s.coverage?.notes) ? s.coverage.notes : [];
           const incompleteReason = [
             summary.not_checked ? outcomeText("not_checked", summary.not_checked) : null,
             summary.error ? outcomeText("error", summary.error) : null,
@@ -124,51 +138,97 @@ export function Scans({
             .join(" · ");
 
           return (
-            <div className="scan-row" key={s.id}>
-              <code>{shortDate(s.started_at)}</code>
-              <code>{scanSubject(s)}</code>
-              <span className={`scan-state ${state.tone}`}>
-                <Dot tone={state.tone} />
-                {state.label}
-              </span>
-              <span className="scan-coverage">
-                {summary.detailed ? (
-                  <>
-                    <strong>
-                      {summary.completed}/{summary.total} checked
-                    </strong>
-                    {incompleteReason && <small>{incompleteReason}</small>}
-                  </>
-                ) : (
-                  <>
-                    <strong>Outcome detail unavailable</strong>
-                    <small>This older scan did not record check-level results.</small>
-                  </>
-                )}
-              </span>
-              <span
-                className={`scan-outcomes ${summary.detailed ? "" : "unavailable"}`}
-                aria-label={
-                  summary.detailed
-                    ? CHECK_OUTCOME_ORDER.map((outcome) => outcomeText(outcome, summary[outcome])).join(", ")
-                    : "Check-level outcomes were not recorded for this scan"
-                }
+            <Fragment key={s.id}>
+              <button
+                type="button"
+                className={`scan-row scan-row-clickable ${expanded ? "expanded" : ""}`}
+                aria-expanded={expanded}
+                onClick={() => setExpandedScanId((curr) => (curr === s.id ? null : s.id))}
               >
-                {summary.detailed ? (
-                  CHECK_OUTCOME_ORDER.some((outcome) => summary[outcome] > 0) ? (
-                    CHECK_OUTCOME_ORDER.filter((outcome) => summary[outcome] > 0).map((outcome) => (
-                      <span className={`check-outcome ${outcome}`} key={outcome}>
-                        <b>{summary[outcome]}</b> {outcomeLabel(outcome, summary[outcome])}
-                      </span>
-                    ))
+                <code>{shortDate(s.started_at)}</code>
+                <code>{scanSubject(s)}</code>
+                <span className={`scan-state ${state.tone}`}>
+                  <Dot tone={state.tone} />
+                  {state.label}
+                </span>
+                <span className="scan-coverage">
+                  {summary.detailed ? (
+                    <>
+                      <strong>
+                        {summary.completed}/{summary.total} checked
+                      </strong>
+                      {incompleteReason && <small>{incompleteReason}</small>}
+                    </>
                   ) : (
-                    <span className="check-outcome not_checked">No outcomes recorded</span>
-                  )
-                ) : (
-                  <span className="check-outcome not_checked">Not recorded</span>
-                )}
-              </span>
-            </div>
+                    <>
+                      <strong>Outcome detail unavailable</strong>
+                      <small>This older scan did not record check-level results.</small>
+                    </>
+                  )}
+                </span>
+                <span
+                  className={`scan-outcomes ${summary.detailed ? "" : "unavailable"}`}
+                  aria-label={
+                    summary.detailed
+                      ? CHECK_OUTCOME_ORDER.map((outcome) => outcomeText(outcome, summary[outcome])).join(", ")
+                      : "Check-level outcomes were not recorded for this scan"
+                  }
+                >
+                  {summary.detailed ? (
+                    CHECK_OUTCOME_ORDER.some((outcome) => summary[outcome] > 0) ? (
+                      CHECK_OUTCOME_ORDER.filter((outcome) => summary[outcome] > 0).map((outcome) => (
+                        <span className={`check-outcome ${outcome}`} key={outcome}>
+                          <b>{summary[outcome]}</b> {outcomeLabel(outcome, summary[outcome])}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="check-outcome not_checked">No outcomes recorded</span>
+                    )
+                  ) : (
+                    <span className="check-outcome not_checked">Not recorded</span>
+                  )}
+                </span>
+              </button>
+              {expanded && (
+                <div className="scan-detail-drawer">
+                  {s.error && <p className="modal-error">Scan error: {s.error}</p>}
+                  {results.length > 0 ? (
+                    <div className="scan-check-grid">
+                      {results.map((r) => {
+                        const out = checkOutcome(r);
+                        const tone =
+                          out === "passed"
+                            ? "healthy"
+                            : out === "finding"
+                              ? "high"
+                              : out === "error"
+                                ? "critical"
+                                : "info";
+                        return (
+                          <div className="scan-check-item" key={r.key}>
+                            <span>
+                              <Dot tone={tone} />
+                              <strong>{r.label || r.key}</strong>
+                              <code className="scan-check-badge">{out.replace("_", " ")}</code>
+                            </span>
+                            {r.error && <small>{r.error}</small>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="muted">Per-check outcomes were not stored on this scan record.</p>
+                  )}
+                  {coverageNotes.length > 0 && (
+                    <ul className="scan-notes-list">
+                      {coverageNotes.map((note, idx) => (
+                        <li key={idx}>{String(note)}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </Fragment>
           );
         })}
         {filtered.length === 0 && (

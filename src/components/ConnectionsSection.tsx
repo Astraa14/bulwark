@@ -286,7 +286,15 @@ export function ConnectionsSection({
       if (coverage.skippedUnreadable) parts.push(`${coverage.skippedUnreadable} unreadable`);
     } else {
       parts.push(`${coverage.tablesInspected ?? 0} tables inspected`);
-      parts.push(coverage.rlsChecked ? "RLS inspected (heuristic)" : "RLS not checked");
+      if (typeof coverage.anonReadableTables === "number" && coverage.anonReadableTables > 0) {
+        parts.push(`${coverage.anonReadableTables} anon-readable table(s)`);
+      } else if (typeof coverage.anonTablesExposed === "number" && coverage.anonTablesExposed > 0) {
+        parts.push(`${coverage.anonTablesExposed} table(s) in anon schema`);
+      }
+      if (typeof coverage.anonRpcsExposed === "number" && coverage.anonRpcsExposed > 0) {
+        parts.push(`${coverage.anonRpcsExposed} custom anon RPC(s)`);
+      }
+      parts.push(coverage.rlsChecked ? "RLS inspected (heuristic)" : "RLS helper not installed");
       parts.push(coverage.storageChecked ? "storage checked" : "storage not checked");
     }
     return parts.join(" · ");

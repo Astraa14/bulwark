@@ -249,9 +249,10 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
     )
   ) : page === "Overview" ? (
     <Overview
-      go={(p) => go(p)}
+      go={(p, tab) => go(p, tab)}
       openModal={() => openSiteModal()}
       sites={sites}
+      connectionCount={connectionsState.connections.length}
       findings={findings}
       scans={scans}
       scanCount={scanCount}
