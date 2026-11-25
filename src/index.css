@@ -2612,11 +2612,34 @@ pre.explanation {
 .alerts .setting-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto 38px;
+  gap: 12px;
 }
 
 .alerts .setting-row > :nth-child(2):last-child {
   grid-column: 2 / -1;
   justify-self: end;
+}
+
+.setting-edit-btn {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.setting-edit-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
 }
 
 .setting-actions {
@@ -3428,18 +3451,32 @@ pre.explanation {
   place-items: center;
   padding: 24px;
   background:
-    radial-gradient(120% 90% at 50% -10%, color-mix(in srgb, var(--text-primary) 7%, transparent), transparent 60%),
-    var(--app-bg);
+    radial-gradient(120% 85% at 50% -10%, rgba(255, 255, 255, 0.05), transparent 58%),
+    #080808;
+}
+
+:root[data-theme="light"] .auth-page {
+  background:
+    radial-gradient(120% 85% at 50% -10%, rgba(0, 0, 0, 0.04), transparent 58%),
+    #f5f5f5;
 }
 
 .auth-card {
   width: 100%;
   max-width: 400px;
   padding: 30px;
-  border: 1px solid var(--border);
+  border: 1px solid #242424;
   border-radius: 14px;
-  background: var(--surface);
-  box-shadow: var(--shadow-pop);
+  background: #111111;
+  color: #f2f2f2;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
+}
+
+:root[data-theme="light"] .auth-card {
+  border-color: #e2e2e2;
+  background: #ffffff;
+  color: #141414;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.08);
 }
 
 .auth-brand {
@@ -3460,10 +3497,14 @@ pre.explanation {
 
 .auth-sub {
   margin: 8px 0 22px;
-  color: var(--text-muted);
+  color: #8c8c8c;
   font-size: 13px;
   line-height: 1.5;
   text-align: center;
+}
+
+:root[data-theme="light"] .auth-sub {
+  color: #666666;
 }
 
 .auth-tabs {
@@ -3471,47 +3512,94 @@ pre.explanation {
   gap: 3px;
   padding: 3px;
   margin-bottom: 6px;
-  border: 1px solid var(--border);
+  border: 1px solid #242424;
   border-radius: 9px;
-  background: var(--surface-subtle);
+  background: #0b0b0b;
+}
+
+:root[data-theme="light"] .auth-tabs {
+  border-color: #e2e2e2;
+  background: #f5f5f5;
 }
 
 .auth-tabs button {
   flex: 1;
   height: 32px;
   border-radius: 6px;
-  color: var(--text-muted);
+  color: #8c8c8c;
   font-size: 12.5px;
   font-weight: 500;
 }
 
 .auth-tabs button.active {
-  background: var(--surface);
-  color: var(--text-primary);
-  box-shadow: var(--shadow-card);
+  background: #1c1c1c;
+  color: #f5f5f5;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+:root[data-theme="light"] .auth-tabs button.active {
+  background: #ffffff;
+  color: #141414;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
 .auth-card label {
   display: block;
   margin: 14px 0 6px;
-  color: var(--text-secondary);
+  color: #b5b5b5;
   font-size: 12px;
   font-weight: 500;
+}
+
+:root[data-theme="light"] .auth-card label {
+  color: #4a4a4a;
 }
 
 .auth-card input {
   width: 100%;
   height: 38px;
   padding: 0 11px;
-  border: 1px solid var(--border);
+  border: 1px solid #262626;
   border-radius: 8px;
-  background: var(--surface);
-  color: var(--text-primary);
+  background: #0c0c0c;
+  color: #f2f2f2;
   font-size: 13px;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+
+.auth-card input::placeholder {
+  color: #666666;
 }
 
 .auth-card input:focus {
-  border-color: var(--border-strong);
+  border-color: #484848;
+}
+
+.auth-card input:-webkit-autofill,
+.auth-card input:-webkit-autofill:hover,
+.auth-card input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #f2f2f2;
+  -webkit-box-shadow: 0 0 0 1000px #0c0c0c inset;
+  caret-color: #f2f2f2;
+}
+
+:root[data-theme="light"] .auth-card input {
+  border-color: #dcdcdc;
+  background: #fafafa;
+  color: #141414;
+}
+
+:root[data-theme="light"] .auth-card input:focus {
+  border-color: #a3a3a3;
+}
+
+:root[data-theme="light"] .auth-card input:-webkit-autofill,
+:root[data-theme="light"] .auth-card input:-webkit-autofill:hover,
+:root[data-theme="light"] .auth-card input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #141414;
+  -webkit-box-shadow: 0 0 0 1000px #fafafa inset;
+  caret-color: #141414;
 }
 
 .auth-submit {
@@ -3519,6 +3607,25 @@ pre.explanation {
   height: 38px;
   margin-top: 18px;
   font-size: 13px;
+  background: #f2f2f2;
+  border-color: #f2f2f2;
+  color: #0d0d0d;
+}
+
+.auth-submit:hover:not(:disabled) {
+  background: #dcdcdc;
+  border-color: #dcdcdc;
+}
+
+:root[data-theme="light"] .auth-submit {
+  background: #141414;
+  border-color: #141414;
+  color: #ffffff;
+}
+
+:root[data-theme="light"] .auth-submit:hover:not(:disabled) {
+  background: #2b2b2b;
+  border-color: #2b2b2b;
 }
 
 .auth-error {
@@ -3539,26 +3646,49 @@ pre.explanation {
 .auth-divider {
   margin: 18px 0;
   border: 0;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid #242424;
+}
+
+:root[data-theme="light"] .auth-divider {
+  border-top-color: #e5e5e5;
 }
 
 .auth-github {
   width: 100%;
   height: 38px;
-  background: #24292e;
-  border-color: rgba(255, 255, 255, 0.16);
-  color: #ffffff;
+  gap: 9px;
+  background: #1a1a1a;
+  border-color: #2e2e2e;
+  color: #f2f2f2;
 }
 
 .auth-github:hover:not(:disabled) {
-  background: #2f363d;
-  border-color: rgba(255, 255, 255, 0.28);
+  background: #242424;
+  border-color: #424242;
   color: #ffffff;
+}
+
+:root[data-theme="light"] .auth-github {
+  background: #181818;
+  border-color: #181818;
+  color: #ffffff;
+}
+
+:root[data-theme="light"] .auth-github:hover:not(:disabled) {
+  background: #2c2c2c;
+  border-color: #2c2c2c;
+  color: #ffffff;
+}
+
+.auth-github-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
 }
 
 .auth-foot {
   margin-top: 18px;
-  color: var(--text-subtle);
+  color: #6e6e6e;
   font-size: 11.5px;
   text-align: center;
 }
@@ -3890,9 +4020,7 @@ pre.explanation {
     gap: 6px;
   }
   .alerts .setting-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-  .alerts .setting-row > :nth-child(2):last-child {
-    grid-column: 2;
+    grid-template-columns: minmax(0, 1fr) auto 38px;
+    gap: 10px;
   }
 }

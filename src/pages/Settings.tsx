@@ -143,7 +143,9 @@ export function Settings({
                 <strong>Slack</strong>
                 <code>{slackConfigured ? "Webhook configured" : "Not configured"}</code>
               </span>
-              <button type="button" onClick={goIntegrations}>Edit →</button>
+              <button type="button" className="setting-edit-btn" onClick={goIntegrations}>
+                Configure
+              </button>
               <Toggle
                 checked={Boolean(slackConfigured && settings?.alertsEnabled)}
                 disabled={!slackConfigured || alertBusy !== null}
@@ -156,7 +158,9 @@ export function Settings({
                 <strong>Discord</strong>
                 <code>{discordConfigured ? "Webhook configured" : "Not configured"}</code>
               </span>
-              <button type="button" onClick={goIntegrations}>Edit →</button>
+              <button type="button" className="setting-edit-btn" onClick={goIntegrations}>
+                Configure
+              </button>
               <Toggle
                 checked={Boolean(discordConfigured && settings?.discordAlertsEnabled)}
                 disabled={!discordConfigured || alertBusy !== null}
@@ -173,7 +177,9 @@ export function Settings({
                     : "Server email key not set"}
                 </code>
               </span>
-              <button type="button" onClick={goIntegrations}>Edit →</button>
+              <button type="button" className="setting-edit-btn" onClick={goIntegrations}>
+                Configure
+              </button>
               <Toggle
                 checked={Boolean(emailReady && settings?.emailAlertsEnabled)}
                 disabled={!emailReady || alertBusy !== null}
