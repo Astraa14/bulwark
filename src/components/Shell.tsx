@@ -197,7 +197,13 @@ export function Sidebar({
             />
             {monitoringLabel}
           </span>
-          <a href="https://docs.bulwarksecure.app" target="_blank" rel="noreferrer">Documentation ↗</a>
+          <a
+            href="https://github.com/Astraa14/bulwark/blob/master/docs/USER_GUIDE.md"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Documentation ↗
+          </a>
         </div>
       </aside>
     </>
