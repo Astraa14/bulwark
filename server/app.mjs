@@ -2,7 +2,7 @@ import express from "express";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { decrypt } from "./crypto.mjs";
+import { decrypt, isEncryptionKeyConfigured } from "./crypto.mjs";
 import {
   buildDeterministicBrief,
   explainWithProvider,
@@ -36,7 +36,7 @@ import {
 import { assertRepoCoordinates, checkRepoAccess, listGitHubRepos } from "./github.mjs";
 import { adminClient } from "./lib.mjs";
 import { verifyDomain } from "./verify.mjs";
-import { scanSite } from "./worker.mjs";
+import { readWorkerHeartbeat, scanSite } from "./worker.mjs";
 import { scanGitHubConnection, scanSupabaseConnection, enqueuePlatformScan } from "./platform-scans.mjs";
 import {
   MAX_WEBHOOK_BYTES,
@@ -233,11 +233,29 @@ export function createApp({
   app.use(createCors());
   app.use("/api", apiLimiter);
 
-  app.get("/api/health", (_req, res) =>
-    res.json({
-      ok: true,
-      service: "bulwark-api",
-      commit: process.env.RENDER_GIT_COMMIT ?? null,
+  app.get(
+    "/api/health",
+    wrap(async (_req, res) => {
+      const encryptionConfigured = isEncryptionKeyConfigured();
+      let dbOk = true;
+      try {
+        const { error } = await db.from("sites").select("id").limit(1);
+        if (error) dbOk = false;
+      } catch {
+        dbOk = false;
+      }
+      const heartbeat = await readWorkerHeartbeat();
+      const ok = encryptionConfigured && dbOk;
+      res.status(ok ? 200 : 503).json({
+        ok,
+        service: "bulwark-api",
+        commit: process.env.RENDER_GIT_COMMIT ?? null,
+        checks: {
+          database: dbOk ? "ok" : "error",
+          encryptionKey: encryptionConfigured ? "ok" : "missing",
+          workerHeartbeatAt: heartbeat?.at ?? null,
+        },
+      });
     }),
   );
 
@@ -701,7 +719,7 @@ export function createApp({
         if (site.status !== "verified") {
           return res.status(409).json({ error: "Verify this site before re-checking findings." });
         }
-        scanOut = await withScanSlot(() => scanSite(db, site));
+        scanOut = await withScanSlot(() => scanSite(db, site, { manual: true }));
       } else if (finding.platform === "supabase" && finding.connection_id) {
         const conn = await resolveConnection(
           db,
@@ -859,7 +877,7 @@ export function createApp({
         return res.status(409).json({ error: "Site is not verified yet" });
       }
 
-      const out = await withScanSlot(() => scanSite(db, site));
+      const out = await withScanSlot(() => scanSite(db, site, { manual: true }));
       res.json({ ok: true, ...out });
     }),
   );
@@ -910,6 +928,47 @@ export function createApp({
     requireUser,
     wrap(async (req, res) => {
       await deleteKey(db, req.user.id, req.params.id);
+      res.json({ ok: true });
+    }),
+  );
+
+  // Self-serve workspace + account deletion. Every table also cascades from
+  // auth.users, but rows are removed explicitly first so a partially failed
+  // auth deletion never leaves encrypted credentials behind.
+  const ACCOUNT_TABLES = [
+    "alert_deliveries",
+    "platform_scan_jobs",
+    "findings",
+    "scans",
+    "github_repositories",
+    "github_connections",
+    "supabase_connections",
+    "api_keys",
+    "sites",
+    "user_settings",
+  ];
+
+  app.delete(
+    "/api/account",
+    requireUser,
+    wrap(async (req, res) => {
+      if (req.body?.confirm !== "DELETE") {
+        return res.status(400).json({ error: 'Type "DELETE" to confirm account deletion.' });
+      }
+      const userId = req.user.id;
+      for (const table of ACCOUNT_TABLES) {
+        const { error } = await db.from(table).delete().eq("user_id", userId);
+        if (error && !/does not exist|schema cache/i.test(error.message ?? "")) {
+          throw new Error(`delete ${table}: ${error.message}`);
+        }
+      }
+      await db.from("profiles").delete().eq("id", userId);
+
+      if (typeof db.auth?.admin?.deleteUser === "function") {
+        const { error } = await db.auth.admin.deleteUser(userId);
+        if (error) throw new Error(`delete auth user: ${error.message}`);
+      }
+      logger.log?.(`account deleted: ${userId}`);
       res.json({ ok: true });
     }),
   );

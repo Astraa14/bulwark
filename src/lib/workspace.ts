@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { apiDelete, apiGet, apiPost, apiPut } from "./api";
+import { apiDelete, apiFetch, apiGet, apiPost, apiPut } from "./api";
 import { supabase } from "./supabase";
 
 export type SiteStatus = "pending" | "verified" | "paused";
@@ -365,6 +365,11 @@ export function triageFinding(
 
 export function recheckFinding(findingId: string) {
   return apiPost<RecheckResult>(`/api/findings/${encodeURIComponent(findingId)}/recheck`, {});
+}
+
+/** Permanently deletes the workspace (sites, scans, findings, connections, keys) and the account. */
+export function deleteAccount() {
+  return apiFetch<{ ok: boolean }>("/api/account", { method: "DELETE", body: { confirm: "DELETE" } });
 }
 
 export function listAlertDeliveries() {

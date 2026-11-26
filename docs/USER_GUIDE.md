@@ -136,7 +136,7 @@ Bulwark never marks up AI tokens or runs background LLM calls without your click
 Open **Integrations → Alerts** (or toggle channels quickly from **Settings**):
 - **Slack**: Create an Incoming Webhook (`https://hooks.slack.com/services/...`), paste it, click **Send test Slack**, then **Save alert settings**.
 - **Discord**: In Discord **Server Settings → Integrations → Webhooks**, copy the webhook URL, paste it, and test.
-- **Email**: Enter your alert recipient address (requires `RESEND_API_KEY` on self-hosted servers).
+- **Email**: Enter your alert recipient address and click **Send test email**.
 - **Minimum severity & Weekly digest**: Choose the minimum severity that triggers immediate alerts (`critical`, `high`, `medium`, `low`, `info`) and optionally enable the **Weekly posture digest**. Failed deliveries retry automatically in the **Recent alert deliveries** outbox.
 
 ---
@@ -151,6 +151,9 @@ Open **Integrations → Alerts** (or toggle channels quickly from **Settings**):
 ## 10. Troubleshooting & FAQ
 
 - **Why failed domain verification?** DNS `TXT` records can take a few minutes to propagate. If using the `<meta>` tag on a Vite/React SPA, confirm the tag is in static `index.html` rather than injected by client-side JavaScript.
-- **Why does my scan say `Partial`?** Click the scan row in **Scans** to see which check returned `not checked` or `error` (for example, a repo with >500 files or a Supabase project without the optional `bulwark_check_rls.sql` helper).
+- **Why does my scan say `Partial`?** Click the scan row in **Scans** to see which check returned `not checked` or `error` (for example, a repo with >500 files or a Supabase project without the optional `bulwark_check_rls.sql` helper). Findings from checks that *did* complete still auto-resolve once you fix them — a skipped RLS check never blocks a fixed Storage bucket from clearing.
+- **Will I be alerted if a fixed issue comes back?** Yes. A previously resolved finding that reappears, or a snoozed finding whose snooze expires while the issue is still present, re-opens and triggers your configured alerts.
+- **What is "Subdomain takeover risk"?** Your subdomain's DNS `CNAME` points at a hosting project (GitHub Pages, S3, Heroku, Vercel, Netlify, Azure, Render…) that no longer exists. Anyone can claim that project name and serve content on your subdomain. Delete the stale `CNAME` record immediately.
+- **How do I delete my data?** Open **Settings → Danger zone → Delete workspace & account** and type `DELETE`. Every site, scan, finding, encrypted GitHub/Supabase credential, AI key, alert setting, and the account itself are permanently removed.
 - **I committed a secret and deleted it in the next commit — why is Bulwark still flagging it?** Bulwark scans recent commit history (`history_secret_*`) because anyone who can read the repo can still extract keys from prior commits. Rotate/revoke the credential in the provider's dashboard immediately.
 - **What are the Free plan limits?** Up to **5 monitored websites** per workspace (with scan intervals from 15 minutes to daily), plus GitHub and Supabase connections.

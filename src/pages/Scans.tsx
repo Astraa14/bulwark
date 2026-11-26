@@ -4,6 +4,7 @@ import {
   CHECK_OUTCOME_ORDER,
   checkOutcome,
   downloadCsv,
+  normalizeCheckResults,
   outcomeLabel,
   outcomeText,
   scanOutcomeSummary,
@@ -128,7 +129,7 @@ export function Scans({
           const summary = scanOutcomeSummary(s);
           const state = scanState(s, summary);
           const expanded = expandedScanId === s.id;
-          const results = Array.isArray(s.check_results) ? s.check_results : [];
+          const results = normalizeCheckResults(s.check_results);
           const coverageNotes = Array.isArray(s.coverage?.notes) ? s.coverage.notes : [];
           const incompleteReason = [
             summary.not_checked ? outcomeText("not_checked", summary.not_checked) : null,

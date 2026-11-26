@@ -136,6 +136,7 @@ async function inspectAnonSurface(baseUrl, apiKey, specBody, dashboardBase, { fe
   const surface = parseOpenApiSurface(spec);
   if (!surface.exposed) {
     return {
+      openapiExposed: false,
       findings: [],
       errors: [],
       tablesExposed: 0,
@@ -220,6 +221,7 @@ async function inspectAnonSurface(baseUrl, apiKey, specBody, dashboardBase, { fe
   }
 
   return {
+    openapiExposed: true,
     findings,
     errors,
     tablesExposed: surface.tables.length,
@@ -354,7 +356,7 @@ export async function scanSupabaseProject(projectUrl, apiKey, opts = {}) {
     checkResults.push(
       outcome("anon_surface", "Public anon API surface", "error", anonAudit.errors[0]),
     );
-  } else if (anonAudit.tablesExposed > 0 || anonAudit.rpcsExposed > 0) {
+  } else if (anonAudit.openapiExposed) {
     checkResults.push(
       outcome(
         "anon_surface",

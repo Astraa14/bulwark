@@ -134,6 +134,9 @@ const EXTRA_SHIP_BLOCKER_KEYS = new Set([
   "stripe_test_key_in_production",
   "webhook_missing_signature_verification",
   "ai_route_without_auth",
+  "ssrf_unvalidated_fetch",
+  "jwt_decode_without_verify",
+  "dns_dangling_cname",
   "supabase_anon_readable_table",
   "site_supabase_anon_exposure",
   "supabase_function_unverified_jwt",
@@ -176,6 +179,15 @@ export function findingImpactSummary(finding: FindingRow): string {
   }
   if (key === "webhook_missing_signature_verification") {
     return "Anyone can POST a forged webhook payload to spoof payments or upgrade accounts for free.";
+  }
+  if (key === "ssrf_unvalidated_fetch") {
+    return "Attackers can make your server fetch internal cloud metadata or private network endpoints.";
+  }
+  if (key === "jwt_decode_without_verify") {
+    return "Forged JWT payloads are accepted without checking the cryptographic signature.";
+  }
+  if (key === "dns_dangling_cname") {
+    return "A subdomain CNAME points to an unclaimed cloud project — anyone can claim it and hijack your traffic.";
   }
   if (key === "supabase_function_unverified_jwt" || key === "supabase_anon_rpc_exposed") {
     return "Unauthenticated callers can invoke this backend function directly with the anon key.";
@@ -301,8 +313,59 @@ export function checkOutcome(result: ScanCheckResult): CheckOutcome {
   return "not_checked";
 }
 
+const WEBSITE_CHECK_LABELS: Record<string, string> = {
+  site_uptime: "HTTPS reachability",
+  http_status: "Homepage HTTP status",
+  response_time: "Homepage response time",
+  tls: "TLS certificate",
+  security_headers: "Security headers",
+  csp_policy: "Content Security Policy",
+  cookies: "Cookie security flags",
+  mixed_content: "Mixed content",
+  directory_listing: "Directory listing",
+  defacement: "Homepage integrity",
+  exposed_files: "Exposed sensitive files",
+  cors: "CORS configuration",
+  public_discovery: "Public discovery files",
+  secrets: "Client bundle & secret scan",
+  api_exposure: "API & GraphQL exposure",
+  domain_registration: "Domain expiry (RDAP)",
+  dns: "DNS & email authentication",
+};
+
+/**
+ * Normalizes stored `check_results` across structured arrays (GitHub, Supabase,
+ * and modern website scans) and legacy `{ [checkKey]: outcome }` objects so
+ * every scan renders per-check breakdowns consistently.
+ */
+export function normalizeCheckResults(raw: unknown): ScanCheckResult[] {
+  if (Array.isArray(raw)) return raw as ScanCheckResult[];
+  if (!raw || typeof raw !== "object") return [];
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (!entries.length) return [];
+  return entries.map(([key, value]) => {
+    if (value && typeof value === "object") {
+      const obj = value as Partial<ScanCheckResult>;
+      return {
+        key,
+        label: obj.label || WEBSITE_CHECK_LABELS[key] || key,
+        status: String(obj.status ?? "not_checked"),
+        complete: obj.complete,
+        ...(obj.error ? { error: String(obj.error) } : {}),
+      };
+    }
+    const status = String(value ?? "not_checked");
+    return {
+      key,
+      label: WEBSITE_CHECK_LABELS[key] ?? key.replace(/_/g, " "),
+      status,
+      complete: status === "pass" || status === "passed" || status === "finding",
+    };
+  });
+}
+
 export function scanOutcomeSummary(scan: ScanRow): ScanOutcomeSummary {
-  const results = Array.isArray(scan.check_results) ? scan.check_results : [];
+  const results = normalizeCheckResults(scan.check_results);
   const hasStoredCounts = scan.checks_errored != null || scan.checks_skipped != null;
   const detailed = results.length > 0 || hasStoredCounts;
   const fromResults: Record<CheckOutcome, number> = {

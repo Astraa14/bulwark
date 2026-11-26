@@ -4,6 +4,7 @@ import { lookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
+import { WEBSITE_CHECK_LABELS } from "./check-groups.mjs";
 
 const UA = "BulwarkBot/0.3 (+https://bulwark.app/bot)";
 
@@ -653,6 +654,44 @@ function checkHeaders(headers) {
       out.push(finding(h.check, h.title, h.severity, h.detail));
     }
   }
+  const hsts = headers["strict-transport-security"];
+  if (hsts) {
+    const maxAgeMatch = String(hsts).match(/max-age\s*=\s*(\d+)/i);
+    if (maxAgeMatch && Number(maxAgeMatch[1]) < 86_400) {
+      const seconds = Number(maxAgeMatch[1]);
+      out.push(
+        finding(
+          "hsts_short_max_age",
+          seconds === 0 ? "HSTS is disabled (max-age=0)" : "HSTS max-age is shorter than 24 hours",
+          seconds === 0 ? "medium" : "low",
+          seconds === 0
+            ? "`Strict-Transport-Security` sets `max-age=0`, which instructs browsers to immediately clear HSTS protection and allow plain HTTP connections again."
+            : "`Strict-Transport-Security` sets a `max-age` below 24 hours, so returning visitors lose HTTPS downgrade protection quickly.",
+          {
+            evidence: String(hsts).slice(0, 180),
+            remediation:
+              "Set `Strict-Transport-Security: max-age=31536000; includeSubDomains` (1 year) once HTTPS works across the domain.",
+          },
+        ),
+      );
+    }
+  }
+  const xfo = headers["x-frame-options"] ?? "";
+  if (/\b(?:allowall|allow-from)\b/i.test(xfo)) {
+    out.push(
+      finding(
+        "xfo_allowall",
+        "X-Frame-Options permits framing via deprecated or open directive",
+        "medium",
+        "The `X-Frame-Options` header uses `ALLOWALL` or the obsolete `ALLOW-FROM` directive, which modern browsers ignore — leaving authenticated pages open to clickjacking.",
+        {
+          evidence: String(xfo).slice(0, 180),
+          remediation:
+            "Use `X-Frame-Options: DENY` (or `SAMEORIGIN`), or restrict framing with CSP `frame-ancestors 'none'`.",
+        },
+      ),
+    );
+  }
   const server = headers["server"] ?? "";
   if (/\d/.test(server)) {
     out.push(
@@ -703,6 +742,21 @@ function checkCspQuality(headers) {
         "high",
         "A wildcard source in script-src or default-src lets an attacker load scripts from a domain they control.",
         { evidence: csp.slice(0, 220) },
+      ),
+    );
+  }
+  if (/\bframe-ancestors[^;]*(?:\s\*|\shttp:)\s*(?:;|$)/.test(lower)) {
+    out.push(
+      finding(
+        "csp_frame_ancestors_wildcard",
+        "CSP frame-ancestors allows framing from any origin",
+        "medium",
+        "Your Content-Security-Policy sets `frame-ancestors *` or `http:`, allowing any third-party site to embed your app in an invisible iframe for clickjacking.",
+        {
+          evidence: csp.slice(0, 220),
+          remediation:
+            "Set `frame-ancestors 'none'` or list only explicit trusted HTTPS origins.",
+        },
       ),
     );
   }
@@ -1334,27 +1388,42 @@ async function checkApiExposureInner(domain) {
   return { findings, error: errors.length ? errors.join("; ") : null };
 }
 
-let rdapBootstrapCache = { cached: false, error: null, services: [] };
+const RDAP_CACHE_OK_TTL_MS = 24 * 60 * 60 * 1000;
+const RDAP_CACHE_ERR_TTL_MS = 60 * 1000;
 
-async function rdapBaseUrl(tld) {
-  if (!rdapBootstrapCache.cached) {
+let rdapBootstrapCache = { expiresAt: 0, error: null, services: [] };
+
+export function resetRdapBootstrapCache() {
+  rdapBootstrapCache = { expiresAt: 0, error: null, services: [] };
+}
+
+async function rdapBaseUrl(tld, now = Date.now()) {
+  if (now >= rdapBootstrapCache.expiresAt) {
     try {
       const res = await fetchWithTimeout("https://data.iana.org/rdap/dns.json", { timeout: 12000 });
       if (res.error) {
-        rdapBootstrapCache = { cached: true, error: res.error, services: [] };
+        rdapBootstrapCache = {
+          expiresAt: now + RDAP_CACHE_ERR_TTL_MS,
+          error: res.error,
+          services: [],
+        };
       } else if (res.status === null || res.status !== 200) {
         rdapBootstrapCache = {
-          cached: true,
+          expiresAt: now + RDAP_CACHE_ERR_TTL_MS,
           error: res.status === null ? "no response" : `HTTP ${res.status}`,
           services: [],
         };
       } else {
-        rdapBootstrapCache = JSON.parse(res.body ?? "{}");
-        rdapBootstrapCache.cached = true;
+        const parsed = JSON.parse(res.body ?? "{}");
+        rdapBootstrapCache = {
+          expiresAt: now + RDAP_CACHE_OK_TTL_MS,
+          error: null,
+          services: Array.isArray(parsed?.services) ? parsed.services : [],
+        };
       }
     } catch (err) {
       rdapBootstrapCache = {
-        cached: true,
+        expiresAt: now + RDAP_CACHE_ERR_TTL_MS,
         error: err?.message ?? String(err),
         services: [],
       };
@@ -1462,18 +1531,110 @@ async function dohQuery(name, type) {
   return { records: json.Answer ?? [], error: null };
 }
 
-async function checkDnsInner(domain) {
+const DANGLING_CNAME_SIGNATURES = [
+  {
+    provider: "GitHub Pages",
+    targetRe: /\.github\.io$/i,
+    bodyRe: /There isn't a GitHub Pages site here/i,
+  },
+  {
+    provider: "Amazon S3",
+    targetRe: /\.s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com$/i,
+    bodyRe: /NoSuchBucket|The specified bucket does not exist/i,
+  },
+  {
+    provider: "Heroku",
+    targetRe: /\.(?:herokudns\.com|herokuapp\.com)$/i,
+    bodyRe: /No such app|herokucdn\.com\/error-pages\/no-such-app/i,
+  },
+  {
+    provider: "Vercel",
+    targetRe: /\.(?:vercel-dns\.com|vercel\.app|now\.sh)$/i,
+    bodyRe: /DEPLOYMENT_NOT_FOUND|The deployment could not be found/i,
+  },
+  {
+    provider: "Netlify",
+    targetRe: /\.netlify\.app$/i,
+    bodyRe: /Not Found - Request ID:/i,
+  },
+  {
+    provider: "Azure",
+    targetRe: /\.(?:azurewebsites\.net|azurefd\.net|blob\.core\.windows\.net)$/i,
+    bodyRe: /Error 404 - Web app not found|The specified container does not exist/i,
+  },
+  {
+    provider: "Render",
+    targetRe: /\.onrender\.com$/i,
+    bodyRe: /This Render service is either suspended or does not exist/i,
+  },
+  {
+    provider: "Surge.sh",
+    targetRe: /\.surge\.sh$/i,
+    bodyRe: /project not found/i,
+  },
+  {
+    provider: "Ghost",
+    targetRe: /\.ghost\.io$/i,
+    bodyRe: /The thing you were looking for is no longer here/i,
+  },
+  {
+    provider: "Shopify",
+    targetRe: /\.myshopify\.com$/i,
+    bodyRe: /Sorry, this shop is currently unavailable/i,
+  },
+];
+
+async function checkDnsInner(domain, page = null) {
   const findings = [];
   const errors = [];
   if (isIpOrLocal(domain)) return { findings, error: null };
   const registrable = registrableDomain(domain);
+  const isSubdomain = domain !== registrable;
 
-  const [nsResult, mxResult, txtResult, dmarcResult] = await Promise.all([
+  const [nsResult, mxResult, txtResult, dmarcResult, cnameResult] = await Promise.all([
     dohQuery(registrable, "NS"),
     dohQuery(registrable, "MX"),
     dohQuery(registrable, "TXT"),
     dohQuery(`_dmarc.${registrable}`, "TXT"),
+    isSubdomain ? dohQuery(domain, "CNAME") : Promise.resolve({ records: [], error: null }),
   ]);
+
+  if (isSubdomain && !cnameResult.error && (cnameResult.records?.length ?? 0) > 0) {
+    const cnameTargets = cnameResult.records
+      .filter((r) => r.type === 5 || typeof r.data === "string")
+      .map((r) => String(r.data ?? "").trim().toLowerCase().replace(/\.$/, ""))
+      .filter(Boolean);
+
+    const status = page?.status ?? null;
+    const body = String(page?.body ?? "");
+    if (status === 404 || status === 410) {
+      for (const target of cnameTargets) {
+        const sig = DANGLING_CNAME_SIGNATURES.find(
+          (entry) => entry.targetRe.test(target) && entry.bodyRe.test(body),
+        );
+        if (sig) {
+          findings.push(
+            finding(
+              "dns_dangling_cname",
+              `Subdomain takeover risk on ${domain} (${sig.provider})`,
+              "critical",
+              `\`${domain}\` has a DNS \`CNAME\` pointing to \`${target}\`, and ${sig.provider} returned an unclaimed-project 404 page. Anyone can register that ${sig.provider} project/bucket name to serve phishing pages, steal domain-scoped cookies, or intercept OAuth redirects on \`${domain}\`.`,
+              {
+                url: `https://${domain}/`,
+                evidence: `${domain} CNAME → ${target} · HTTP ${status} (${sig.provider} unclaimed page)`,
+                affected_resource: `${domain}->${target}`,
+                confidence: "high",
+                what_it_does_not_prove:
+                  "Some providers temporarily reserve recently deleted project names before allowing another account to claim them.",
+                remediation: `Delete the stale \`CNAME\` record for \`${domain}\` in your DNS provider immediately, or re-attach \`${domain}\` to your active ${sig.provider} deployment.`,
+              },
+            ),
+          );
+          break;
+        }
+      }
+    }
+  }
 
   if (nsResult.error) errors.push(`DNS NS lookup: ${nsResult.error}`);
   else if (nsResult.records && nsResult.records.length === 0) {
@@ -1772,9 +1933,18 @@ export async function runChecks(rawDomain, { baseline = null, lookup: customLook
   const findings = [];
   const start = Date.now();
   const checkResults = {};
+  const checkResultsList = [];
 
   const register = (key, outcome, error = null) => {
     checkResults[key] = outcome;
+    const entry = {
+      key,
+      label: WEBSITE_CHECK_LABELS[key] ?? key,
+      status: outcome,
+      complete: outcome === "pass" || outcome === "finding",
+    };
+    if (error) entry.error = String(error);
+    checkResultsList.push(entry);
   };
 
   // --- Gating check: site uptime ---
@@ -1800,6 +1970,7 @@ export async function runChecks(rawDomain, { baseline = null, lookup: customLook
       checksErrored: 1,
       checksSkipped: 0,
       checkResults,
+      checkResultsList,
       findings,
       error: page.error,
     };
@@ -1915,7 +2086,7 @@ export async function runChecks(rawDomain, { baseline = null, lookup: customLook
     runCheck("secrets", () => checkLeakedSecretsInner(domain, page, { lookup: customLookup })),
     runCheck("api_exposure", () => checkApiExposureInner(domain)),
     runCheck("domain_registration", () => checkDomainExpiryInner(domain)),
-    runCheck("dns", () => checkDnsInner(domain)),
+    runCheck("dns", () => checkDnsInner(domain, page)),
   ]);
 
   for (const r of [
@@ -1958,6 +2129,7 @@ export async function runChecks(rawDomain, { baseline = null, lookup: customLook
     checksErrored,
     checksSkipped,
     checkResults,
+    checkResultsList,
     findings: unique,
     tls,
     pageSample: defacement.sample,
@@ -1966,4 +2138,4 @@ export async function runChecks(rawDomain, { baseline = null, lookup: customLook
   };
 }
 
-export { normalizeDomain, ensureSafeFetchUrl, fetchWithTimeout };
+export { normalizeDomain, ensureSafeFetchUrl, fetchWithTimeout, rdapBaseUrl };

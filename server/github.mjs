@@ -595,13 +595,52 @@ const WEBHOOK_PROVIDER_RE = /\b(?:stripe|lemonsqueezy|lemon_squeezy|paddle|polar
 const WEBHOOK_VERIFY_RE =
   /\b(?:constructEvent|constructEventAsync|webhooks\.verify|Webhook\s*\(|timingSafeEqual|createHmac|compare_digest|verifySignature|validateEvent|verifyWebhook)\b|["'](?:stripe-signature|svix-signature|x-signature|x-hub-signature-256|webhook-signature)["']/i;
 
+const SSRF_GUARD_RE =
+  /\b(?:ensureSafeFetchUrl|isBlockedIpAddress|isBlockedOutboundHost|allowedHosts|allowlist|whitelist|validatingLookup|isSlackWebhookUrl|isDiscordWebhookUrl|assertSupabaseProjectUrl|safeExternalUrl)\b|new\s+URL\s*\([^)]+\)\.(?:host|hostname|origin)\s*(?:===|!==)|\.hostname\.endsWith\s*\(/;
+const SSRF_PARAM_ASSIGN_RE =
+  /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:(?:(?:new\s+URL\s*\([^)]*\)|[A-Za-z0-9_$.]+)\.)?searchParams\.get\(\s*["'](?:url|target|target_?url|image_?url|webhook_?url|proxy_?url|callback_?url|feed_?url)["']\s*\)|req\.(?:query|body)\.(?:url|target|targetUrl|imageUrl|webhookUrl|proxyUrl|callbackUrl)|formData\.get\(\s*["'](?:url|target_?url|webhook_?url)["']\s*\))/g;
+const SSRF_DESTRUCTURE_RE =
+  /\b(?:const|let|var)\s*\{[^}]*\b(url|targetUrl|imageUrl|webhookUrl|proxyUrl|callbackUrl|feedUrl)\b[^}]*\}\s*=\s*(?:await\s+[A-Za-z0-9_$.]+\.json\(\)|req\.(?:query|body))/g;
+const PY_SSRF_ASSIGN_RE =
+  /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*request\.(?:args|query_params|json)\.get\(\s*["'](?:url|target_url|webhook_url|callback_url|proxy_url)["']\s*\)/gm;
+
+const JWT_DECODE_CALL_RE = /\b(?:jwt\.decode|jsonwebtoken\.decode|decodeJwt)\s*\(/;
+const JWT_VERIFY_GUARD_RE =
+  /\b(?:jwt\.verify|jsonwebtoken\.verify|jwtVerify|verifyToken|verifyIdToken|createRemoteJWKSet|auth\.getUser)\s*\(|options\s*=\s*\{[^}]*verify_signature\s*:\s*True/i;
+
+function findTaintedUrlFetch(content) {
+  const candidates = new Set();
+  for (const m of content.matchAll(SSRF_PARAM_ASSIGN_RE)) {
+    if (m[1]) candidates.add(m[1]);
+  }
+  for (const m of content.matchAll(SSRF_DESTRUCTURE_RE)) {
+    if (m[1]) candidates.add(m[1]);
+  }
+  for (const m of content.matchAll(PY_SSRF_ASSIGN_RE)) {
+    if (m[1]) candidates.add(m[1]);
+  }
+  for (const ident of candidates) {
+    const escaped = ident.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const sinkRe = new RegExp(
+      `\\b(?:fetch|axios(?:\\.(?:get|post|put|delete|head|request))?|requests\\.(?:get|post|request)|httpx\\.(?:get|post))\\s*\\(\\s*${escaped}\\s*[,)]`,
+    );
+    if (sinkRe.test(content)) return ident;
+  }
+  return null;
+}
+
 export function scanVibeCodeFootguns(content, path, { owner, repo, commitSha }) {
   const out = [];
   if (!content || isTestFile(path)) return out;
   if (!/\.(?:[cm]?[jt]sx?|py)$/i.test(path)) return out;
 
+  const isClientUiPath = /^(?:src\/)?(?:components|pages\/(?!api\/)|screens|hooks|contexts)\//i.test(
+    path,
+  );
   const isRouteOrAction =
-    API_ROUTE_FILE_RE.test(path) || SERVER_ACTION_DIRECTIVE_RE.test(content);
+    API_ROUTE_FILE_RE.test(path) ||
+    SERVER_ACTION_DIRECTIVE_RE.test(content) ||
+    (!isClientUiPath && /\b(?:app|router)\.(?:get|post|put|all)\s*\(/.test(content));
 
   if (
     isRouteOrAction &&
@@ -650,6 +689,55 @@ export function scanVibeCodeFootguns(content, path, { owner, repo, commitSha }) 
             "Signature verification might live in a shared helper imported from another file; confirm the raw body signature is verified before trusting `req.json()`.",
           remediation:
             "Read the raw request body (`await req.text()`) and verify the provider's signature header (e.g. `stripe.webhooks.constructEvent(rawBody, sig, webhookSecret)`) before updating database state.",
+        },
+      ),
+    );
+  }
+
+  if (isRouteOrAction && !SSRF_GUARD_RE.test(content)) {
+    const taintedIdent = findTaintedUrlFetch(content);
+    if (taintedIdent) {
+      out.push(
+        finding(
+          "ssrf_unvalidated_fetch",
+          `Server route fetches user-supplied URL without host validation: ${path}`,
+          "high",
+          `\`${path}\` reads a URL parameter (\`${taintedIdent}\`) from the incoming request and passes it directly into \`fetch\` / an HTTP client without checking the destination host or blocking private IP ranges. Attackers can abuse this as a Server-Side Request Forgery (SSRF) proxy to read cloud metadata (\`169.254.169.254\`) or internal services.`,
+          {
+            url: blobUrl(owner, repo, commitSha, path),
+            evidence: `Unvalidated URL parameter \`${taintedIdent}\` passed directly to outbound HTTP call in ${path}`,
+            affected_resource: path,
+            confidence: "high",
+            what_it_does_not_prove:
+              "Network-level egress firewall rules or a helper outside this file might still block private IP ranges.",
+            remediation:
+              "Parse the URL, enforce `https:`, allowlist expected hostnames (or resolve DNS and block loopback, RFC1918, and link-local `169.254.0.0/16` addresses), and re-validate redirects.",
+          },
+        ),
+      );
+    }
+  }
+
+  if (
+    !isClientUiPath &&
+    JWT_DECODE_CALL_RE.test(content) &&
+    !JWT_VERIFY_GUARD_RE.test(content)
+  ) {
+    out.push(
+      finding(
+        "jwt_decode_without_verify",
+        `JWT decoded without signature verification: ${path}`,
+        "high",
+        `\`${path}\` calls \`jwt.decode\` / \`decodeJwt\` without verifying the cryptographic signature in the same module. \`decode\` only base64-parses the token payload — an attacker can forge any \`sub\`, \`email\`, or \`role\` claim and pass it straight through.`,
+        {
+          url: blobUrl(owner, repo, commitSha, path),
+          evidence: `Unverified JWT decode call in ${path}`,
+          affected_resource: path,
+          confidence: "medium",
+          what_it_does_not_prove:
+            "If an upstream gateway or auth SDK already verified the exact token string before this code runs, decoding claims for display may be benign.",
+          remediation:
+            "Replace `jwt.decode(token)` with cryptographic verification (`jwt.verify(token, secret)`, `jose.jwtVerify(token, jwks)`, or `supabase.auth.getUser(token)`).",
         },
       ),
     );

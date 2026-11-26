@@ -83,6 +83,18 @@ export function buildFixPrompt(
     lines.push(
       "3. Read the raw request body (`await req.text()`) and verify the webhook provider's cryptographic signature header (e.g. `stripe.webhooks.constructEvent`) before parsing JSON or updating database state.",
     );
+  } else if (finding.check_key === "ssrf_unvalidated_fetch") {
+    lines.push(
+      "3. Validate the parsed `URL` protocol (`https:` only), allowlist expected hostnames (or resolve DNS and block loopback, RFC1918, CGNAT, and `169.254.0.0/16` metadata IPs), and re-validate every redirect hop.",
+    );
+  } else if (finding.check_key === "jwt_decode_without_verify") {
+    lines.push(
+      "3. Replace `jwt.decode` / `decodeJwt` with cryptographic signature verification (`jwt.verify`, `jose.jwtVerify`, or `supabase.auth.getUser`) before trusting any token claims.",
+    );
+  } else if (finding.check_key === "dns_dangling_cname") {
+    lines.push(
+      "3. Remove the dangling DNS `CNAME` record in your DNS provider immediately (or bind the subdomain to your active hosting project) so an attacker cannot claim the target resource.",
+    );
   } else if (finding.check_key === "supabase_function_unverified_jwt") {
     lines.push(
       "3. Re-enable `verify_jwt = true` in `supabase/config.toml` (or verify `Authorization` / webhook HMAC signatures inside the function) before calling `SUPABASE_SERVICE_ROLE_KEY`.",

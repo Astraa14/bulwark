@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { alertNewFindings } from "./alerts.mjs";
+import { resolvePartialScanFindings } from "./check-groups.mjs";
 import { resolveConnection } from "./connections.mjs";
 import { scanGitHubRepo } from "./github.mjs";
 import { assertScanId } from "./scan-id.mjs";
@@ -140,6 +141,22 @@ export async function scanGitHubConnection({
     }),
   );
 
+  if (!persisted.duplicate && result.status === "partial") {
+    try {
+      await resolvePartialScanFindings(db, {
+        userId,
+        platform: "github",
+        connectionId: connection.id,
+        resource,
+        checkResults: result.checkResults ?? [],
+        coverage: result.coverage ?? null,
+        findings: result.findings ?? [],
+      });
+    } catch (err) {
+      logger?.error?.(`partial resolution failed for ${resource}: ${err.message}`);
+    }
+  }
+
   if (result.status !== "failed") {
     await sendAlerts(db, { userId, resource, persisted, appUrl, logger });
   }
@@ -198,6 +215,22 @@ export async function scanSupabaseConnection({
       deliveryId,
     }),
   );
+
+  if (!persisted.duplicate && result.status === "partial") {
+    try {
+      await resolvePartialScanFindings(db, {
+        userId,
+        platform: "supabase",
+        connectionId: connection.id,
+        resource,
+        checkResults: result.checkResults ?? [],
+        coverage: result.coverage ?? null,
+        findings: result.findings ?? [],
+      });
+    } catch (err) {
+      logger?.error?.(`partial resolution failed for ${resource}: ${err.message}`);
+    }
+  }
 
   if (result.status !== "failed") {
     await sendAlerts(db, { userId, resource, persisted, appUrl, logger });

@@ -59,8 +59,8 @@ Using the hosted app at **[bulwarksecure.vercel.app](https://bulwarksecure.verce
 
 | Layer | What Bulwark Verifies | Vibe-Coder Differentiators |
 |---|---|---|
-| **1. Live Website** (`server/checks.mjs`) | TLS validity/expiry, DNS (`NS`, `MX`, `SPF`, `DMARC`), RDAP domain expiry, `HSTS`/`CSP`/cookie flags, wildcard & reflected CORS, exposed `.env`/`.git`/SQL dumps, `.js.map` source maps, `/openapi.json` & `/graphql` introspection, homepage defacement drift | **Auto-discovers public Supabase projects** from frontend JS bundles and runs zero-row `HEAD` probes for `anon`-readable tables; flags live `pk_test_` Stripe keys on production domains |
-| **2. GitHub Repository** (`server/github.mjs`) | Hardcoded secrets + **bounded 10-commit history** scan, [OSV](https://osv.dev) advisories across `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `requirements.txt`, `poetry.lock`, and `uv.lock` (up to 3 MB), root Dockerfiles, `pull_request_target`, `permissions: write-all`, mutable `@main` Actions | Flags **unauthenticated metered AI routes** (wallet drain), **unsigned Stripe/Clerk/webhook handlers**, `NEXT_PUBLIC_*`/`VITE_*` secret env names, `verify_jwt = false` Edge Functions using `service_role`, cross-file `supabase/migrations/*.sql` missing RLS, and `.gitignore` missing `.env*` |
+| **1. Live Website** (`server/checks.mjs`) | TLS validity/expiry, DNS (`NS`, `MX`, `SPF`, `DMARC`), RDAP domain expiry, `HSTS` (missing or `max-age` too short)/`CSP`/clickjacking framing/cookie flags, wildcard & reflected CORS, exposed `.env`/`.git`/SQL dumps, `.js.map` source maps, `/openapi.json` & `/graphql` introspection, homepage defacement drift | **Subdomain takeover detection** (dangling `CNAME` to unclaimed GitHub Pages / S3 / Heroku / Vercel / Netlify / Azure / Render projects); **auto-discovers public Supabase projects** from frontend JS bundles and runs zero-row `HEAD` probes for `anon`-readable tables; flags live `pk_test_` Stripe keys on production domains |
+| **2. GitHub Repository** (`server/github.mjs`) | Hardcoded secrets + **bounded 10-commit history** scan, [OSV](https://osv.dev) advisories across `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `requirements.txt`, `poetry.lock`, and `uv.lock` (up to 3 MB), root Dockerfiles, `pull_request_target`, `permissions: write-all`, mutable `@main` Actions | Flags **unauthenticated metered AI routes** (wallet drain), **unsigned Stripe/Clerk/webhook handlers**, **SSRF-prone routes** that `fetch()` a user-supplied URL, **`jwt.decode` without signature verification**, `NEXT_PUBLIC_*`/`VITE_*` secret env names, `verify_jwt = false` Edge Functions using `service_role`, cross-file `supabase/migrations/*.sql` missing RLS, and `.gitignore` missing `.env*` |
 | **3. Supabase Project** (`server/supabase.mjs`) | Connectivity, public Storage buckets, optional policy-level RLS inspection via [`bulwark_check_rls.sql`](supabase/customer/bulwark_check_rls.sql), scheduled background re-scans | **Zero-SQL-helper `anon` surface audit**: inspects PostgREST OpenAPI exposure, custom `/rpc/*` functions, and `HEAD ?limit=1` row counts (**0 bytes** of customer table data read) |
 
 ---
@@ -113,6 +113,9 @@ Bulwark is built to be audited:
 - **Encryption at Rest with Key Rotation** — User BYOK keys (`$0` token markup), platform tokens, and alert webhooks are encrypted server-side with **AES-256-GCM** (`BULWARK_ENCRYPTION_KEY` + `BULWARK_ENCRYPTION_KEY_OLD` seamless rotation) and never returned to the browser.
 - **Strict Tenant Isolation & Atomic Persistence** — Every table enforces owner-scoped Postgres Row Level Security (`auth.uid() = user_id`). Scan results, check outcomes, finding deduplication, and snooze expiry run inside single-transaction `SECURITY DEFINER` RPCs (`persist_scan_result`, `persist_platform_scan_result`) keyed by deterministic UUIDv5 scan slots.
 - **Explicit Coverage Honesty** — Every check reports `pass`, `finding`, `not_checked`, or `error`. Incomplete or errored checks mark the scan `partial` rather than silently claiming "clean."
+- **Accurate Finding Lifecycle** — Fixed findings auto-resolve on the next scan even when an unrelated check was skipped (e.g. the optional RLS helper is not installed), regressions and expired snoozes re-alert, and every manual **Re-check now** runs as a fresh scan.
+- **Operational Readiness** — `GET /api/health` verifies database connectivity and encryption-key configuration and reports the last worker heartbeat; API and worker shut down gracefully so in-flight scans release their leases.
+- **Your Data, Your Call** — **Settings → Danger zone** permanently deletes every site, scan, finding, encrypted credential, and the account itself.
 
 ---
 
@@ -135,7 +138,7 @@ Bulwark is built to be audited:
 │   ├── supabase.mjs            # Zero-helper PostgREST anon surface & storage/RLS scanner
 │   ├── alerts.mjs              # Slack, Discord, Resend email & weekly digest outbox
 │   ├── ai.mjs                  # BYOK OpenAI, Anthropic & Google Gemini client
-│   └── *.test.mjs              # 154 unit, SSRF, tenant-isolation, migration & UI helper tests
+│   └── *.test.mjs              # 169 unit, SSRF, tenant-isolation, migration & UI helper tests
 ├── supabase/
 │   ├── migrations/             # 19 ordered, idempotent SQL migrations
 │   ├── apply_all.sql           # Generated single-file schema bundle (`npm run db:apply-all`)
@@ -145,38 +148,7 @@ Bulwark is built to be audited:
 
 ---
 
-## Self-Hosting & Local Development
-
-### Prerequisites
-- **Node.js `>= 22.6`**
-- A **Supabase** project (for authentication, RLS-protected storage, and scan job queues)
-
-### 1. Install & configure
-```bash
-npm install
-cp .env.example .env.local
-```
-Fill in `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and a random 32+ character `BULWARK_ENCRYPTION_KEY` in `.env.local`, then run [`supabase/apply_all.sql`](supabase/apply_all.sql) once in your Supabase **SQL Editor**.
-
-### 2. Run locally
-```bash
-npm run dev      # Vite SPA on http://localhost:8443 (runs in demo mode if .env.local is omitted)
-npm run api      # Express API on http://127.0.0.1:8787
-npm run worker   # Background scan & alert outbox worker
-```
-
-### 3. Verify & build
-```bash
-npx tsc --noEmit      # Typecheck frontend & Vite config
-npm run db:check      # Verify supabase/apply_all.sql matches migrations
-npm test              # Run all 154 automated tests
-npm run build         # Build code-split production bundle
-```
-
----
-
 ## Documentation
-- **[User Guide (`docs/USER_GUIDE.md`)](docs/USER_GUIDE.md)** — Step-by-step setup for websites, GitHub PATs/webhooks, Supabase keys/RLS helper, AI Copilot, and alerts.
+- **[User Guide (`docs/USER_GUIDE.md`)](docs/USER_GUIDE.md)** — Step-by-step setup for websites, GitHub PATs/webhooks, Supabase keys/RLS helper, AI Copilot, alerts, and account deletion.
 - **[Product Scope (`PRODUCT_SCOPE.md`)](PRODUCT_SCOPE.md)** — Exact check matrix, trust boundaries, data handling, and explicit non-goals.
 - **[Security Policy (`SECURITY.md`)](SECURITY.md)** — Security architecture and private vulnerability reporting.
-- **[Render Blueprint (`render.yaml`)](render.yaml)** — Production deployment configuration and network egress recommendations.

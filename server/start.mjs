@@ -6,8 +6,8 @@ import { spawn } from "node:child_process";
 
 console.log(
   "Bulwark starting · Application-level SSRF protection enforced · " +
-  "Consider network-level egress controls (firewall/VPC) to block outbound " +
-  "traffic to private IP ranges (see render.yaml).",
+    "Consider network-level egress controls (firewall/VPC) to block outbound " +
+    "traffic to private IP ranges (see render.yaml).",
 );
 
 const children = [
@@ -16,16 +16,26 @@ const children = [
 ];
 
 let stopping = false;
+let exitCode = 0;
+let alive = children.length;
 
 function shutdown(code) {
-  if (stopping) return;
-  stopping = true;
-  for (const child of children) child.kill("SIGTERM");
-  setTimeout(() => process.exit(code), 2500).unref();
+  if (!stopping) {
+    stopping = true;
+    exitCode = code;
+    for (const child of children) {
+      if (child.exitCode === null) child.kill("SIGTERM");
+    }
+    setTimeout(() => process.exit(exitCode), 11_000).unref();
+  }
+  if (alive <= 0) process.exit(exitCode);
 }
 
 for (const child of children) {
-  child.on("exit", (code) => shutdown(code ?? 0));
+  child.on("exit", (code) => {
+    alive -= 1;
+    shutdown(stopping ? exitCode : (code ?? 0));
+  });
   child.on("error", (err) => {
     console.error(err);
     shutdown(1);

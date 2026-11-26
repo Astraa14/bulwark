@@ -3,6 +3,7 @@ import { Button, PageTitle, Toggle } from "@/components/Ui";
 import { INTERVAL_OPTIONS, intervalLabel } from "@/lib/scanOutcomes";
 import {
   PLAN_SITE_LIMIT,
+  deleteAccount,
   setSiteInterval,
   type Settings as SettingsModel,
   type SiteRow,
@@ -15,6 +16,7 @@ export function Settings({
   onSave,
   onChanged,
   goIntegrations,
+  onAccountDeleted,
 }: {
   settings: SettingsModel | null;
   sites: SiteRow[];
@@ -22,6 +24,7 @@ export function Settings({
   onSave: (patch: Partial<SettingsModel>) => Promise<SettingsModel>;
   onChanged: () => void;
   goIntegrations: () => void;
+  onAccountDeleted?: () => void;
 }) {
   const [interval, setIntervalMinutes] = useState(settings?.scanIntervalMinutes ?? 60);
   const [applyAll, setApplyAll] = useState(true);
@@ -30,6 +33,24 @@ export function Settings({
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [alertError, setAlertError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const removeAccount = async () => {
+    const typed = window.prompt(
+      "This permanently deletes every site, scan, finding, GitHub/Supabase connection, AI key, and your account. Type DELETE to confirm:",
+    );
+    if (typed !== "DELETE") return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteAccount();
+      onAccountDeleted?.();
+    } catch (err) {
+      setDeleteError((err as Error).message);
+      setDeleting(false);
+    }
+  };
 
   useEffect(() => {
     if (!settings) return;
@@ -236,10 +257,27 @@ export function Settings({
               <li>Security headers, weak CSP, CORS and cookie flags</li>
               <li>Exposed .env, .git, backups, source maps and OpenAPI/GraphQL</li>
               <li>Leaked API keys in HTML and JS bundles</li>
-              <li>Domain expiry, nameservers, MX, SPF and DMARC</li>
+              <li>Domain expiry, nameservers, MX, SPF, DMARC and dangling subdomain CNAMEs</li>
               <li>Defacement, robots.txt, sitemap and security.txt</li>
             </ul>
             <p>{sites.filter((s) => s.status === "verified").length} site(s) actively scanning.</p>
+          </section>
+          <section className="card side-setting danger-zone">
+            <h3>Danger zone</h3>
+            <p>
+              Permanently delete this workspace — sites, scan history, findings, encrypted GitHub /
+              Supabase credentials, AI keys, alert settings — and your Bulwark account. This cannot
+              be undone.
+            </p>
+            {deleteError && <p className="modal-error" role="alert">{deleteError}</p>}
+            <button
+              type="button"
+              className="danger-btn"
+              onClick={() => void removeAccount()}
+              disabled={deleting}
+            >
+              {deleting ? "Deleting…" : "Delete workspace & account"}
+            </button>
           </section>
         </div>
       </div>

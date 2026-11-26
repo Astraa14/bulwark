@@ -332,6 +332,7 @@ function AppShell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () =>
       onSave={settingsState.save}
       onChanged={refresh}
       goIntegrations={() => go("Integrations", "alerts")}
+      onAccountDeleted={() => void signOut()}
     />
   ) : (
     <GenericPage page={page} />

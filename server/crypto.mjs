@@ -19,6 +19,10 @@ function encryptionKeys() {
   return [primary, ...old].filter(Boolean).map(deriveKey);
 }
 
+export function isEncryptionKeyConfigured() {
+  return String(process.env.BULWARK_ENCRYPTION_KEY ?? "").trim().length > 0;
+}
+
 function key() {
   const keys = encryptionKeys();
   if (!keys.length) throw new Error("Missing BULWARK_ENCRYPTION_KEY in .env.local");

@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { alertNewFindings, processAlertDeliveries, runDueWeeklyDigests } from "./alerts.mjs";
+import { resolvePartialScanFindings } from "./check-groups.mjs";
 import { adminClient } from "./lib.mjs";
 import {
   enqueueDueGitHubScans,
@@ -7,6 +11,30 @@ import {
   runPlatformScanJobs,
 } from "./platform-scans.mjs";
 import { websiteScanIdentity } from "./scan-id.mjs";
+
+const WORKER_HEARTBEAT_PATH = path.join(os.tmpdir(), "bulwark-worker-heartbeat.json");
+
+export async function writeWorkerHeartbeat(summary = {}) {
+  try {
+    await writeFile(
+      WORKER_HEARTBEAT_PATH,
+      JSON.stringify({ at: new Date().toISOString(), pid: process.pid, ...summary }),
+      "utf8",
+    );
+  } catch {
+    // Heartbeat file is best-effort diagnostics only.
+  }
+}
+
+export async function readWorkerHeartbeat() {
+  try {
+    const raw = await readFile(WORKER_HEARTBEAT_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * A scan lease is stored in the database so API and worker processes (and
@@ -37,29 +65,48 @@ async function releaseSiteScan(db, siteId, token) {
 }
 
 /**
- * Findings that were actually created by this scan. The RPC sets
- * `first_seen_at` only for new rows, while existing findings keep their
- * original timestamp. This is what keeps hourly scans from re-alerting every
- * finding they still see.
+ * Loads findings created or reopened by this scan. `persist_scan_result` sets
+ * `first_seen_at` only on newly inserted rows, while reopened rows (previously
+ * `resolved` or expired `ignored_until`) transition back to `open` with
+ * `scan_id = scanId`. Active `open`/`acknowledged` rows that merely recur are
+ * excluded so scheduled scans never spam duplicate alerts.
  */
-async function newFindingsForScan(db, scanId, finishedAt) {
+async function alertableFindingsForScan(db, scanId, finishedAt, previouslyInactiveKeys) {
   const { data, error } = await db
     .from("findings")
-    .select("id, title, severity, detail, url, check_key, affected_resource")
-    .eq("scan_id", scanId)
-    .gte("first_seen_at", finishedAt);
+    .select("id, title, severity, detail, url, check_key, affected_resource, status, first_seen_at")
+    .eq("scan_id", scanId);
   if (error) throw new Error(`load new findings: ${error.message}`);
-  return data ?? [];
+
+  const newFindings = [];
+  const reopenedFindings = [];
+  for (const row of data ?? []) {
+    if (row.status && row.status !== "open") continue;
+    const identity = `${row.check_key}\u0000${row.affected_resource ?? ""}`;
+    if (row.first_seen_at && String(row.first_seen_at) >= finishedAt) {
+      newFindings.push(row);
+    } else if (previouslyInactiveKeys.has(identity)) {
+      reopenedFindings.push(row);
+    }
+  }
+  return { newFindings, reopenedFindings };
 }
 
 /** Writes one scan + its findings and reschedules the site atomically. */
-export async function scanSite(db, site, { runChecks: runChecksImpl } = {}) {
+export async function scanSite(db, site, { runChecks: runChecksImpl, manual = false } = {}) {
   const claimToken = await claimSiteScan(db, site.id);
-  // One logical scan per claimed slot. Retries of this slot reuse both values;
-  // the next due slot produces a new UUID pair. Never use site.id as the id:
-  // scans.id is a uuid and a constant key would suppress every later scan.
-  const slot = site.next_scan_at ?? new Date().toISOString();
-  const { scanId, idempotencyKey } = websiteScanIdentity({ siteId: site.id, slot });
+  // Scheduled sweeps reuse deterministic slot UUIDs for retry idempotency.
+  // Manual scans and 1-click re-checks are always distinct scans with fresh UUIDs.
+  let scanId;
+  let idempotencyKey;
+  if (manual) {
+    scanId = randomUUID();
+    idempotencyKey = randomUUID();
+  } else {
+    const slot = site.next_scan_at ?? new Date().toISOString();
+    ({ scanId, idempotencyKey } = websiteScanIdentity({ siteId: site.id, slot }));
+  }
+
   try {
     const runChecks = runChecksImpl ?? (await import("./checks.mjs")).runChecks;
     const result = await runChecks(site.domain, { baseline: site.page_sample ?? null });
@@ -71,8 +118,30 @@ export async function scanSite(db, site, { runChecks: runChecksImpl } = {}) {
       result.status === "completed" && (!site.page_sample || similarity >= 0.55);
     const resolveStale = result.status === "completed";
 
+    const previouslyInactiveKeys = new Set();
+    if (result.status !== "failed" && site.user_id) {
+      try {
+        const { data: priorRows } = await db
+          .from("findings")
+          .select("check_key, affected_resource, status, ignored_until")
+          .eq("site_id", site.id)
+          .eq("user_id", site.user_id);
+        for (const prior of priorRows ?? []) {
+          const isSnoozeExpired =
+            prior.status === "ignored" &&
+            Boolean(prior.ignored_until) &&
+            String(prior.ignored_until) <= now;
+          if (prior.status === "resolved" || isSnoozeExpired) {
+            previouslyInactiveKeys.add(`${prior.check_key}\u0000${prior.affected_resource ?? ""}`);
+          }
+        }
+      } catch {
+        // Best-effort snapshot for reopened alert detection.
+      }
+    }
+
     // Persist scan record + finding changes + site schedule atomically.
-    const { error: persistError } = await db.rpc("persist_scan_result", {
+    const { data: persistedScanId, error: persistError } = await db.rpc("persist_scan_result", {
       p_scan_id: scanId,
       p_idempotency_key: idempotencyKey,
       p_site_id: site.id,
@@ -83,7 +152,7 @@ export async function scanSite(db, site, { runChecks: runChecksImpl } = {}) {
       p_checks_passed: result.checksPassed,
       p_checks_errored: result.checksErrored ?? 0,
       p_checks_skipped: result.checksSkipped ?? 0,
-      p_check_results: result.checkResults ?? {},
+      p_check_results: result.checkResultsList ?? result.checkResults ?? {},
       p_error: result.error ?? null,
       p_started_at: now,
       p_finished_at: now,
@@ -96,21 +165,43 @@ export async function scanSite(db, site, { runChecks: runChecksImpl } = {}) {
     });
 
     if (persistError) throw new Error(`persist scan: ${persistError.message}`);
+    const effectiveScanId = typeof persistedScanId === "string" ? persistedScanId : scanId;
+
+    if (result.status === "partial" && site.user_id) {
+      try {
+        await resolvePartialScanFindings(db, {
+          userId: site.user_id,
+          siteId: site.id,
+          checkResults: result.checkResultsList ?? result.checkResults ?? {},
+          coverage: result.coverage ?? null,
+          findings: result.findings ?? [],
+        });
+      } catch (err) {
+        console.error(`partial resolution failed for ${site.domain}: ${err.message}`);
+      }
+    }
 
     let newFindings = [];
+    let reopenedFindings = [];
     if (result.status !== "failed" && site.user_id) {
       try {
-        newFindings = await newFindingsForScan(db, scanId, now);
+        ({ newFindings, reopenedFindings } = await alertableFindingsForScan(
+          db,
+          effectiveScanId,
+          now,
+          previouslyInactiveKeys,
+        ));
       } catch (err) {
         console.error(`load alertable findings for ${site.domain}: ${err.message}`);
       }
     }
 
-    if (newFindings.length && site.user_id) {
+    const actionableFindings = [...newFindings, ...reopenedFindings];
+    if (actionableFindings.length && site.user_id) {
       try {
         await alertNewFindings(db, {
           site,
-          findings: newFindings,
+          findings: actionableFindings,
           userId: site.user_id,
           appUrl: process.env.BULWARK_APP_URL ?? "http://localhost:8443",
         });
@@ -120,10 +211,10 @@ export async function scanSite(db, site, { runChecks: runChecksImpl } = {}) {
     }
 
     return {
-      scanId,
+      scanId: effectiveScanId,
       findings: result.findings.length,
       newFindings: newFindings.length,
-      reopenedFindings: 0,
+      reopenedFindings: reopenedFindings.length,
       status: result.status,
       coverage: result.coverage,
       error: result.error,
@@ -145,11 +236,11 @@ export async function runDueScans(db, limit = 10) {
       .limit(limit);
 
   let { data: due, error } = await runQuery(
-    "id, user_id, domain, scan_interval_minutes, page_sample",
+    "id, user_id, domain, scan_interval_minutes, next_scan_at, page_sample",
   );
 
   if (error?.message?.includes("page_sample")) {
-    const retry = await runQuery("id, user_id, domain, scan_interval_minutes");
+    const retry = await runQuery("id, user_id, domain, scan_interval_minutes, next_scan_at");
     due = retry.data;
     error = retry.error;
   }
@@ -239,27 +330,50 @@ export async function runWorkerTick(db, { logger = console, ...opts } = {}) {
     logger.error?.("weekly digest tick failed:", err.message);
   }
 
+  await writeWorkerHeartbeat({
+    sitesScanned: siteResults.length,
+    jobsProcessed: jobs.length,
+  });
+
   return { siteResults, scheduledSupabase, scheduledGitHub, jobs, retriedAlerts, digests };
 }
 
 if (process.argv[1]?.endsWith("worker.mjs")) {
   const db = adminClient();
   const intervalSeconds = Number(process.env.SCAN_POLL_SECONDS ?? 60);
-  let tickRunning = false;
+  let activeTick = null;
+  let stopping = false;
 
   const tick = async () => {
-    if (tickRunning) return;
-    tickRunning = true;
-    try {
-      await runWorkerTick(db);
-    } catch (err) {
-      console.error("worker tick failed:", err.message);
-    } finally {
-      tickRunning = false;
-    }
+    if (activeTick || stopping) return;
+    activeTick = (async () => {
+      try {
+        await runWorkerTick(db);
+      } catch (err) {
+        console.error("worker tick failed:", err.message);
+      } finally {
+        activeTick = null;
+      }
+    })();
+    await activeTick;
   };
 
   console.log(`Bulwark scan worker started (poll ${intervalSeconds}s)`);
+  const timer = setInterval(tick, intervalSeconds * 1000);
+
+  const shutdown = async () => {
+    if (stopping) return;
+    stopping = true;
+    clearInterval(timer);
+    const forceTimer = setTimeout(() => process.exit(0), 10_000);
+    forceTimer.unref();
+    if (activeTick) {
+      await activeTick.catch(() => {});
+    }
+    process.exit(0);
+  };
+
+  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown());
   await tick();
-  setInterval(tick, intervalSeconds * 1000);
 }
