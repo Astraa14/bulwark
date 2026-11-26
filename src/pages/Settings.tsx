@@ -253,10 +253,10 @@ export function Settings({
             <h3>Scan coverage</h3>
             <label>Every website scan checks</label>
             <ul className="coverage-list">
-              <li>Uptime, HTTP status and TLS expiry</li>
-              <li>Security headers, weak CSP, CORS and cookie flags</li>
+              <li>Uptime (two-strike verified), HTTP status and TLS trust &amp; expiry</li>
+              <li>Security headers, weak CSP, framing, CORS and cookie flags</li>
               <li>Exposed .env, .git, backups, source maps and OpenAPI/GraphQL</li>
-              <li>Leaked API keys in HTML and JS bundles</li>
+              <li>Leaked secrets &amp; open Supabase/Firebase DBs across HTML &amp; lazy JS chunks</li>
               <li>Domain expiry, nameservers, MX, SPF, DMARC and dangling subdomain CNAMEs</li>
               <li>Defacement, robots.txt, sitemap and security.txt</li>
             </ul>

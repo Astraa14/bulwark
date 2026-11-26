@@ -136,10 +136,16 @@ const EXTRA_SHIP_BLOCKER_KEYS = new Set([
   "ai_route_without_auth",
   "ssrf_unvalidated_fetch",
   "jwt_decode_without_verify",
+  "sql_raw_interpolation",
+  "command_injection_exec",
+  "firestore_open_rules",
   "dns_dangling_cname",
   "supabase_anon_readable_table",
   "site_supabase_anon_exposure",
+  "site_firebase_open_db",
   "supabase_function_unverified_jwt",
+  "tls_invalid_cert",
+  "tls_hostname_mismatch",
 ]);
 
 /**
@@ -185,6 +191,18 @@ export function findingImpactSummary(finding: FindingRow): string {
   }
   if (key === "jwt_decode_without_verify") {
     return "Forged JWT payloads are accepted without checking the cryptographic signature.";
+  }
+  if (key === "sql_raw_interpolation") {
+    return "Interpolated strings inside raw SQL queries allow attackers to dump or mutate database tables.";
+  }
+  if (key === "command_injection_exec") {
+    return "Shell metacharacters in request input can execute arbitrary OS commands on your server.";
+  }
+  if (key === "site_firebase_open_db" || key === "firestore_open_rules") {
+    return "Unauthenticated visitors can read or overwrite documents in your live Firebase database.";
+  }
+  if (key === "supabase_auth_autoconfirm_enabled" || key === "supabase_anonymous_auth_enabled") {
+    return "Bots can mint `authenticated` Supabase JWTs without owning a verified email inbox.";
   }
   if (key === "dns_dangling_cname") {
     return "A subdomain CNAME points to an unclaimed cloud project — anyone can claim it and hijack your traffic.";

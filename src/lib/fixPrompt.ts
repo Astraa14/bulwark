@@ -91,6 +91,28 @@ export function buildFixPrompt(
     lines.push(
       "3. Replace `jwt.decode` / `decodeJwt` with cryptographic signature verification (`jwt.verify`, `jose.jwtVerify`, or `supabase.auth.getUser`) before trusting any token claims.",
     );
+  } else if (finding.check_key === "sql_raw_interpolation") {
+    lines.push(
+      "3. Replace string-interpolated raw SQL (`$queryRawUnsafe`, `sql.raw`, `f\"SELECT ...\"`) with parameterized query bindings so user input is never concatenated into SQL syntax.",
+    );
+  } else if (finding.check_key === "command_injection_exec") {
+    lines.push(
+      "3. Replace `exec` / `execSync` / `shell=True` with `execFile` or `spawn(binary, [arg1, arg2])` without a shell, and validate inputs against a strict allowlist.",
+    );
+  } else if (
+    finding.check_key === "site_firebase_open_db" ||
+    finding.check_key === "firestore_open_rules"
+  ) {
+    lines.push(
+      "3. Lock down Firebase Security Rules (`firestore.rules` / Realtime Database rules) so reads and writes require `request.auth != null` and match the owning `request.auth.uid`.",
+    );
+  } else if (
+    finding.check_key === "supabase_auth_autoconfirm_enabled" ||
+    finding.check_key === "supabase_anonymous_auth_enabled"
+  ) {
+    lines.push(
+      "3. Enable email confirmation (or disable unused Anonymous Sign-Ins) in Supabase Auth settings, and ensure RLS policies targeting `authenticated` restrict `(auth.jwt() ->> 'is_anonymous')::boolean` where appropriate.",
+    );
   } else if (finding.check_key === "dns_dangling_cname") {
     lines.push(
       "3. Remove the dangling DNS `CNAME` record in your DNS provider immediately (or bind the subdomain to your active hosting project) so an attacker cannot claim the target resource.",

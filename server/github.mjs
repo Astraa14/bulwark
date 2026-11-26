@@ -3,6 +3,7 @@ import {
   CLIENT_EXPOSED_ENV_PREFIXES,
   CONFIG_CHECKS,
   DANGEROUS_CLIENT_ENV_PATTERNS,
+  DEPENDENCY_FILES,
   GITHUB_API,
   GITHUB_FETCH_CONCURRENCY,
   GITHUB_REQUEST_TIMEOUT_MS,
@@ -116,29 +117,67 @@ async function readJsonBounded(res, maxBytes) {
   return JSON.parse(text);
 }
 
+function isRetryableGitHubResponse(res) {
+  if (res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504) {
+    return true;
+  }
+  if (res.status === 403) {
+    const remaining = res.headers?.get?.("x-ratelimit-remaining");
+    const retryAfter = res.headers?.get?.("retry-after");
+    return remaining === "0" || Boolean(retryAfter);
+  }
+  return false;
+}
+
 async function githubFetch(
   token,
   path,
-  { fetchImpl = fetch, timeout = GITHUB_REQUEST_TIMEOUT_MS, maxBytes = MAX_GITHUB_RESPONSE_BYTES } = {},
+  {
+    fetchImpl = fetch,
+    timeout = GITHUB_REQUEST_TIMEOUT_MS,
+    maxBytes = MAX_GITHUB_RESPONSE_BYTES,
+    retryDelayMs,
+  } = {},
 ) {
-  const res = await fetchImpl(`${GITHUB_API}${path}`, {
-    headers: {
-      authorization: `Bearer ${token}`,
-      "user-agent": "BulwarkBot/0.7",
-      accept: "application/vnd.github+json",
-      "x-github-api-version": "2022-11-28",
-    },
-    redirect: "manual",
-    signal: AbortSignal.timeout(timeout),
-  });
+  const send = () =>
+    fetchImpl(`${GITHUB_API}${path}`, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        "user-agent": "BulwarkBot/0.7",
+        accept: "application/vnd.github+json",
+        "x-github-api-version": "2022-11-28",
+      },
+      redirect: "manual",
+      signal: AbortSignal.timeout(timeout),
+    });
+
+  let res = await send();
+  if (!res.ok && isRetryableGitHubResponse(res)) {
+    const retryHeader = Number(res.headers?.get?.("retry-after"));
+    const computedWait =
+      Number.isFinite(retryHeader) && retryHeader > 0
+        ? Math.min(5_000, retryHeader * 1_000)
+        : (retryDelayMs ?? (fetchImpl === fetch ? 1_000 : 15));
+    if (computedWait > 0) {
+      await new Promise((resolve) => setTimeout(resolve, computedWait));
+    }
+    res = await send();
+  }
 
   if (res.status >= 300 && res.status < 400) {
     throw new Error("GitHub API redirected the request, so it was not followed.");
   }
 
   if (!res.ok) {
+    const remaining = res.headers?.get?.("x-ratelimit-remaining");
     const body = await res.text().catch(() => "");
-    const err = new Error(`GitHub API ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
+    const rateNote =
+      res.status === 429 || (res.status === 403 && remaining === "0")
+        ? " (rate limit reached)"
+        : "";
+    const err = new Error(
+      `GitHub API ${res.status}${rateNote}${body ? `: ${body.slice(0, 200)}` : ""}`,
+    );
     err.status = res.status;
     throw err;
   }
@@ -608,6 +647,15 @@ const JWT_DECODE_CALL_RE = /\b(?:jwt\.decode|jsonwebtoken\.decode|decodeJwt)\s*\
 const JWT_VERIFY_GUARD_RE =
   /\b(?:jwt\.verify|jsonwebtoken\.verify|jwtVerify|verifyToken|verifyIdToken|createRemoteJWKSet|auth\.getUser)\s*\(|options\s*=\s*\{[^}]*verify_signature\s*:\s*True/i;
 
+const SQL_RAW_INTERPOLATION_RE =
+  /(?:\$(?:query|execute)RawUnsafe|\bsql\.raw)\s*\(\s*`[^`]*\$\{|(?:\bpool|\bclient|\bdb)\.query\s*\(\s*`[^`]*\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^`]*\$\{|\bcursor\.execute\s*\(\s*f["'][^"']*\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^"']*\{/i;
+
+const JS_CHILD_PROCESS_IMPORT_RE =
+  /(?:from\s+["'](?:node:)?child_process["']|require\(\s*["'](?:node:)?child_process["']\s*\))/;
+const JS_EXEC_INTERPOLATION_RE = /\bexec(?:Sync)?\s*\(\s*`[^`]*\$\{/;
+const PY_EXEC_INTERPOLATION_RE =
+  /\bos\.system\s*\(\s*f["'][^"']*\{|\bsubprocess\.(?:run|Popen|call|check_output)\s*\(\s*f["'][^"']*\{[\s\S]{0,160}?\bshell\s*=\s*True/;
+
 function findTaintedUrlFetch(content) {
   const candidates = new Set();
   for (const m of content.matchAll(SSRF_PARAM_ASSIGN_RE)) {
@@ -738,6 +786,51 @@ export function scanVibeCodeFootguns(content, path, { owner, repo, commitSha }) 
             "If an upstream gateway or auth SDK already verified the exact token string before this code runs, decoding claims for display may be benign.",
           remediation:
             "Replace `jwt.decode(token)` with cryptographic verification (`jwt.verify(token, secret)`, `jose.jwtVerify(token, jwks)`, or `supabase.auth.getUser(token)`).",
+        },
+      ),
+    );
+  }
+
+  if (!isClientUiPath && SQL_RAW_INTERPOLATION_RE.test(content)) {
+    out.push(
+      finding(
+        "sql_raw_interpolation",
+        `Raw SQL query interpolates runtime values: ${path}`,
+        "critical",
+        `\`${path}\` builds a raw SQL statement using template string interpolation (\`\$queryRawUnsafe(\`...\${...}\`)\`, \`sql.raw(\`...\${...}\`)\`, or \`cursor.execute(f"...")\`). Interpolating user input directly into SQL allows attackers to read, modify, or drop arbitrary tables via SQL injection.`,
+        {
+          url: blobUrl(owner, repo, commitSha, path),
+          evidence: `String-interpolated raw SQL execution in ${path}`,
+          affected_resource: path,
+          confidence: "high",
+          what_it_does_not_prove:
+            "If the interpolated expression is a strictly validated compile-time constant or allowlisted identifier, injection may not be reachable.",
+          remediation:
+            "Use parameterized queries (`prisma.$queryRaw\\`SELECT ... WHERE id = \\${id}\\``, Drizzle `sql\\`...\\``, `$1` placeholders, or `cursor.execute('... %s', (val,))`) instead of string interpolation.",
+        },
+      ),
+    );
+  }
+
+  const hasJsCommandExec =
+    JS_CHILD_PROCESS_IMPORT_RE.test(content) && JS_EXEC_INTERPOLATION_RE.test(content);
+  const hasPyCommandExec = PY_EXEC_INTERPOLATION_RE.test(content);
+  if (isRouteOrAction && !isClientUiPath && (hasJsCommandExec || hasPyCommandExec)) {
+    out.push(
+      finding(
+        "command_injection_exec",
+        `Shell command interpolates values inside server route: ${path}`,
+        "critical",
+        `\`${path}\` invokes a shell interpreter (\`exec\`/\`execSync\` or \`shell=True\`) with string-interpolated values inside an API route or server action. Shell metacharacters (\`;\`, \`&&\`, \`$(...)\`) in request input can execute arbitrary OS commands on your server.`,
+        {
+          url: blobUrl(owner, repo, commitSha, path),
+          evidence: `Interpolated shell command execution in ${path}`,
+          affected_resource: path,
+          confidence: "high",
+          what_it_does_not_prove:
+            "If all interpolated variables come from static server configuration rather than request parameters, external callers cannot control the command.",
+          remediation:
+            "Replace `exec` / `shell=True` with `execFile` or `spawn(binary, [arg1, arg2])` (passing arguments as an array with no shell).",
         },
       ),
     );
@@ -1110,10 +1203,55 @@ function failedResult(error) {
 }
 
 /**
- * Scan the repository at an exact commit when one is supplied (webhook), or
- * the default branch head (manual scan). Coverage is explicit: capped,
- * truncated, skipped, and unreadable files are all reported.
+ * Orders candidate files so security-critical configs, lockfiles, migrations,
+ * CI workflows, and server/API routes are always scanned before low-signal docs
+ * or UI components when a repository exceeds MAX_FILES_SCANNED.
  */
+export function fileScanPriority(rawPath) {
+  const path = String(rawPath ?? "");
+  const lower = path.toLowerCase();
+  const base = lower.slice(lower.lastIndexOf("/") + 1);
+
+  if (
+    SENSITIVE_FILENAMES.has(base) ||
+    SENSITIVE_FILENAMES.has(lower) ||
+    base.startsWith(".env") ||
+    lower === ".gitignore" ||
+    lower === "supabase/config.toml" ||
+    lower.endsWith(".rules")
+  ) {
+    return 0;
+  }
+  if (DEPENDENCY_FILES.has(base)) return 1;
+  if (
+    lower.startsWith("supabase/migrations/") ||
+    lower.startsWith("supabase/functions/") ||
+    lower.startsWith(".github/workflows/") ||
+    base === "vercel.json" ||
+    base === "netlify.toml" ||
+    base.startsWith("dockerfile") ||
+    base.startsWith("docker-compose.")
+  ) {
+    return 2;
+  }
+  if (
+    API_ROUTE_FILE_RE.test(path) ||
+    /^(?:server|api|backend|functions|src\/(?:server|middleware)|middleware\.[cm]?[jt]sx?$)/i.test(
+      path,
+    )
+  ) {
+    return 3;
+  }
+  if (
+    isTestFile(path) ||
+    lower.startsWith("docs/") ||
+    lower.endsWith(".md") ||
+    lower.endsWith(".txt")
+  ) {
+    return 5;
+  }
+  return 4;
+}
 export async function scanGitHubRepo(
   token,
   owner,
@@ -1162,6 +1300,8 @@ export async function scanGitHubRepo(
     }
     candidates.push(blob);
   }
+
+  candidates.sort((a, b) => fileScanPriority(a.path) - fileScanPriority(b.path));
 
   const toScan = candidates.slice(0, MAX_FILES_SCANNED);
   const skippedByCap = candidates.length - toScan.length;

@@ -27,6 +27,9 @@ const WEBSITE_EXACT_GROUPS = new Map([
   ["tls_expired", "tls"],
   ["tls_expiring", "tls"],
   ["tls_expiring_soon", "tls"],
+  ["tls_invalid_cert", "tls"],
+  ["tls_hostname_mismatch", "tls"],
+  ["tls_untrusted_chain", "tls"],
   ["header_hsts", "security_headers"],
   ["header_csp", "security_headers"],
   ["header_nosniff", "security_headers"],
@@ -61,6 +64,7 @@ const WEBSITE_EXACT_GROUPS = new Map([
   ["security_txt_invalid", "public_discovery"],
   ["stripe_test_key_in_production", "secrets"],
   ["site_supabase_anon_exposure", "secrets"],
+  ["site_firebase_open_db", "secrets"],
   ["exposed_source_map", "secrets"],
   ["exposed_api_docs", "api_exposure"],
   ["graphql_introspection_enabled", "api_exposure"],
@@ -79,15 +83,21 @@ const GITHUB_CONFIG_CHECK_KEYS = new Set([
   "vercel_wildcard_cors_credentials",
   "vercel_missing_security_headers",
   "netlify_wildcard_cors_credentials",
+  "dockerfile_root_user",
   "dockerfile_runs_as_root",
   "dockerfile_secret_in_build_env",
+  "compose_root_user",
   "workflow_pull_request_target",
   "workflow_write_all_permissions",
+  "workflow_unpinned_action",
   "workflow_unpinned_third_party_action",
+  "firestore_open_rules",
   "ai_route_without_auth",
   "webhook_missing_signature_verification",
   "ssrf_unvalidated_fetch",
   "jwt_decode_without_verify",
+  "sql_raw_interpolation",
+  "command_injection_exec",
   "supabase_migration_missing_rls",
   "supabase_function_unverified_jwt",
   "gitignore_missing_env",
@@ -115,7 +125,14 @@ export function platformCheckGroupForFinding(platform, checkKey) {
     }
     if (key === "supabase_public_storage") return "storage";
     if (
+      key === "supabase_auth_autoconfirm_enabled" ||
+      key === "supabase_anonymous_auth_enabled"
+    ) {
+      return "auth_settings";
+    }
+    if (
       key === "supabase_table_no_rls" ||
+      key === "supabase_table_no_policies" ||
       key === "supabase_table_rls_no_policies" ||
       key === "supabase_table_permissive_policy" ||
       key === "supabase_rls_not_checked"

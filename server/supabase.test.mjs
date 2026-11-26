@@ -25,6 +25,8 @@ function createSupabaseFetch({
   bucketsStatus = 200,
   rls = [],
   rlsStatus = 200,
+  authSettings = { autoconfirm: false, anonymous_users_enabled: false, disable_signup: false },
+  authStatus = 200,
 } = {}) {
   const requests = [];
   const fetchImpl = async (input, init = {}) => {
@@ -46,6 +48,9 @@ function createSupabaseFetch({
     }
     if (url === `${PROJECT_URL}/rest/v1/rpc/bulwark_check_rls`) {
       return rlsStatus === 200 ? json(rls) : json({ message: "missing" }, rlsStatus);
+    }
+    if (url === `${PROJECT_URL}/auth/v1/settings`) {
+      return authStatus === 200 ? json(authSettings) : json({ message: "denied" }, authStatus);
     }
     throw new Error(`Unexpected fetch: ${url}`);
   };
@@ -296,4 +301,63 @@ test("detects anon-readable sensitive tables and exposed RPCs with zero SQL help
   assert.equal(result.coverage.anonTablesExposed, 2);
   assert.equal(result.coverage.anonReadableTables, 1);
   assert.equal(result.coverage.anonRpcsExposed, 1);
+});
+
+test("flags unverified email autoconfirm and anonymous sign-ins, escalating severity when permissive RLS exists", async () => {
+  const escalatedFixture = createSupabaseFetch({
+    buckets: [],
+    rls: [
+      {
+        table_name: "documents",
+        row_security_enabled: true,
+        policy_count: 1,
+        has_permissive_policy: true,
+      },
+    ],
+    authSettings: {
+      autoconfirm: true,
+      anonymous_users_enabled: true,
+      disable_signup: false,
+    },
+  });
+
+  const escalated = await run(escalatedFixture);
+  const autoconfirmHigh = escalated.findings.find(
+    (f) => f.check_key === "supabase_auth_autoconfirm_enabled",
+  );
+  const anonHigh = escalated.findings.find(
+    (f) => f.check_key === "supabase_anonymous_auth_enabled",
+  );
+  assert.ok(autoconfirmHigh);
+  assert.equal(autoconfirmHigh.severity, "high");
+  assert.ok(anonHigh);
+  assert.equal(anonHigh.severity, "high");
+  assert.equal(escalated.coverage.authChecked, true);
+
+  const strictFixture = createSupabaseFetch({
+    buckets: [],
+    rls: [
+      {
+        table_name: "documents",
+        row_security_enabled: true,
+        policy_count: 1,
+        has_permissive_policy: false,
+      },
+    ],
+    authSettings: {
+      autoconfirm: true,
+      anonymous_users_enabled: true,
+      disable_signup: false,
+    },
+  });
+
+  const strict = await run(strictFixture);
+  assert.equal(
+    strict.findings.find((f) => f.check_key === "supabase_auth_autoconfirm_enabled")?.severity,
+    "medium",
+  );
+  assert.equal(
+    strict.findings.find((f) => f.check_key === "supabase_anonymous_auth_enabled")?.severity,
+    "low",
+  );
 });

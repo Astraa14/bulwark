@@ -689,6 +689,87 @@ export async function alertNewFindings(
   return { sent: channels.length > 0, count: worthy.length, channels, errors };
 }
 
+/** Sends an all-clear notification when a previously unreachable site responds again. */
+export async function alertSiteRecovered(
+  db,
+  { site, httpStatus, responseMs, userId, appUrl, fetchImpl = fetch, env = process.env },
+) {
+  const settings = await getSettings(db, userId, { env });
+  const statusText = httpStatus ? `HTTP ${httpStatus}` : "HTTPS OK";
+  const timingText = Number.isFinite(responseMs) ? ` · ${responseMs} ms` : "";
+  const cleanAppUrl = String(appUrl ?? "").replace(/\/+$/, "");
+
+  const entries = [];
+  if (settings.alertsEnabled && settings.slackWebhookUrl) {
+    const lines = [
+      `🟢 *RECOVERED* — *${site.domain}* is reachable again`,
+      `> Responded with ${statusText}${timingText}. The \`site_unreachable\` alert has been resolved.`,
+    ];
+    if (cleanAppUrl) lines.push(`<${cleanAppUrl}/sites|View sites in Bulwark>`);
+    entries.push({
+      channel: "slack",
+      kind: "finding",
+      targetLabel: site.domain,
+      findingCount: 1,
+      payload: { text: lines.join("\n") },
+    });
+  }
+  if (settings.discordAlertsEnabled && settings.discordWebhookUrl) {
+    entries.push({
+      channel: "discord",
+      kind: "finding",
+      targetLabel: site.domain,
+      findingCount: 1,
+      payload: {
+        embeds: [
+          {
+            title: `RECOVERED: ${site.domain} is reachable again`,
+            description: `Responded with **${statusText}**${timingText}. The \`site_unreachable\` finding has been automatically resolved.`,
+            color: 0x16a34a,
+            ...(cleanAppUrl ? { url: `${cleanAppUrl}/sites` } : {}),
+            footer: { text: "Bulwark security monitoring" },
+          },
+        ],
+      },
+    });
+  }
+  if (settings.emailAlertsEnabled && settings.alertEmail && isEmailDeliveryConfigured(env)) {
+    const subject = `[Bulwark · RECOVERED] ${site.domain} is reachable again`;
+    const text = `${site.domain} is reachable again (${statusText}${timingText}).\n\nThe site_unreachable alert has been resolved.${cleanAppUrl ? `\n\nOpen Bulwark: ${cleanAppUrl}/sites` : ""}`;
+    const html = [
+      `<div style="font-family:-apple-system,Segoe UI,Inter,sans-serif;color:#171717;line-height:1.5;max-width:560px">`,
+      `<p style="font-size:12px;letter-spacing:0.06em;text-transform:uppercase;color:#15803d;font-weight:600;margin:0 0 8px">Bulwark · Recovered</p>`,
+      `<h2 style="font-size:18px;margin:0 0 10px">${escapeHtml(site.domain)} is reachable again</h2>`,
+      `<p style="margin:0 0 12px">Responded with <strong>${escapeHtml(statusText)}</strong>${escapeHtml(timingText)}. The <code>site_unreachable</code> finding has been resolved.</p>`,
+      cleanAppUrl
+        ? `<p style="margin:18px 0 0"><a href="${escapeHtml(`${cleanAppUrl}/sites`)}" style="display:inline-block;background:#171717;color:#ffffff;padding:9px 14px;border-radius:6px;text-decoration:none;font-size:13px">View sites in Bulwark</a></p>`
+        : "",
+      `</div>`,
+    ].join("");
+    entries.push({
+      channel: "email",
+      kind: "finding",
+      targetLabel: site.domain,
+      findingCount: 1,
+      payload: { subject, text, html },
+    });
+  }
+
+  if (!entries.length) {
+    return { sent: false, reason: "no enabled alert channel", channels: [] };
+  }
+
+  const { channels, errors } = await enqueueAndAttemptDeliveries(db, {
+    userId,
+    settings,
+    entries,
+    fetchImpl,
+    env,
+  });
+
+  return { sent: channels.length > 0, channels, errors };
+}
+
 /** Worker sweep: retries queued or stale alert_deliveries outbox rows. */
 export async function processAlertDeliveries(
   db,

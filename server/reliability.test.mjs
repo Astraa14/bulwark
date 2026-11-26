@@ -5,13 +5,16 @@ process.env.BULWARK_ENCRYPTION_KEY = process.env.BULWARK_ENCRYPTION_KEY || "bulw
 
 const { scanSite } = await import("./worker.mjs");
 const { createApp } = await import("./app.mjs");
+const { encrypt } = await import("./crypto.mjs");
+const { reclaimStuckPlatformJobs } = await import("./platform-scans.mjs");
 const { completedCheckGroups, resolvePartialScanFindings } = await import("./check-groups.mjs");
-const { runChecks, rdapBaseUrl, resetRdapBootstrapCache } = await import("./checks.mjs");
-const { scanVibeCodeFootguns } = await import("./github.mjs");
+const { checkUptime, runChecks, rdapBaseUrl, resetRdapBootstrapCache } = await import("./checks.mjs");
+const { fileScanPriority, scanGitHubRepo, scanVibeCodeFootguns } = await import("./github.mjs");
 const { normalizeCheckResults, scanOutcomeSummary, isShipBlocker } = await import(
   "../src/lib/scanOutcomes.ts"
 );
 const { createFakeDb } = await import("./test-support/fake-db.mjs");
+const { createGitHubFetch } = await import("./test-support/github-fixtures.mjs");
 
 const SITE_ID = "77777777-7777-4777-8777-777777777777";
 const CTX = { owner: "octo", repo: "app", commitSha: "a".repeat(40) };
@@ -440,4 +443,237 @@ test("DELETE /api/account requires confirmation and only removes the caller's da
   assert.deepEqual(db.tables.get("api_keys").map((k) => k.id), ["k-b"]);
   assert.deepEqual(db.tables.get("profiles").map((p) => p.id), ["user-b"]);
   assert.deepEqual(deletedUsers, ["user-a"]);
+});
+
+// ---------------------------------------------------------------------------
+// Lazy SPA chunks, Firebase exposure, modern secrets & anti-flap uptime
+// ---------------------------------------------------------------------------
+
+test("follows lazy-loaded SPA chunks to detect leaked DB URIs, Groq keys, and open Firebase DBs", async () => {
+  const originalFetch = global.fetch;
+  const fakeLookup = async () => [{ address: "93.184.216.34", family: 4 }];
+  const groqKey = ["gsk", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2"].join("_");
+  const dbUri = ["postgresql://neondb_owner", "RealPass987654@ep-cool-sky.us-east-2.aws.neon.tech/prod"].join(":");
+  const placeholderUri = "postgres://user:password@localhost:5432/mydb";
+
+  global.fetch = async (input) => {
+    const url = String(input);
+    if (url === "https://example.com/") {
+      return new Response(
+        '<!doctype html><html><head><script type="module" src="/assets/entry.js"></script></head><body>App</body></html>',
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+    }
+    if (url === "https://example.com/assets/entry.js") {
+      return new Response(
+        `export const loadAdmin = () => import("./admin-panel.js"); const docExample = "${placeholderUri}";`,
+        { status: 200, headers: { "content-type": "application/javascript" } },
+      );
+    }
+    if (url === "https://example.com/assets/admin-panel.js") {
+      return new Response(
+        `const fb = { authDomain: "vibe-fb-123.firebaseapp.com", databaseURL: "https://vibe-fb-123-default-rtdb.firebaseio.com" }; const groq = "${groqKey}"; const db = "${dbUri}";`,
+        { status: 200, headers: { "content-type": "application/javascript" } },
+      );
+    }
+    if (url === "https://vibe-fb-123-default-rtdb.firebaseio.com/.json?shallow=true") {
+      return new Response(JSON.stringify({ users: true, orders: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (
+      url ===
+      "https://firestore.googleapis.com/v1/projects/vibe-fb-123/databases/(default)/documents/users?pageSize=1&mask.fieldPaths=__name__"
+    ) {
+      return new Response(
+        JSON.stringify({ documents: [{ name: "projects/vibe-fb-123/databases/(default)/documents/users/u1" }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(null, { status: 404 });
+  };
+
+  try {
+    const result = await runChecks("example.com", { lookup: fakeLookup });
+    const keys = result.findings.map((f) => f.check_key);
+    assert.ok(keys.includes("secret_groq"), "should detect Groq key inside lazy chunk");
+    assert.ok(keys.includes("secret_database_url"), "should detect real database URI inside lazy chunk");
+
+    const dbFindings = result.findings.filter((f) => f.check_key === "secret_database_url");
+    assert.equal(dbFindings.length, 1, "placeholder localhost URI must not trigger a second finding");
+
+    const fbFindings = result.findings.filter((f) => f.check_key === "site_firebase_open_db");
+    assert.equal(fbFindings.length, 2, "should flag both open Realtime DB and open Firestore collection");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("two-strike uptime check recovers from a single transient failure without false outage", async () => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    if (calls === 1) throw new Error("ETIMEDOUT");
+    return new Response("<html><body>healthy</body></html>", {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
+  };
+  try {
+    const out = await checkUptime("example.com", {
+      retryDelayMs: 5,
+      lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+    });
+    assert.equal(out.ok, true);
+    assert.equal(out.attempts, 2);
+    assert.equal(calls, 2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("sends an all-clear recovery alert when a site_unreachable finding clears", async () => {
+  const originalFetch = global.fetch;
+  const slackPayloads = [];
+  const slackUrl = ["https://hooks.slack.com", "services", "T00000000", "B00000000", "XXXXXXXXXXXXXXXXXXXXXXXX"].join("/");
+
+  global.fetch = async (input, init = {}) => {
+    if (String(input) === slackUrl) {
+      slackPayloads.push(JSON.parse(String(init.body)));
+      return new Response("ok", { status: 200 });
+    }
+    throw new Error(`Unexpected fetch: ${input}`);
+  };
+
+  try {
+    const db = createFakeDb({
+      tables: {
+        findings: [
+          {
+            id: "f-down",
+            site_id: SITE_ID,
+            user_id: "user-a",
+            check_key: "site_unreachable",
+            affected_resource: null,
+            status: "open",
+          },
+        ],
+        user_settings: [
+          {
+            user_id: "user-a",
+            alerts_enabled: true,
+            slack_webhook_encrypted: encrypt(slackUrl),
+            slack_min_severity: "high",
+          },
+        ],
+        alert_deliveries: [],
+      },
+      rpcHandlers: {
+        persist_scan_result: (args) => ({ data: args.p_scan_id, error: null }),
+      },
+    });
+
+    const out = await scanSite(db, site(), {
+      runChecks: async () => checksResult({ status: "completed", httpStatus: 200, responseMs: 120 }),
+    });
+    assert.equal(out.recovered, true);
+    assert.equal(slackPayloads.length, 1);
+    assert.match(slackPayloads[0].text, /RECOVERED.*example\.com/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("reclaims stale running platform_scan_jobs and fails exhausted ones", async () => {
+  const staleIso = new Date(Date.now() - 25 * 60_000).toISOString();
+  const freshIso = new Date(Date.now() - 2 * 60_000).toISOString();
+  const db = createFakeDb({
+    tables: {
+      platform_scan_jobs: [
+        { id: "j-retry", status: "running", attempts: 2, started_at: staleIso },
+        { id: "j-exhausted", status: "running", attempts: 5, started_at: staleIso },
+        { id: "j-fresh", status: "running", attempts: 1, started_at: freshIso },
+      ],
+    },
+  });
+
+  const count = await reclaimStuckPlatformJobs(db, { staleMinutes: 15 });
+  assert.equal(count, 2);
+  const byId = Object.fromEntries(db.tables.get("platform_scan_jobs").map((j) => [j.id, j.status]));
+  assert.equal(byId["j-retry"], "queued");
+  assert.equal(byId["j-exhausted"], "failed");
+  assert.equal(byId["j-fresh"], "running");
+});
+
+// ---------------------------------------------------------------------------
+// GitHub priority sorting, rate-limit retry, SQL/exec injection & Firestore rules
+// ---------------------------------------------------------------------------
+
+test("fileScanPriority ranks critical configs, lockfiles, migrations, and routes ahead of UI and docs", () => {
+  const unordered = [
+    "docs/setup.md",
+    "src/components/Button.tsx",
+    "app/api/checkout/route.ts",
+    "supabase/migrations/001_init.sql",
+    "package-lock.json",
+    "firestore.rules",
+  ];
+  const sorted = [...unordered].sort((a, b) => fileScanPriority(a) - fileScanPriority(b));
+  assert.deepEqual(sorted, [
+    "firestore.rules",
+    "package-lock.json",
+    "supabase/migrations/001_init.sql",
+    "app/api/checkout/route.ts",
+    "src/components/Button.tsx",
+    "docs/setup.md",
+  ]);
+});
+
+test("flags raw SQL interpolation, shell command injection, and open Firestore rules while retrying GitHub 429s", async () => {
+  const fixture = createGitHubFetch({
+    files: [
+      {
+        path: "firestore.rules",
+        content: `rules_version = '2';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n    match /{document=**} {\n      allow read, write: if true;\n    }\n  }\n}`,
+      },
+      {
+        path: "app/api/convert/route.ts",
+        content: [
+          'import { execSync } from "node:child_process";',
+          "export async function POST(req: Request) {",
+          "  const { file, email } = await req.json();",
+          "  const rows = await prisma.$queryRawUnsafe(`SELECT * FROM users WHERE email = '${email}'`);",
+          "  execSync(`ffmpeg -i ${file} out.mp4`);",
+          "  return Response.json({ rows });",
+          "}",
+        ].join("\n"),
+      },
+    ],
+  });
+
+  let saw429 = false;
+  const flakyFetch = async (input, init) => {
+    if (!saw429 && String(input).includes("/git/trees/")) {
+      saw429 = true;
+      return new Response("rate limited", {
+        status: 429,
+        headers: { "retry-after": "0", "x-ratelimit-remaining": "0" },
+      });
+    }
+    return fixture.fetchImpl(input, init);
+  };
+
+  const res = await scanGitHubRepo("ghp_faketoken1234567890", "octocat", "Hello-World", {
+    fetchImpl: flakyFetch,
+    osvFetchImpl: async () => new Response(JSON.stringify({ results: [] }), { status: 200 }),
+  });
+
+  assert.equal(saw429, true);
+  assert.equal(res.status, "completed");
+  const keys = res.findings.map((f) => f.check_key);
+  assert.ok(keys.includes("firestore_open_rules"), "should detect open Firestore rules");
+  assert.ok(keys.includes("sql_raw_interpolation"), "should detect interpolated raw SQL");
+  assert.ok(keys.includes("command_injection_exec"), "should detect shell command injection");
 });

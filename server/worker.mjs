@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { alertNewFindings, processAlertDeliveries, runDueWeeklyDigests } from "./alerts.mjs";
+import {
+  alertNewFindings,
+  alertSiteRecovered,
+  processAlertDeliveries,
+  runDueWeeklyDigests,
+} from "./alerts.mjs";
 import { resolvePartialScanFindings } from "./check-groups.mjs";
 import { adminClient } from "./lib.mjs";
 import {
@@ -119,6 +124,7 @@ export async function scanSite(db, site, { runChecks: runChecksImpl, manual = fa
     const resolveStale = result.status === "completed";
 
     const previouslyInactiveKeys = new Set();
+    let wasUnreachable = false;
     if (result.status !== "failed" && site.user_id) {
       try {
         const { data: priorRows } = await db
@@ -127,6 +133,9 @@ export async function scanSite(db, site, { runChecks: runChecksImpl, manual = fa
           .eq("site_id", site.id)
           .eq("user_id", site.user_id);
         for (const prior of priorRows ?? []) {
+          if (prior.status === "open" && prior.check_key === "site_unreachable") {
+            wasUnreachable = true;
+          }
           const isSnoozeExpired =
             prior.status === "ignored" &&
             Boolean(prior.ignored_until) &&
@@ -197,16 +206,34 @@ export async function scanSite(db, site, { runChecks: runChecksImpl, manual = fa
     }
 
     const actionableFindings = [...newFindings, ...reopenedFindings];
+    const appUrl = process.env.BULWARK_APP_URL ?? "http://localhost:8443";
     if (actionableFindings.length && site.user_id) {
       try {
         await alertNewFindings(db, {
           site,
           findings: actionableFindings,
           userId: site.user_id,
-          appUrl: process.env.BULWARK_APP_URL ?? "http://localhost:8443",
+          appUrl,
         });
       } catch (err) {
         console.error(`slack alert failed for ${site.domain}: ${err.message}`);
+      }
+    }
+
+    const stillUnreachable = (result.findings ?? []).some(
+      (f) => f.check_key === "site_unreachable",
+    );
+    if (wasUnreachable && result.status !== "failed" && !stillUnreachable && site.user_id) {
+      try {
+        await alertSiteRecovered(db, {
+          site,
+          httpStatus: result.httpStatus,
+          responseMs: result.responseMs,
+          userId: site.user_id,
+          appUrl,
+        });
+      } catch (err) {
+        console.error(`recovery alert failed for ${site.domain}: ${err.message}`);
       }
     }
 
@@ -215,6 +242,7 @@ export async function scanSite(db, site, { runChecks: runChecksImpl, manual = fa
       findings: result.findings.length,
       newFindings: newFindings.length,
       reopenedFindings: reopenedFindings.length,
+      recovered: wasUnreachable && result.status !== "failed" && !stillUnreachable,
       status: result.status,
       coverage: result.coverage,
       error: result.error,
@@ -224,8 +252,24 @@ export async function scanSite(db, site, { runChecks: runChecksImpl, manual = fa
   }
 }
 
+async function runBounded(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const slots = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(
+    Array.from({ length: slots }, async () => {
+      while (nextIndex < items.length) {
+        const i = nextIndex;
+        nextIndex += 1;
+        results[i] = await worker(items[i], i);
+      }
+    }),
+  );
+  return results;
+}
+
 /** One pass over every verified site that is due. */
-export async function runDueScans(db, limit = 10) {
+export async function runDueScans(db, limit = 10, { concurrency = 3 } = {}) {
   const runQuery = (columns) =>
     db
       .from("sites")
@@ -247,12 +291,10 @@ export async function runDueScans(db, limit = 10) {
 
   if (error) throw new Error(`load due sites: ${error.message}`);
 
-  const results = [];
-  for (const site of due ?? []) {
+  return runBounded(due ?? [], concurrency, async (site) => {
     try {
-      results.push({ domain: site.domain, ok: true, ...(await scanSite(db, site)) });
+      return { domain: site.domain, ok: true, ...(await scanSite(db, site)) };
     } catch (err) {
-      results.push({ domain: site.domain, ok: false, error: err.message });
       // A claim conflict means another process is already working on it; do not
       // move its schedule. Other failures get a bounded retry delay.
       if (err.code !== "SCAN_ALREADY_RUNNING") {
@@ -261,9 +303,9 @@ export async function runDueScans(db, limit = 10) {
           .update({ next_scan_at: new Date(Date.now() + 15 * 60_000).toISOString() })
           .eq("id", site.id);
       }
+      return { domain: site.domain, ok: false, error: err.message };
     }
-  }
-  return results;
+  });
 }
 
 /** One worker sweep: due websites, scheduled Supabase/GitHub scans, platform jobs, outbox retries, and weekly digests. */

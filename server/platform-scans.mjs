@@ -377,17 +377,75 @@ export async function processPlatformScanJob(db, job, opts = {}) {
   }
 }
 
+/**
+ * Reclaims platform_scan_jobs left in `running` for longer than `staleMinutes`
+ * (for example after an abrupt container OOM or hard restart) so they never
+ * stay wedged forever.
+ */
+export async function reclaimStuckPlatformJobs(db, { staleMinutes = 15 } = {}) {
+  const now = new Date();
+  const cutoffIso = new Date(now.getTime() - staleMinutes * 60_000).toISOString();
+  const { data: stuck, error } = await db
+    .from("platform_scan_jobs")
+    .select("id, attempts")
+    .eq("status", "running")
+    .lte("started_at", cutoffIso);
+
+  if (error || !Array.isArray(stuck) || stuck.length === 0) return 0;
+
+  let reclaimed = 0;
+  for (const row of stuck) {
+    const attempts = Number(row.attempts ?? 1);
+    const exhausted = attempts >= MAX_JOB_ATTEMPTS;
+    const { error: updateErr } = await db
+      .from("platform_scan_jobs")
+      .update(
+        exhausted
+          ? {
+              status: "failed",
+              finished_at: now.toISOString(),
+              last_error: `Job timed out in running state after ${staleMinutes} minutes.`,
+            }
+          : {
+              status: "queued",
+              run_after: now.toISOString(),
+              last_error: "Reclaimed stale running job after worker restart.",
+            },
+      )
+      .eq("id", row.id)
+      .eq("status", "running");
+    if (!updateErr) reclaimed += 1;
+  }
+  return reclaimed;
+}
+
 /** Claim and process one batch of queued platform scan jobs. */
 export async function runPlatformScanJobs(db, opts = {}) {
-  const { limit = 5 } = opts;
+  const { limit = 5, concurrency = 2 } = opts;
+  try {
+    await reclaimStuckPlatformJobs(db);
+  } catch {
+    // Best-effort stale-job sweep before claiming new work.
+  }
+
   const { data, error } = await db.rpc("claim_platform_scan_jobs", { p_limit: limit });
   if (error) throw new Error(`claim platform jobs: ${error.message}`);
 
   const jobs = Array.isArray(data) ? data : [];
-  const results = [];
-  for (const job of jobs) {
-    results.push(await processPlatformScanJob(db, job, opts));
-  }
+  if (jobs.length === 0) return [];
+
+  const results = new Array(jobs.length);
+  let nextIndex = 0;
+  const slots = Math.max(1, Math.min(concurrency, jobs.length));
+  await Promise.all(
+    Array.from({ length: slots }, async () => {
+      while (nextIndex < jobs.length) {
+        const idx = nextIndex;
+        nextIndex += 1;
+        results[idx] = await processPlatformScanJob(db, jobs[idx], opts);
+      }
+    }),
+  );
   return results;
 }
 

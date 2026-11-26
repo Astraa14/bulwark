@@ -452,6 +452,7 @@ export async function scanSupabaseProject(projectUrl, apiKey, opts = {}) {
   // -------------------------------------------------------------------------
   let rlsChecked = false;
   let tablesInspected = 0;
+  let permissivePoliciesCount = 0;
   const rls = await request(baseUrl, apiKey, "/rest/v1/rpc/bulwark_check_rls", {
     method: "POST",
     body: "{}",
@@ -478,6 +479,7 @@ export async function scanSupabaseProject(projectUrl, apiKey, opts = {}) {
       rlsChecked = true;
       tablesInspected = publicRows.length;
       const analysis = rlsFindings(publicRows, dashboardBase);
+      permissivePoliciesCount = analysis.permissivePolicies;
       findings.push(...analysis.findings);
       checkResults.push(
         outcome(
@@ -530,6 +532,89 @@ export async function scanSupabaseProject(projectUrl, apiKey, opts = {}) {
     errors.push(`RLS introspection: HTTP ${rls.status}`);
   }
 
+  // -------------------------------------------------------------------------
+  // Supabase Auth settings (/auth/v1/settings — readable with publishable key)
+  // -------------------------------------------------------------------------
+  let authChecked = false;
+  const authRes = await request(baseUrl, apiKey, "/auth/v1/settings", {
+    fetchImpl,
+    lookup,
+  });
+
+  if (authRes.error) {
+    checkResults.push(
+      outcome("auth_settings", "Authentication settings", "error", `Auth settings failed: ${authRes.error}`),
+    );
+    errors.push(`Auth settings check: ${authRes.error}`);
+  } else if (authRes.ok) {
+    const authJson = parseJson(authRes.body);
+    if (authJson && typeof authJson === "object" && !Array.isArray(authJson)) {
+      authChecked = true;
+      const authFindings = [];
+      if (authJson.autoconfirm === true && authJson.disable_signup !== true) {
+        const escalated = permissivePoliciesCount > 0;
+        authFindings.push(
+          finding(
+            "supabase_auth_autoconfirm_enabled",
+            "Email signup auto-confirm is enabled (unverified accounts)",
+            escalated ? "high" : "medium",
+            escalated
+              ? "Supabase Auth allows new email signups without verifying inbox ownership (`autoconfirm: true`), AND this project has permissive RLS policies (`using (true)`). Any automated script can mint an `authenticated` JWT in one request using a fake email address and read or mutate rows granted to `authenticated`."
+              : "Supabase Auth allows new email signups without verifying inbox ownership (`autoconfirm: true`). Attackers can pre-register accounts under other users' email addresses and bots can mint `authenticated` role JWTs without owning an inbox.",
+            {
+              url: `${dashboardBase}/auth/providers`,
+              evidence: `GET /auth/v1/settings · autoconfirm=true, disable_signup=${Boolean(authJson.disable_signup)}`,
+              affected_resource: "auth:autoconfirm",
+              confidence: "high",
+              what_it_does_not_prove:
+                "Frictionless signup without email confirmation is occasionally intentional during prototypes when email-based identity is not relied upon.",
+              remediation:
+                "Enable 'Confirm email' under Authentication → Providers → Email in the Supabase dashboard before launching publicly.",
+            },
+          ),
+        );
+      }
+
+      if (authJson.anonymous_users_enabled === true) {
+        const escalated = permissivePoliciesCount > 0;
+        authFindings.push(
+          finding(
+            "supabase_anonymous_auth_enabled",
+            "Anonymous sign-ins mint `authenticated` role JWTs",
+            escalated ? "high" : "low",
+            escalated
+              ? "Anonymous sign-ins are enabled (`anonymous_users_enabled: true`) alongside permissive RLS policies. In Supabase, `signInAnonymously()` issues a token with Postgres role `authenticated` — so every RLS policy written `to authenticated using (true)` is open to unauthenticated bots unless it explicitly checks `(auth.jwt() ->> 'is_anonymous')::boolean is false`."
+              : "Anonymous sign-ins are enabled (`anonymous_users_enabled: true`). Supabase issues anonymous sessions under the `authenticated` Postgres role, so RLS policies targeting `authenticated` also grant access to anonymous visitors unless `(auth.jwt() ->> 'is_anonymous')::boolean is false` is enforced.",
+            {
+              url: `${dashboardBase}/auth/providers`,
+              evidence: "GET /auth/v1/settings · anonymous_users_enabled=true",
+              affected_resource: "auth:anonymous_sign_ins",
+              confidence: "high",
+              what_it_does_not_prove:
+                "Anonymous auth is safe if your RLS policies explicitly distinguish `(auth.jwt() ->> 'is_anonymous')::boolean`.",
+              remediation:
+                "Disable Anonymous Sign-Ins under Authentication → Settings if unused, or restrict sensitive RLS policies with `and coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false) = false`.",
+            },
+          ),
+        );
+      }
+
+      findings.push(...authFindings);
+      checkResults.push(
+        outcome(
+          "auth_settings",
+          "Authentication settings",
+          authFindings.length > 0 ? "finding" : "pass",
+        ),
+      );
+    }
+  } else if (!PERMISSION_STATUSES.has(authRes.status)) {
+    checkResults.push(
+      outcome("auth_settings", "Authentication settings", "error", `HTTP ${authRes.status}`),
+    );
+    errors.push(`Auth settings check: HTTP ${authRes.status}`);
+  }
+
   const checksPassed = checkResults.filter((check) => check.status === "pass").length;
   const checksErrored = checkResults.filter((check) => check.status === "error").length;
   const checksSkipped = checkResults.filter((check) => check.status === "not_checked").length;
@@ -551,6 +636,7 @@ export async function scanSupabaseProject(projectUrl, apiKey, opts = {}) {
       storageBucketsVisible,
       storageChecked,
       rlsChecked,
+      authChecked,
       policyAnalysis: "heuristic",
       notes,
     },

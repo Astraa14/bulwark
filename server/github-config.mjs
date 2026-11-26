@@ -122,6 +122,34 @@ export const CONFIG_CHECKS = [
     remediation:
       "Replace the `*` origin with your exact frontend origin(s), or remove Access-Control-Allow-Credentials if the route is public.",
   },
+  {
+    path: "firestore.rules",
+    check: "firestore_open_rules",
+    title: "Firestore security rules allow unauthenticated public writes (`if true`)",
+    severity: "critical",
+    test: (content) =>
+      /\ballow\s+[^;]*\b(?:write|create|update|delete)\b[^;]*:\s*if\s+true\b/.test(
+        String(content ?? "").replace(/\/\/.*$/gm, ""),
+      ),
+    detail:
+      "`firestore.rules` permits unauthenticated write access (`allow write: if true` — Firebase Test Mode). Any visitor on the internet can overwrite, delete, or inject arbitrary documents into your production database.",
+    remediation:
+      "Replace `if true` with authenticated owner checks such as `if request.auth != null && request.auth.uid == userId`.",
+  },
+  {
+    path: "storage.rules",
+    check: "firestore_open_rules",
+    title: "Firebase Storage rules allow unauthenticated public writes (`if true`)",
+    severity: "critical",
+    test: (content) =>
+      /\ballow\s+[^;]*\b(?:write|create|update|delete)\b[^;]*:\s*if\s+true\b/.test(
+        String(content ?? "").replace(/\/\/.*$/gm, ""),
+      ),
+    detail:
+      "`storage.rules` permits unauthenticated file writes (`allow write: if true`), allowing anyone to overwrite hosted files or upload malicious payloads into your Firebase bucket.",
+    remediation:
+      "Require `request.auth != null` and restrict upload paths, file sizes, and content types.",
+  },
 ];
 
 /**
@@ -211,6 +239,54 @@ export const SECRET_PATTERNS = [
     name: "Stripe live secret key",
     severity: "critical",
     re: /\bsk_live_[0-9A-Za-z]{20,}\b/g,
+  },
+  {
+    key: "secret_stripe_restricted",
+    name: "Stripe live restricted key",
+    severity: "critical",
+    re: /\brk_live_[0-9A-Za-z]{20,}\b/g,
+  },
+  {
+    key: "secret_supabase_secret_key",
+    name: "Supabase secret key",
+    severity: "critical",
+    re: /\bsb_secret_[A-Za-z0-9_-]{20,}\b/g,
+  },
+  {
+    key: "secret_groq",
+    name: "Groq API key",
+    severity: "critical",
+    re: /\bgsk_[A-Za-z0-9]{40,}\b/g,
+  },
+  {
+    key: "secret_huggingface",
+    name: "Hugging Face access token",
+    severity: "high",
+    re: /\bhf_[A-Za-z0-9]{30,}\b/g,
+  },
+  {
+    key: "secret_resend",
+    name: "Resend API key",
+    severity: "high",
+    re: /\bre_(?=[A-Za-z0-9_]{24,}\b)(?=[A-Za-z0-9_]*[A-Z])(?=[A-Za-z0-9_]*\d)[A-Za-z0-9]{6,12}_?[A-Za-z0-9]{16,}\b/g,
+  },
+  {
+    key: "secret_sendgrid",
+    name: "SendGrid API key",
+    severity: "critical",
+    re: /\bSG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{30,}\b/g,
+  },
+  {
+    key: "secret_linear",
+    name: "Linear API key",
+    severity: "high",
+    re: /\blin_api_[A-Za-z0-9]{32,}\b/g,
+  },
+  {
+    key: "secret_database_url",
+    name: "Database connection string with credentials",
+    severity: "critical",
+    re: /\b(?:postgres(?:ql)?|mongodb(?:\+srv)?|mysql|redis|rediss):\/\/(?!(?:user|username|postgres|root|admin|your[_-]?user|\$\{[^}]+\}|<[^>]+>):(?:pass|password|secret|postgres|root|admin|xxxx+|\*+|your[_-]?password|\$\{[^}]+\}|<[^>]+>)@)[^:\s/"'<>]{1,64}:[^@\s/"'<>]{6,128}@(?!localhost\b|127\.0\.0\.1\b|0\.0\.0\.0\b|host\b|example\.com\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/gi,
   },
   {
     key: "secret_slack",
@@ -349,4 +425,5 @@ export const TEXT_EXTENSIONS = new Set([
   ".cmd",
   ".dockerfile",
   ".gitmodules",
+  ".rules",
 ]);

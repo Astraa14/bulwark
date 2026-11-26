@@ -560,6 +560,54 @@ const SECRET_PATTERNS = [
     re: /\bsk_live_[0-9A-Za-z]{20,}\b/g,
   },
   {
+    key: "secret_stripe_restricted",
+    name: "Stripe live restricted key",
+    severity: "critical",
+    re: /\brk_live_[0-9A-Za-z]{20,}\b/g,
+  },
+  {
+    key: "secret_supabase_secret_key",
+    name: "Supabase secret key",
+    severity: "critical",
+    re: /\bsb_secret_[A-Za-z0-9_-]{20,}\b/g,
+  },
+  {
+    key: "secret_groq",
+    name: "Groq API key",
+    severity: "critical",
+    re: /\bgsk_[A-Za-z0-9]{40,}\b/g,
+  },
+  {
+    key: "secret_huggingface",
+    name: "Hugging Face access token",
+    severity: "high",
+    re: /\bhf_[A-Za-z0-9]{30,}\b/g,
+  },
+  {
+    key: "secret_resend",
+    name: "Resend API key",
+    severity: "high",
+    re: /\bre_(?=[A-Za-z0-9_]{24,}\b)(?=[A-Za-z0-9_]*[A-Z])(?=[A-Za-z0-9_]*\d)[A-Za-z0-9]{6,12}_?[A-Za-z0-9]{16,}\b/g,
+  },
+  {
+    key: "secret_sendgrid",
+    name: "SendGrid API key",
+    severity: "critical",
+    re: /\bSG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{30,}\b/g,
+  },
+  {
+    key: "secret_linear",
+    name: "Linear API key",
+    severity: "high",
+    re: /\blin_api_[A-Za-z0-9]{32,}\b/g,
+  },
+  {
+    key: "secret_database_url",
+    name: "Database connection string with credentials",
+    severity: "critical",
+    re: /\b(?:postgres(?:ql)?|mongodb(?:\+srv)?|mysql|redis|rediss):\/\/(?!(?:user|username|postgres|root|admin|your[_-]?user|\$\{[^}]+\}|<[^>]+>):(?:pass|password|secret|postgres|root|admin|xxxx+|\*+|your[_-]?password|\$\{[^}]+\}|<[^>]+>)@)[^:\s/"'<>]{1,64}:[^@\s/"'<>]{6,128}@(?!localhost\b|127\.0\.0\.1\b|0\.0\.0\.0\b|host\b|example\.com\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/gi,
+  },
+  {
     key: "secret_slack",
     name: "Slack token",
     severity: "critical",
@@ -1193,6 +1241,148 @@ async function probeDiscoveredSupabaseAnonSurface({ projectRef, baseUrl, anonKey
   return out;
 }
 
+function extractLazyChunkUrls(bundleBody, bundleUrl, pageHost) {
+  if (!bundleBody) return [];
+  const found = new Set();
+  const push = (raw) => {
+    if (!raw || raw.endsWith(".map")) return;
+    try {
+      const resolved = new URL(raw, bundleUrl);
+      if (resolved.protocol !== "https:" && resolved.protocol !== "http:") return;
+      if (resolved.host !== pageHost) return;
+      resolved.hash = "";
+      found.add(resolved.toString());
+    } catch {
+      // Ignore malformed chunk specifiers.
+    }
+  };
+
+  for (const m of bundleBody.matchAll(/\bimport\(\s*["']([^"'?#\s]{2,160}\.m?js)["']\s*\)/g)) {
+    push(m[1]);
+  }
+  for (const m of bundleBody.matchAll(
+    /["']((?:\/assets\/|\.?\/assets\/|\/_next\/static\/chunks\/)[^"'?#\s]{2,160}\.m?js)["']/g,
+  )) {
+    push(m[1]);
+  }
+  return [...found];
+}
+
+function extractPublicFirebaseTarget(texts) {
+  const authDomainRe = /\b([a-z0-9][a-z0-9-]{4,34}[a-z0-9])\.firebaseapp\.com\b/i;
+  const rtdbRe = /https:\/\/([a-z0-9-]+(?:\.[a-z0-9-]+)?\.(?:firebaseio\.com|firebasedatabase\.app))\b/i;
+
+  let projectId = null;
+  let rtdbOrigin = null;
+  for (const text of texts) {
+    if (!text) continue;
+    if (!projectId) {
+      const m = authDomainRe.exec(text);
+      if (m) projectId = m[1].toLowerCase();
+    }
+    if (!rtdbOrigin) {
+      const r = rtdbRe.exec(text);
+      if (r) rtdbOrigin = `https://${r[1].toLowerCase()}`;
+    }
+    if (projectId && rtdbOrigin) break;
+  }
+  if (!projectId && !rtdbOrigin) return null;
+  return { projectId, rtdbOrigin };
+}
+
+async function probeDiscoveredFirebaseSurface(
+  { projectId, rtdbOrigin },
+  { lookup: customLookup } = {},
+) {
+  const out = [];
+  const lookupOpt = customLookup ? { lookup: customLookup } : {};
+
+  if (rtdbOrigin) {
+    const rtdbRes = await fetchWithTimeout(`${rtdbOrigin}/.json?shallow=true`, {
+      timeout: 6000,
+      maxBytes: 256_000,
+      headers: { accept: "application/json" },
+      ...lookupOpt,
+    });
+    if (!rtdbRes.error && rtdbRes.ok && rtdbRes.body) {
+      try {
+        const parsed = JSON.parse(rtdbRes.body);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const keys = Object.keys(parsed);
+          if (keys.length > 0) {
+            out.push(
+              finding(
+                "site_firebase_open_db",
+                `Firebase Realtime Database allows unauthenticated public reads (${keys.slice(0, 3).join(", ")})`,
+                "critical",
+                `Your frontend bundle references \`${rtdbOrigin}\`, and an unauthenticated \`/.json?shallow=true\` metadata check returned ${keys.length} top-level database node(s) (${keys.slice(0, 5).join(", ")}). Anyone can download your database contents without signing in.`,
+                {
+                  url: "https://console.firebase.google.com/",
+                  evidence: `${rtdbOrigin}/.json?shallow=true · ${keys.length} root key(s): ${keys.slice(0, 5).join(", ")}`,
+                  affected_resource: `firebase:rtdb:${new URL(rtdbOrigin).hostname}`,
+                  confidence: "high",
+                  what_it_does_not_prove:
+                    "Bulwark used `shallow=true` to inspect top-level key existence only and never downloaded nested record payloads.",
+                  remediation:
+                    "Lock down Firebase Realtime Database rules so `.read` and `.write` require `auth != null` and scope access per user (`auth.uid`).",
+                },
+              ),
+            );
+          }
+        }
+      } catch {
+        // Ignore non-JSON responses.
+      }
+    }
+  }
+
+  if (projectId) {
+    const collections = ["users", "profiles"];
+    const probes = await Promise.all(
+      collections.map(async (col) => {
+        const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/${col}?pageSize=1&mask.fieldPaths=__name__`;
+        const res = await fetchWithTimeout(url, {
+          timeout: 6000,
+          maxBytes: 128_000,
+          headers: { accept: "application/json" },
+          ...lookupOpt,
+        });
+        return { col, res };
+      }),
+    );
+
+    for (const { col, res } of probes) {
+      if (res.error || !res.ok || !res.body) continue;
+      try {
+        const json = JSON.parse(res.body);
+        if (Array.isArray(json?.documents) && json.documents.length > 0) {
+          out.push(
+            finding(
+              "site_firebase_open_db",
+              `Cloud Firestore collection \`${col}\` is publicly readable without auth`,
+              "critical",
+              `Your website bundle connects to Firebase project \`${projectId}\`, and Cloud Firestore allowed an unauthenticated list query on collection \`${col}\` (commonly caused by leaving Firebase Test Mode \`allow read, write: if true;\` enabled in production).`,
+              {
+                url: `https://console.firebase.google.com/project/${projectId}/firestore/rules`,
+                evidence: `Firestore project ${projectId} · collection "${col}" readable without auth`,
+                affected_resource: `firebase:firestore:${projectId}:${col}`,
+                confidence: "high",
+                what_it_does_not_prove:
+                  "Bulwark requested `mask.fieldPaths=__name__` with `pageSize=1`, so zero document field values were transferred.",
+                remediation: `Update Cloud Firestore Security Rules in project \`${projectId}\` to replace \`if true\` with \`if request.auth != null && request.auth.uid == userId\`.`,
+              },
+            ),
+          );
+        }
+      } catch {
+        // Ignore malformed JSON.
+      }
+    }
+  }
+
+  return out;
+}
+
 function extractSourceMapUrl(scriptBody, scriptUrl) {
   if (!scriptBody) return null;
   // Look near the end of the bundle for sourceMappingURL comments.
@@ -1251,12 +1441,36 @@ async function checkLeakedSecretsInner(domain, page, { lookup: customLookup } = 
 
   const mapUrls = new Set();
   const inspectableTexts = [page.body];
+  const fetchedUrls = new Set(candidates);
+  const lazyChunkCandidates = new Set();
+
   for (const bundle of bundleResults) {
     if (!bundle) continue;
     inspectableTexts.push(bundle.body);
     add(scanTextForSecrets(bundle.body, bundle.url, domain));
     const mapUrl = extractSourceMapUrl(bundle.body, bundle.url);
     if (mapUrl) mapUrls.add(mapUrl);
+    for (const chunkUrl of extractLazyChunkUrls(bundle.body, bundle.url, pageHost)) {
+      if (!fetchedUrls.has(chunkUrl)) lazyChunkCandidates.add(chunkUrl);
+    }
+  }
+
+  const lazyTargets = [...lazyChunkCandidates].slice(0, 4);
+  if (lazyTargets.length > 0) {
+    const lazyResults = await Promise.all(
+      lazyTargets.map(async (url) => {
+        const res = await safeFetch(url, 10000);
+        if (res.error || !res.found || !res.body || res.body.length > 4_000_000) return null;
+        return { url, body: res.body };
+      }),
+    );
+    for (const chunk of lazyResults) {
+      if (!chunk) continue;
+      inspectableTexts.push(chunk.body);
+      add(scanTextForSecrets(chunk.body, chunk.url, domain));
+      const mapUrl = extractSourceMapUrl(chunk.body, chunk.url);
+      if (mapUrl) mapUrls.add(mapUrl);
+    }
   }
 
   const discoveredSupabase = extractPublicSupabaseTarget(inspectableTexts);
@@ -1265,6 +1479,14 @@ async function checkLeakedSecretsInner(domain, page, { lookup: customLookup } = 
       lookup: customLookup,
     });
     add(sbFindings);
+  }
+
+  const discoveredFirebase = extractPublicFirebaseTarget(inspectableTexts);
+  if (discoveredFirebase) {
+    const fbFindings = await probeDiscoveredFirebaseSurface(discoveredFirebase, {
+      lookup: customLookup,
+    });
+    add(fbFindings);
   }
 
   // Probe referenced same-host JS source maps (.js.map) without extra fetches
@@ -1844,24 +2066,39 @@ export async function fetchPageSample(domain) {
 // Individual checks (single-request, gating, etc.)
 // ============================================================================
 
-export async function checkUptime(domain) {
-  const start = Date.now();
-  const res = await fetchWithTimeout(`https://${domain}/`);
-  const responseMs = Date.now() - start;
-  if (res.error) {
-    return { ok: false, error: res.error, responseMs };
-  }
-  if (res.status === null) {
-    return { ok: false, error: "no response", responseMs };
-  }
-  return {
-    ok: true,
-    status: res.status,
-    responseMs,
-    body: res.body ?? "",
-    headers: res.headers,
-    finalUrl: res.url ?? `https://${domain}/`,
+export async function checkUptime(domain, { retryDelayMs, lookup: lookupFn } = {}) {
+  const probeOnce = async () => {
+    const start = Date.now();
+    const res = await fetchWithTimeout(`https://${domain}/`, {
+      ...(lookupFn ? { lookup: lookupFn } : {}),
+    });
+    const responseMs = Date.now() - start;
+    if (res.error) return { ok: false, error: res.error, responseMs };
+    if (res.status === null) return { ok: false, error: "no response", responseMs };
+    return {
+      ok: true,
+      status: res.status,
+      responseMs,
+      body: res.body ?? "",
+      headers: res.headers,
+      finalUrl: res.url ?? `https://${domain}/`,
+    };
   };
+
+  const first = await probeOnce();
+  if (first.ok || String(first.error ?? "").startsWith("Blocked ")) {
+    return { ...first, attempts: 1 };
+  }
+
+  // Two-strike confirmation: retry once after a short backoff before declaring
+  // the site unreachable so a single network blip never fires a 3 AM alert.
+  const delay =
+    retryDelayMs ?? (globalThis.fetch !== nativeFetch ? 20 : 1_500);
+  if (delay > 0) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+  const second = await probeOnce();
+  return { ...second, attempts: 2 };
 }
 
 export function checkTls(domain) {
@@ -1890,6 +2127,10 @@ export function checkTls(domain) {
           port: 443,
           timeout: 10000,
           lookup: validatingLookup,
+          // Inspect the peer certificate directly without sending HTTP traffic so
+          // expired, self-signed, and hostname-mismatched certificates are caught
+          // and classified instead of collapsing into a generic connection error.
+          rejectUnauthorized: false,
           ...(isIP(normalized) ? {} : { servername: normalized }),
         },
         () => {
@@ -1899,6 +2140,10 @@ export function checkTls(domain) {
             socket.destroy();
             return finish({ error: `Blocked TLS target: ${normalized}` });
           }
+          const authorized = socket.authorized === true;
+          const authorizationError = socket.authorizationError
+            ? String(socket.authorizationError)
+            : null;
           const cert = socket.getPeerCertificate();
           socket.end();
           if (!cert?.valid_to) return finish(null);
@@ -1909,6 +2154,8 @@ export function checkTls(domain) {
             validTo: cert.valid_to,
             issuer: cert.issuer?.O ?? cert.issuer?.CN ?? "unknown",
             subject: cert.subject?.CN ?? domain,
+            authorized,
+            authorizationError,
           });
         },
       );
@@ -1928,7 +2175,10 @@ export function checkTls(domain) {
 // Orchestrator
 // ============================================================================
 
-export async function runChecks(rawDomain, { baseline = null, lookup: customLookup } = {}) {
+export async function runChecks(
+  rawDomain,
+  { baseline = null, lookup: customLookup, uptimeRetryDelayMs } = {},
+) {
   const domain = normalizeDomain(rawDomain);
   const findings = [];
   const start = Date.now();
@@ -1948,7 +2198,10 @@ export async function runChecks(rawDomain, { baseline = null, lookup: customLook
   };
 
   // --- Gating check: site uptime ---
-  const page = await checkUptime(domain);
+  const page = await checkUptime(domain, {
+    retryDelayMs: uptimeRetryDelayMs,
+    lookup: customLookup,
+  });
   if (!page.ok) {
     register("site_uptime", "error", page.error);
     findings.push(
@@ -2027,6 +2280,52 @@ export async function runChecks(rawDomain, { baseline = null, lookup: customLook
         evidence: `Expired ${Math.abs(tls.days)} day(s) ago · ${tls.validTo}`,
       }),
     );
+  } else if (tls.authorized === false && tls.authorizationError) {
+    register("tls", "finding");
+    const errCode = tls.authorizationError;
+    if (/SELF_SIGNED_CERT|DEPTH_ZERO_SELF_SIGNED/i.test(errCode)) {
+      findings.push(
+        finding(
+          "tls_invalid_cert",
+          "Self-signed TLS certificate",
+          "critical",
+          "The server presented a self-signed certificate not trusted by public browsers, triggering full-page HTTPS security warnings.",
+          {
+            evidence: `${errCode} · subject ${tls.subject}`,
+            remediation:
+              "Provision a publicly trusted TLS certificate (e.g. Let's Encrypt or your hosting platform's managed TLS).",
+          },
+        ),
+      );
+    } else if (/ALTNAME_INVALID|HOSTNAME_MISMATCH/i.test(errCode)) {
+      findings.push(
+        finding(
+          "tls_hostname_mismatch",
+          "TLS certificate does not match domain",
+          "critical",
+          `The server's TLS certificate does not cover \`${domain}\`, so browsers block visitors with an HTTPS certificate warning.`,
+          {
+            evidence: `${errCode} · cert subject ${tls.subject}`,
+            remediation:
+              "Attach the custom domain in your hosting dashboard so a certificate covering this exact hostname is issued.",
+          },
+        ),
+      );
+    } else {
+      findings.push(
+        finding(
+          "tls_untrusted_chain",
+          "Untrusted or incomplete TLS certificate chain",
+          "high",
+          "TLS trust verification failed (often caused by a missing intermediate CA certificate), breaking HTTPS on strict clients and APIs.",
+          {
+            evidence: `${errCode} · issued by ${tls.issuer}`,
+            remediation:
+              "Serve the full certificate chain (`fullchain.pem`) rather than only the leaf certificate.",
+          },
+        ),
+      );
+    }
   } else if (tls.days <= 14) {
     register("tls", "finding");
     findings.push(
